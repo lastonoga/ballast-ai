@@ -1,7 +1,7 @@
 # pydantic-ai-stateflow-engine — Design Spec
 
 - **Date:** 2026-05-15
-- **Status:** Section 1 (Foundation) + addenda 1.12–1.14 approved. Section 2A (L0 impl) and 2B (L1 capability catalog) approved in chat — to be written to spec when full Section 2 closes. Sections 2C–2E and Section 3 TBD.
+- **Status:** Sections 1 + 2 (A–E) approved. Section 3 (infrastructure & process) TBD.
 - **Authors:** Kir + Claude (brainstorming session)
 - **Source material:** `.context/attachments/pasted_text_2026-05-15_15-09-12.txt` (architectural analysis of LLM production failures, RU)
 
@@ -427,57 +427,930 @@ class Reflection(Pattern[InT, OutT]):
 
 ---
 
-## Section 2 — Detailed Architecture (TBD)
+## Section 2 — Detailed Architecture (approved)
 
-Будет покрывать:
+### 2A — L0 GroundedSchema Implementation
 
-- **L0 implementation:**
-  - `Ref[T]` как Pydantic-тип через `__get_pydantic_core_schema__`
-  - Resolver: scan output_type → collect entity types → match в context → build dynamic model
-  - `create_model` рекурсивно для nested / list
-  - Hydration через Repository
-  - Edge cases: union refs, partial entities, multiple sources, escape hatch path-grammar
+#### 2A.1 Public API
 
-- **L1 Capability catalog (со скелетами кода):**
-  - `SemanticLoopDetector` — embedder + косинусное сходство выходов
-  - `BudgetGuard` — token / iteration budget tracking
-  - `GoalDriftDetector` — async LLM-judge на goal alignment
-  - `LLMJudgeHook` — async output scoring → eval store
-  - `PIIGuard` — `after_model_request` redaction
-  - `GroundedRetry` — умный feedback в `ModelRetry`
+```python
+# pydantic_ai_stateflow/grounded/__init__.py
+EntityT = TypeVar("EntityT", bound=BaseModel)
 
-- **L2 Pattern catalog (со скелетами кода):**
-  - `MapReduce` — fanout через `DBOS.queue`, reduce с confidence-merge
-  - `Reflection` — Writer/Critic/Refiner loop
-  - `MutationPipeline` — все 8 стадий, Pipeline-композиция
-  - `HITLGate` — обёртка вокруг HITLChannel
-  - `SelfRAG`, `CorrectiveRAG` — RAG с self-evaluation
-  - `DivergentConvergent` — CREATIVEDC pattern
-  - `PlanAndExecute` — планировщик + исполнители
-  - `SemanticRouter` — embedding-based intent classification
+class Ref(Generic[EntityT]):
+    """Typed UUID reference to an Entity of type EntityT.
 
-- **L3 Workflow/Step Boundary детально:**
-  - Что обязательно в `@DBOS.step` vs `@DBOS.workflow`
-  - Lint-rule для проверки
-  - Idempotency и replay-safety
-  - Child workflows, fanout через queues
-  - HITL pause через `DBOS.recv()`
+    - LLM/JSON layer: plain UUID string (no wrapper)
+    - Python layer:   typed reference; .id, .hydrate(repo)
+    """
+    __slots__ = ("id", "_entity_type")
 
-- **Bootstrap / Service Provider pattern:**
-  - `Engine.register(ServiceProvider)` API
-  - `register()` / `boot()` lifecycle
-  - DI через FastAPI `Depends` + наш `Container`
-  - Entry-points discovery (опционально)
+    def __init__(self, id: UUID, *, entity_type: type[EntityT]): ...
 
-- **Authorization (Policy + Voter):**
-  - `Policy.can(actor, action, resource) → bool`
-  - `Voter.vote(actor, action, resource) → GRANT|DENY|ABSTAIN`
-  - `AccessDecisionManager` (Symfony-style tally)
-  - Использование в `MutationPipeline.PolicyCheck` и в endpoints
+    @classmethod
+    def __class_getitem__(cls, item: type[EntityT]) -> type["Ref[EntityT]"]:
+        # Возвращает специализированный subclass с привязкой к T
+        ...
 
-- **Event Dispatcher:**
-  - `Event` base + типизированные события (`AgentRunStarted`, `PatternStepCompleted`, `MutationApplied`, `HITLRequested`, ...)
-  - `EventDispatcher.dispatch(event)` — sync для observability, async через outbox для side effects
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source, handler):
+        # JSON ↔ UUID string; Python ↔ Ref(id, entity_type=T)
+        ...
+
+    async def hydrate(self, repo: "Repository[EntityT]") -> EntityT:
+        return await repo.load(self.id)
+
+
+class GroundedAgent(Generic[CtxT, OutT]):
+    def __init__(self, agent: Agent, *, output_type: type[OutT]):
+        self.agent = agent
+        self.output_type = output_type
+        self._resolver = GroundedResolver(output_type)
+
+    async def run(
+        self,
+        context: BaseModel,
+        *,
+        instructions: str | None = None,
+        constraints: dict[str, list[Any] | Any] | None = None,  # escape hatch
+        **agent_kwargs,
+    ) -> GroundedResult[OutT]: ...
+
+
+class GroundedResult(BaseModel, Generic[OutT]):
+    value: OutT
+    hydration_map: HydrationMap
+    raw: AgentRunResult
+
+    async def hydrate(self, **repos: Repository[Any]) -> OutT: ...
+```
+
+#### 2A.2 Resolver Algorithm
+
+```python
+class FieldRole(StrEnum):
+    REF, LIST_REF, ENUM, NESTED, LIST_NESTED, FREE = ...
+
+@dataclass
+class FieldSpec:
+    path: str
+    role: FieldRole
+    target_type: type | None
+    nested_spec: "OutputSpec | None"
+
+class GroundedResolver:
+    def __init__(self, output_type: type[BaseModel]):
+        self._spec = self._scan_output(output_type)
+
+    def build(self, context: BaseModel, constraints: dict | None) -> tuple[type[BaseModel], HydrationMap]:
+        sources = self._scan_context(context, self._spec)
+        if constraints:
+            sources = self._apply_constraints_override(sources, constraints)
+        return self._build_dynamic(self.output_type, sources, path=""), HydrationMap(self._spec, sources)
+```
+
+`_build_dynamic` рекурсивно создаёт через `create_model`:
+- `Ref[T]` → `Literal[*ids]`
+- `list[Ref[T]]` → `list[Literal[*ids]]`
+- Enum/Literal с совпадающим типом из context → пересечение
+- Nested BaseModel → рекурсия с новым `DynamicNested...` классом
+- `list[BaseModel]` → рекурсия + broadcast
+
+#### 2A.3 Resolver Rules (full table)
+
+| Случай | Поведение |
+|---|---|
+| `Ref[Candidate]` + `list[Candidate]` в context | `Literal[*ids]` |
+| `Ref[Candidate]` + одиночный `Candidate` | `Literal[id]` |
+| `Ref[T]` + несколько источников T | union allowed-sets |
+| `Ref[T]` + 0 источников | `GroundedBuildError` (construction-time) |
+| `list[Ref[T]]` | `list[Literal[*ids]]` (подмножество) |
+| `Optional[Ref[T]]` + 0 instances | `Optional[None]` с warning |
+| `Ref[A] | Ref[B]` | union allowed-sets обоих |
+| Literal/Enum поле в output, тот же enum в context | пересечение допустимых значений |
+| Recursive entity (Tree) | scan ограничен по depth (default 5); circular → ошибка |
+| Очень большие allowed-sets (>1000 ids) | warning: `SemanticRouter` рекомендуется |
+| Partial-Entity DTO (subset полей) | scanner ищет `.id`; иначе игнор |
+| Constraints override path не существует | `GroundedBuildError` (construction-time) |
+| Новая сущность (не ссылка) | обычный `UUID = Field(default_factory=uuid4)` — не `Ref` |
+
+#### 2A.4 Hydration via Repository
+
+```python
+class HydrationMap:
+    spec: OutputSpec
+
+    async def hydrate(self, value: OutT, repos: dict[type, Repository[Any]]) -> OutT:
+        # Walk value, для каждого Ref-path заменяет .id на await repo.load(id)
+        ...
+
+# Использование:
+hydrated = await result.hydrate(Candidate=candidate_repo, Customer=customer_repo)
+```
+
+Repos индексируются **типом**, не именем. Соответствует type-driven духу.
+
+#### 2A.5 Tests
+
+L0 не зависит от DBOS / БД / агентов. Тесты — pure pydantic:
+
+```python
+def test_grounded_resolver_basic():
+    class Cand(BaseModel): id: UUID; label: str
+    class Ctx(BaseModel):  candidates: list[Cand]
+    class Out(BaseModel):  chosen: Ref[Cand]; rationale: str
+
+    ctx = Ctx(candidates=[Cand(id=u1, label="a"), Cand(id=u2, label="b")])
+    Dynamic, _ = GroundedResolver(Out).build(ctx, constraints=None)
+
+    assert Dynamic.model_fields["chosen"].annotation == Literal[u1, u2]
+    Dynamic.model_validate({"chosen": str(u1), "rationale": "..."})  # ok
+    with pytest.raises(ValidationError):
+        Dynamic.model_validate({"chosen": str(uuid4()), "rationale": "..."})
+```
+
+---
+
+### 2B — L1 Capabilities Catalog
+
+Все наследуют от `StateflowCapability(AbstractCapability)` с авто-Logfire-span и стандартной конфигурацией через `pydantic-settings`.
+
+#### 2B.1 BudgetGuard (outermost)
+
+Token + iteration limit. State хранится в `ctx.state["budget"]` → переживает DBOS replay.
+
+```python
+class BudgetGuard(StateflowCapability):
+    name = "budget_guard"
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_iterations: int = 20
+
+    def get_ordering(self): return CapabilityOrdering(position="outermost")
+
+    async def before_model_request(self, ctx, *, request_context):
+        if ctx.run_step >= self.max_iterations:
+            raise BudgetExhausted(reason="max_iterations", at_step=ctx.run_step)
+        return request_context
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        if not self._budget_for_ctx(ctx).consume(response.usage):
+            raise BudgetExhausted(reason="tokens", usage=response.usage)
+        return response
+```
+
+#### 2B.2 SemanticLoopDetector (L1, raw response)
+
+Детектит повторяющиеся model responses внутри одного `agent.run()`. Для typed-output detection между Pattern iterations — `TypedLoopGuard` в L2.
+
+```python
+class SemanticLoopDetector(StateflowCapability):
+    name = "semantic_loop_detector"
+    embedder: Embedder
+    threshold: float = 0.95
+    window: int = 3
+    selector: Callable[[ModelResponse], str] = _default_response_text
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        snapshot = self.selector(response)
+        await self._deduper(ctx).add_and_check(snapshot, threshold=self.threshold, window=self.window)
+        return response
+```
+
+`_default_response_text` сериализует TextPart + ToolCallPart (с stable JSON-args).
+
+#### 2B.3 TypedLoopGuard[OutT] (L2 helper для Pattern-iterations)
+
+```python
+@dataclass
+class TypedLoopGuard(Generic[OutT]):
+    embedder: Embedder
+    selector: Callable[[OutT], str | list[str]]
+    threshold: float = 0.95
+    window: int = 3
+    _deduper: SemanticDeduper = field(default_factory=SemanticDeduper)
+
+    async def check(self, output: OutT) -> None:
+        snapshots = self.selector(output)
+        if isinstance(snapshots, str): snapshots = [snapshots]
+        for snap in snapshots:
+            await self._deduper.add_and_check(snap, threshold=self.threshold, window=self.window)
+```
+
+Используется в Pattern (Reflection) между iterations. Selector — callable, type-safe (refactor-safe).
+
+#### 2B.4 SemanticDeduper (shared helper)
+
+```python
+class SemanticDeduper:
+    """Скользящее окно эмбеддингов + cosine-check. Shared между 2B.2 и 2B.3."""
+    def __init__(self, embedder: Embedder):
+        self.embedder = embedder
+        self._history: deque = deque()
+
+    async def add_and_check(self, snapshot: str, *, threshold: float, window: int) -> None:
+        emb = await self.embedder.embed(snapshot)
+        if len(self._history) == window: self._history.popleft()
+        if len(self._history) >= 2 and all(cosine(emb, h) >= threshold for h in self._history):
+            raise SemanticLoopDetected(snapshot=snapshot[:200])
+        self._history.append(emb)
+```
+
+#### 2B.5 GoalDriftDetector
+
+Async LLM-judge между шагами агента.
+
+```python
+class GoalDriftDetector(StateflowCapability):
+    name = "goal_drift"
+    judge: Agent[None, DriftVerdict]
+    check_every: int = 3
+    threshold: float = 0.7
+    on_drift: DriftPolicy = WarnOnly()   # Strategy: WarnOnly / RaiseOnDrift / EscalateHITL(hitl=...)
+
+    async def after_node_run(self, ctx, *, node, result):
+        if ctx.run_step == 0:
+            ctx.state[f"{self.name}.initial_goal"] = _extract_user_prompt(ctx)
+            return result
+        if ctx.run_step % self.check_every != 0:
+            return result
+
+        verdict = await self.judge.run(DriftCheckInput(
+            initial_goal=ctx.state[f"{self.name}.initial_goal"],
+            current_trajectory=_summarize_trajectory(ctx),
+        ))
+        if verdict.output.confidence < self.threshold:
+            await self.on_drift.handle(ctx, verdict.output)
+        return result
+```
+
+#### 2B.6 LLMJudgeHook
+
+Async (fire-and-forget) оценка финального output → eval store. Мост между production runtime и L5 evals.
+
+```python
+class LLMJudgeHook(StateflowCapability):
+    name = "llm_judge"
+    judge: Agent[None, JudgeVerdict]
+    eval_store: EvalStore
+    criteria: list[Criterion]
+    sample_rate: float = 1.0
+
+    async def after_run(self, ctx, *, result):
+        if random.random() > self.sample_rate: return result
+        DBOS.start_workflow(
+            self._judge_and_store,
+            run_id=ctx.run_id, output=result.output, criteria=self.criteria,
+            tenant_id=ctx.tenant_id,
+        )
+        return result
+
+    @DBOS.workflow()
+    async def _judge_and_store(self, run_id, output, criteria, tenant_id):
+        verdict = await self.judge.run(JudgeInput(output=output, criteria=criteria))
+        await self.eval_store.persist(run_id, verdict.output, tenant_id=tenant_id)
+```
+
+#### 2B.7 PIIGuard (innermost)
+
+```python
+class PIIGuard(StateflowCapability):
+    name = "pii_guard"
+    patterns: list[re.Pattern]
+    replacement: str = "[REDACTED]"
+
+    def get_ordering(self): return CapabilityOrdering(position="innermost")
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        for part in response.parts:
+            if isinstance(part, TextPart):
+                for pat in self.patterns:
+                    part.content = pat.sub(self.replacement, part.content)
+        return response
+```
+
+#### 2B.8 GroundedRetry
+
+Превращает ValidationError → структурированный feedback через `ModelRetry`. Бьёт в "boundary-condition failures" из исходного документа.
+
+```python
+class GroundedRetry(StateflowCapability):
+    name = "grounded_retry"
+    max_retries: int = 3
+
+    async def on_output_validate_error(self, ctx, *, raw_output, error):
+        attempts = ctx.state.get(f"{self.name}.attempts", 0)
+        if attempts >= self.max_retries: raise error
+        ctx.state[f"{self.name}.attempts"] = attempts + 1
+        feedback = self._build_feedback(error, raw_output)
+        raise ModelRetry(feedback)
+
+    def _build_feedback(self, error: ValidationError, raw_output) -> str:
+        # literal_error → "Field X must be one of: [..]. You returned: Y"
+        # missing → "Required field X is missing"
+        ...
+```
+
+#### 2B.9 Composition example
+
+```python
+agent = Agent(
+    'openai:gpt-5.2',
+    capabilities=[
+        BudgetGuard(max_iterations=10),                                 # outermost
+        GoalDriftDetector(judge=cheap_judge, check_every=3),
+        SemanticLoopDetector(embedder=embedder, threshold=0.95),
+        GroundedRetry(max_retries=3),
+        LLMJudgeHook(judge=quality_judge, eval_store=store, sample_rate=0.2),
+        PIIGuard(patterns=[EMAIL_RE, PHONE_RE]),                        # innermost
+    ],
+)
+```
+
+Wrap-порядок (middleware semantics): `before_*` top-to-bottom; `after_*` reverse; `wrap_*` nests outermost-first.
+
+---
+
+### 2C — L2 Patterns: Core Four
+
+#### 2C.0 Pattern base
+
+```python
+class Pattern(Generic[InT, OutT]):
+    name: ClassVar[str]
+    # tenant_id обязателен в .run(), не в __init__ (singleton pattern instances)
+```
+
+`tenant_id` уходит в `.run(input, *, tenant_id)` — kwarg-параметр каждого вызова. Pattern instance — переиспользуемый.
+
+#### 2C.1 Reflection
+
+```python
+class Critique(BaseModel):
+    passed: bool
+    issues: list[str] = []
+    suggestions: list[str] = []
+    confidence: float
+
+class LoopRecoveryPolicy(Protocol[OutT]):
+    async def handle(self, ctx, draft: OutT, feedback: list[Critique]) -> OutT: ...
+
+class AbortOnLoop:       async def handle(self, ctx, draft, fb): raise SemanticLoopDetected(...)
+class AcceptLast:        async def handle(self, ctx, draft, fb): return draft
+class EscalateToHITL:
+    def __init__(self, hitl: HITLGate): self.hitl = hitl
+    async def handle(self, ctx, draft, fb):
+        resp = await self.hitl.run(HITLPrompt(...), tenant_id=ctx.tenant_id, purpose="ambiguity")
+        if resp.decision == "approved": return draft
+        raise ReflectionAborted(by_actor=resp.actor_id)
+
+class Reflection(Pattern[InT, OutT]):
+    name = "reflection"
+    def __init__(
+        self,
+        writer: Agent[Any, OutT],
+        critic: Agent[Any, Critique],
+        *,
+        max_iterations: int = 5,
+        loop_guard: TypedLoopGuard[OutT] | None = None,
+        loop_recovery: LoopRecoveryPolicy[OutT] = AbortOnLoop(),
+        feedback_renderer: Callable[[InT, list[Critique]], InT] = default_feedback_renderer,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, task: InT, *, tenant_id: UUID) -> OutT:
+        feedback: list[Critique] = []
+        for i in range(self.max_iterations):
+            draft = await self._write(task, feedback=feedback)
+            if self.loop_guard:
+                try:    await self.loop_guard.check(draft)
+                except SemanticLoopDetected:
+                    return await self.loop_recovery.handle(self._ctx, draft, feedback)
+            critique = await self._critique(draft, task)
+            if critique.passed: return draft
+            feedback.append(critique)
+        raise ReflectionExhausted(iterations=self.max_iterations, last_feedback=feedback)
+
+    @DBOS.step()
+    async def _write(self, task, feedback): ...
+    @DBOS.step()
+    async def _critique(self, draft, task): ...
+```
+
+#### 2C.2 MapReduce
+
+```python
+class Chunker(Protocol[Doc, Chunk]):
+    def chunk(self, doc: Doc) -> list[Chunk]: ...
+
+class Reducer(Protocol[Item]):
+    async def reduce(self, items: list[Item]) -> list[Item]: ...
+
+class MapReduce(Pattern[Doc, list[Item]], Generic[Doc, Chunk, Item]):
+    name = "map_reduce"
+    def __init__(
+        self,
+        chunker: Chunker[Doc, Chunk],
+        extractor: Agent[Chunk, Item | None],     # None = empty chunk
+        reducer: Reducer[Item],
+        *,
+        concurrency: int = 8,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, doc: Doc, *, tenant_id: UUID) -> list[Item]:
+        chunks = await self._chunk(doc)
+        queue = DBOS.Queue(f"mapreduce-{self.workflow_id}", concurrency_limit=self.concurrency)
+        handles = [queue.enqueue(self._extract_one, chunk, tenant_id) for chunk in chunks]
+        results = await asyncio.gather(*[h.get_result() for h in handles])
+        return await self._reduce([r for r in results if r is not None])
+
+    @DBOS.step()
+    async def _chunk(self, doc): return self.chunker.chunk(doc)
+
+    @DBOS.workflow()
+    async def _extract_one(self, chunk, tenant_id):
+        return (await self.extractor.run(ExtractInput(chunk=chunk))).output
+
+    @DBOS.step()
+    async def _reduce(self, items):
+        return await self.reducer.reduce(items)
+```
+
+#### 2C.3 MutationPipeline
+
+Stages — параметризованный list. Apply — отдельный required параметр (инвариант: всегда последний, transactional).
+
+```python
+class Stage(Protocol[T]):
+    name: str
+    async def process(self, proposal: Proposal[T]) -> StageResult[T]: ...
+
+class StageResult(Generic[T]): ...
+class Accept(StageResult[T]):       proposal: Proposal[T]
+class RejectedAt(StageResult[T]):   stage: str; reason: str; actor_id: str | None; metadata: dict
+
+class RejectPolicy(Protocol[T]):
+    async def handle(self, rejected: RejectedAt[T]) -> RejectAction: ...
+
+class DropOnReject:               # просто отбросить
+class RetryModelOnReject:         # feedback для LLM → ModelRetry
+class EscalateToHITLOnReject:     # вторая попытка через approval
+
+class MutationPipeline(Pattern[Proposal[T], AcceptedResult[T] | RejectedAt]):
+    name = "mutation_pipeline"
+    def __init__(
+        self,
+        stages: list[Stage[T]],                          # mutable, в любом порядке
+        *,
+        apply: ApplyTransaction[T, EntityT],             # required, last, @DBOS.transaction
+        emit_event: type[DomainEvent] | None = None,
+        reject_policy: RejectPolicy[T] = DropOnReject(),
+        repo: ProposalRepository,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, proposal, *, tenant_id):
+        for stage in self.stages:
+            result = await stage.process(proposal)
+            if isinstance(result, RejectedAt):
+                return await self.reject_policy.handle(result)
+            proposal = result.proposal  # stage может модифицировать (см. ApprovalStage)
+        return await self._apply_and_emit(proposal)
+
+    @DBOS.transaction()
+    async def _apply_and_emit(self, proposal, session: AsyncSession):
+        # Apply + Emit в одной транзакции = transactional outbox
+        ...
+```
+
+**Approval как Stage** (proactive HITL, Role A — встраивается в stages list):
+
+```python
+class ApprovalStage(Stage[T]):
+    """Single-actor approval + optional modify-flow.
+
+    Modify требует: allow_modify=True, editable_paths whitelist, revalidate_stages.
+    """
+    name: str
+    def __init__(
+        self,
+        hitl: HITLGate,
+        *,
+        when: Callable = lambda _: True,
+        prompt_builder: Callable[[Proposal[T]], HITLPrompt],
+        stage_name: str = "approval",
+        allow_modify: bool = False,
+        editable_paths: set[str] | None = None,
+        revalidate_stages: list[Stage[T]] = (),
+        modify_policy: ModifyPolicy[T] = StrictWhitelist(),
+    ):
+        if allow_modify and editable_paths is None:
+            raise ConfigError("allow_modify=True requires explicit editable_paths")
+
+    async def process(self, proposal):
+        if not self.when(proposal): return Accept(proposal)
+        prompt = self.prompt_builder(proposal)
+        if self.allow_modify:
+            prompt = prompt.model_copy(update={"decision_type": "approve_modify_reject", ...})
+        resp = await self.hitl.run(prompt, purpose="approval")
+        match resp.decision:
+            case "approved": return Accept(proposal)
+            case "rejected" | "timeout":
+                return RejectedAt(stage=self.name, reason=resp.feedback, actor_id=resp.actor_id)
+            case "modified":
+                return await self._handle_modify(proposal, resp)
+
+    async def _handle_modify(self, proposal, resp):
+        modified = self.modify_policy.apply(proposal, resp.modified_proposal)
+        diff = json_diff_paths(proposal, modified)
+        if self.editable_paths and not diff.issubset(self.editable_paths):
+            return RejectedAt(stage=self.name, reason=f"modifications outside whitelist: {diff - self.editable_paths}")
+        for s in self.revalidate_stages:
+            r = await s.process(modified)
+            if isinstance(r, RejectedAt):
+                return RejectedAt(stage=f"{self.name}.revalidate.{r.stage}", reason=r.reason)
+        await self._emit_modification_event(proposal, modified, resp.actor_id)
+        return Accept(modified)
+
+
+class ModifyPolicy(Protocol[T]):
+    def apply(self, original: Proposal[T], modifications: dict) -> Proposal[T]: ...
+
+class StrictWhitelist: ...     # default: только разрешённые поля, остальное отбрасывается
+class FullReplace:     ...     # принимает полный объект (опасно)
+class JsonPatchPolicy: ...     # RFC 6902 JSON Patch
+```
+
+#### 2C.4 HITLGate
+
+```python
+class HITLPrompt(BaseModel):
+    title: str
+    context: str
+    decision_type: Literal["approve_reject", "approve_modify_reject", "choose_option", "free_text"]
+    options: list[HITLOption] = []
+    timeout: timedelta | None = None
+    # actor_filter удалён — authz через Voter
+
+class HITLResponse(BaseModel):
+    decision: Literal["approved", "modified", "rejected", "timeout"]
+    modified_proposal: dict | None = None
+    feedback: str | None = None
+    actor_id: str | None = None
+    answered_at: datetime
+
+class HITLGate(Pattern[HITLPrompt, HITLResponse]):
+    name = "hitl_gate"
+    def __init__(self, channel: HITLChannel, *, policy: Policy, repo: HITLRepository): ...
+
+    @DBOS.workflow()
+    async def run(
+        self,
+        prompt: HITLPrompt,
+        *,
+        tenant_id: UUID,
+        purpose: Literal["approval", "reject_recovery", "ambiguity", "policy_conflict"] = "approval",
+    ) -> HITLResponse:
+        request_id = await self.repo.persist_request(prompt, tenant_id=tenant_id, purpose=purpose)
+        try:
+            response = await self.channel.ask(prompt, request_id=request_id)
+        except HITLTimeout:
+            await self.repo.persist_timeout(request_id)
+            return HITLResponse(decision="timeout", answered_at=datetime.now(UTC))
+
+        decision = await self.policy.can(actor=response.actor_id, action="decide", resource=prompt, tenant_id=tenant_id)
+        if not decision.is_grant: raise HITLAuthzDenied(actor=response.actor_id, votes=decision.votes)
+
+        await self.repo.persist_response(request_id, response)
+        return response
+```
+
+#### 2C.5 SOLID review summary
+
+| Pattern | S | O | L | I | D | KISS | DRY | YAGNI | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| Reflection | ✓ | ✓ Strategy | ✓ | ✓ | ✓ Policies | ✓ | ✓ | ✓ | ok |
+| MapReduce | ✓ | ✓ Protocols | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ no hierarchical | ok |
+| MutationPipeline | ✓ orchestrator | ✓ stages list | ✓ | ✓ | ✓ | ✓ | ✓ RejectPolicy | ✓ | ok |
+| HITLGate | ✓ | ✓ Channel port | ✓ | ✓ | ✓ channel+policy+repo | ✓ | ✓ single authz | ✓ | ok |
+
+---
+
+### 2D — L2 Patterns: Extended (5 more)
+
+#### 2D.1 SelfRAG
+
+```python
+class Retriever(Protocol):
+    async def retrieve(self, query: RetrievalQuery, tenant_id: UUID, *, top_k: int) -> list[Document]: ...
+
+class QueryRewriter(Protocol):
+    async def rewrite(self, original, missing, prior_docs) -> RetrievalQuery: ...
+
+class SelfRAG(Pattern[RetrievalQuery, OutT]):
+    name = "self_rag"
+    def __init__(
+        self, retriever: Retriever, generator: Agent, grounding_judge: Agent,
+        *, max_retrieval_rounds: int = 3, top_k: int = 5,
+        query_rewriter: QueryRewriter = LLMQueryRewriter(),
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, query, *, tenant_id):
+        seen, current = [], query
+        for _ in range(self.max_retrieval_rounds):
+            new = await self._retrieve(current, tenant_id)
+            seen.extend(new)
+            output = await self._generate(seen, query)
+            verdict = await self._verify_grounding(output, seen)
+            if verdict.is_grounded: return output
+            current = await self.query_rewriter.rewrite(query, verdict.missing_facts, seen)
+        raise GroundingExhausted(...)
+```
+
+#### 2D.2 CorrectiveRAG
+
+```python
+class RetrievalQuality(StrEnum): CORRECT = "correct"; AMBIGUOUS = "ambiguous"; INCORRECT = "incorrect"
+class QualityClassifier(Protocol): ...
+class FallbackRetriever(Protocol): ...
+
+class CorrectiveRAG(Pattern):
+    def __init__(
+        self, primary_retriever, classifier: QualityClassifier, generator,
+        *, on_ambiguous: list[FallbackRetriever] = (), on_incorrect: list[FallbackRetriever] = (),
+        top_k: int = 5,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, query, *, tenant_id):
+        docs = await self._retrieve_primary(query, tenant_id)
+        quality = await self._classify(query, docs)
+        match quality:
+            case RetrievalQuality.CORRECT:    pass
+            case RetrievalQuality.AMBIGUOUS:  docs.extend(await self._fallbacks(self.on_ambiguous, query, tenant_id))
+            case RetrievalQuality.INCORRECT:  docs = await self._fallbacks(self.on_incorrect, query, tenant_id)
+        return (await self._generate(docs, query)).output
+```
+
+#### 2D.3 DivergentConvergent
+
+```python
+class ConvergenceCriteria(Protocol[Hypothesis, OutT]):
+    async def synthesize(self, hypotheses: list[Hypothesis], task: Any) -> OutT: ...
+
+class DivergentConvergent(Pattern, Generic[InT, Hypothesis, OutT]):
+    def __init__(
+        self,
+        divergent_agents: list[Agent[Any, list[Hypothesis]]],     # parallel frontier models
+        convergent_synthesizer: Agent[Any, OutT],
+        criteria: ConvergenceCriteria = LLMSynthesis(),
+        *, divergent_concurrency: int = 4, min_hypotheses: int = 5,
+        dedup_threshold: float = 0.92, embedder: Embedder | None = None,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, task, *, tenant_id):
+        # Divergent phase — параллельно через DBOS.queue
+        queue = DBOS.Queue(...)
+        handles = [queue.enqueue(self._diverge_one, i, task) for i in range(len(self.divergent_agents))]
+        pools = await asyncio.gather(*[h.get_result() for h in handles])
+        merged = await self._merge_and_dedup(pools)
+        if len(merged) < self.min_hypotheses: raise InsufficientDivergence(...)
+        # Convergent phase
+        return await self._converge(merged, task)
+```
+
+#### 2D.4 PlanAndExecute
+
+```python
+class PlanStep(BaseModel):
+    step_id: str
+    description: str
+    depends_on: list[str] = []
+    executor_name: str
+    inputs: dict = {}
+
+class Plan(BaseModel):
+    steps: list[PlanStep]
+    success_criteria: str
+
+class Replanner(Protocol):
+    async def revise(self, plan, failed_step, error) -> Plan | None: ...
+
+class PlanAndExecute(Pattern):
+    def __init__(
+        self, planner: Agent[Any, Plan], executors: dict[str, Agent], synthesizer: Agent,
+        *, replanner: Replanner | None = None, max_replan_attempts: int = 2, concurrency: int = 4,
+    ): ...
+
+    @DBOS.workflow()
+    async def run(self, task, *, tenant_id):
+        plan = await self._plan(task)
+        results, attempts = {}, 0
+        while True:
+            try:
+                results = await self._execute_dag(plan, results)
+                return (await self._synthesize(plan, results)).output
+            except StepFailed as e:
+                if not self.replanner or attempts >= self.max_replan_attempts:
+                    raise PlanFailed(plan=plan, partial_results=results) from e
+                plan = await self.replanner.revise(plan, e.step, e.error) or None
+                if plan is None: raise PlanFailed(...)
+                attempts += 1
+```
+
+DAG execution через топологические волны + `DBOS.queue` concurrency limit.
+
+#### 2D.5 SemanticRouter
+
+```python
+@dataclass
+class Route(Generic[OutT]):
+    name: str
+    utterances: list[str]
+    handler: Agent[Any, OutT] | Pattern[Any, OutT]
+    min_confidence: float = 0.7
+
+class SemanticRouter(Pattern[str, OutT]):
+    def __init__(
+        self, routes: list[Route[OutT]], embedder: Embedder,
+        *, fallback_agent: Agent | None = None,
+        on_no_match: Literal["fallback", "raise"] = "fallback",
+    ):
+        if on_no_match == "fallback" and fallback_agent is None:
+            raise ConfigError("fallback_agent required")
+
+    @DBOS.workflow()
+    async def run(self, query, *, tenant_id):
+        query_emb = await self._embed(query)
+        best, score = await self._best_route(query_emb)
+        if best is None or score < best.min_confidence:
+            if self.fallback_agent is None: raise NoRouteMatched(...)
+            return (await self.fallback_agent.run(query)).output
+        return await self._dispatch(best, query, tenant_id)
+```
+
+Route.handler — `Agent` или `Pattern`; единая точка dispatch. Embeddings prewarmed на boot Pattern.
+
+---
+
+### 2E — L3 Infrastructure
+
+#### 2E.1 Workflow/Step Determinism Boundary
+
+| В `@DBOS.workflow` (orchestration) | В `@DBOS.step` (side effect) |
+|---|---|
+| Pure Python control flow (if, for, while) | `agent.run(...)` |
+| Композиция child workflows / steps через `await` | `repo.load(...)`, `repo.persist(...)` |
+| `DBOS.queue`, `DBOS.start_workflow`, `DBOS.recv` | HTTP calls (`httpx`, A2A) |
+| Чтение `ctx.state` (накопленные results) | Side-effects на внешние системы (Slack, email, webhook) |
+| | Embedder вызовы |
+| | Random / time (получают результат из step и возвращают) |
+| | File I/O |
+| ❌ `time.time()`, `datetime.now()` | ✅ `Det.now()`, `Det.uuid4()` |
+| ❌ `random.choice()` | ✅ `Det.random_choice(...)` |
+| ❌ `os.environ[...]` (через DI) | |
+| ❌ Direct httpx/requests | |
+| ❌ `await asyncio.sleep(...)` | ✅ `DBOS.sleep(...)` |
+
+**Lint rules** (mandatory CI gate, custom ruff):
+- `STATEFLOW001` — Forbidden side-effect inside @DBOS.workflow body
+- `STATEFLOW002` — `datetime.now()` / `time.time()` outside @DBOS.step
+- `STATEFLOW003` — Direct httpx/requests call outside @DBOS.step
+- `STATEFLOW004` — `random.*` outside @DBOS.step
+- `STATEFLOW005` — `asyncio.sleep` inside workflow (use `DBOS.sleep`)
+- `STATEFLOW006` — Repository call outside @DBOS.step
+- `STATEFLOW007` — `agent.run(...)` outside @DBOS.step
+- `STATEFLOW008` — `_*Row` SQLModel import outside `repositories/`
+- `STATEFLOW009` — Repository protocol method without `tenant_id` parameter
+
+**`Det` helpers:**
+
+```python
+class Det:
+    @staticmethod
+    @DBOS.step()
+    async def now() -> datetime: return datetime.now(tz=UTC)
+    @staticmethod
+    @DBOS.step()
+    async def uuid4() -> UUID: return uuid4()
+    @staticmethod
+    @DBOS.step()
+    async def random_choice(seq: list[T]) -> T: return random.choice(seq)
+```
+
+#### 2E.2 Bootstrap / Service Provider
+
+```python
+class ServiceProvider(Protocol):
+    def register(self, container: Container) -> None: ...
+    async def boot(self, container: Container) -> None: ...
+
+class Container:
+    def bind(self, protocol: type[T], factory: Callable[[Container], T], *, singleton: bool = True) -> None: ...
+    def get(self, protocol: type[T]) -> T: ...
+    def fastapi_dependency(self, protocol: type[T]) -> Callable[[], T]:
+        return lambda: self.get(protocol)
+
+class Engine:
+    def __init__(self, providers: list[ServiceProvider], settings: AppSettings):
+        self.container = Container()
+        self.providers = providers
+        self.settings = settings
+
+    async def boot(self):
+        for p in self.providers: p.register(self.container)
+        for p in self.providers: await p.boot(self.container)
+
+    def fastapi_app(self) -> FastAPI: ...
+```
+
+**Принципы:**
+- No autodiscovery — providers перечисляются явно (KISS, refactor-safe)
+- `register` → `boot` двухфазно
+- Container type-driven (`Container.get(Protocol)`, не string key)
+- Singleton по умолчанию (pattern instances переиспользуются)
+
+#### 2E.3 Policy + Voter Authorization
+
+```python
+class VoterDecision(Enum): GRANT = "grant"; DENY = "deny"; ABSTAIN = "abstain"
+
+@dataclass
+class VoterVote: decision: VoterDecision; voter_name: str; reason: str = ""
+
+class Voter(Protocol[T_Resource]):
+    name: str
+    def supports(self, action: str, resource: T_Resource) -> bool: ...
+    async def vote(self, *, actor, action, resource, tenant_id) -> VoterVote: ...
+
+class AccessDecisionStrategy(StrEnum):
+    AFFIRMATIVE = "affirmative"
+    CONSENSUS   = "consensus"
+    UNANIMOUS   = "unanimous"
+
+class AccessDecisionManager:
+    def __init__(self, voters: list[Voter], *, strategy: AccessDecisionStrategy = UNANIMOUS): ...
+    async def decide(self, *, actor, action, resource, tenant_id) -> AccessDecision: ...
+
+class Policy(Protocol[T_Resource]):
+    async def can(self, *, actor, action, resource, tenant_id) -> AccessDecision: ...
+
+class VoterPolicy(Policy):
+    def __init__(self, manager: AccessDecisionManager): ...
+    async def can(self, **kw): return await self.manager.decide(**kw)
+```
+
+**Применение в трёх точках (DRY):**
+1. `MutationPipeline.PolicyStage` — write-flow gating
+2. `HITLGate.run()` — кто может отвечать
+3. FastAPI endpoint Depends — кто может звать
+
+#### 2E.4 Event Dispatcher
+
+```python
+class DomainEvent(BaseModel):
+    event_id: UUID = Field(default_factory=uuid4)
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    tenant_id: UUID                  # обязательно для multi-tenancy
+    workflow_id: UUID | None = None
+    run_id: UUID | None = None
+    actor_id: str | None = None
+
+class EventListener(Protocol[E]):
+    event_type: type[E]
+    async def handle(self, event: E) -> None: ...
+
+class EventDispatcher:
+    def subscribe(self, event_type: type[E], listener: EventListener[E]) -> None: ...
+
+    @DBOS.step()                       # dispatch — side effect
+    async def dispatch(self, event: DomainEvent) -> None:
+        for listener in self._listeners.get(type(event), []):
+            try: await listener.handle(event)
+            except Exception: logfire.exception(...)
+```
+
+**Стандартные события:**
+
+| Lifecycle | Mutation | HITL | Quality |
+|---|---|---|---|
+| `AgentRunStarted` | `ProposalAccepted` | `HITLRequested` | `SemanticLoopDetected` |
+| `AgentRunCompleted` | `ProposalRejected` | `HITLResponded` | `GoalDriftDetected` |
+| `AgentRunFailed` | `ProposalModified` | `HITLTimedOut` | `BudgetExhausted` |
+| `PatternStarted` | | | |
+| `PatternCompleted` | | | |
+| `StepCompleted` | | | |
+
+**Стандартные listeners (passive only):**
+- `LogfireListener` — все события → logfire spans
+- `OutboxListener` — audit events → outbox table
+- `DriftMetricsListener` — метрики в `drift_metrics` для dashboards
+- `EvalCaseListener` — runs в `eval_traces` для eval-from-trace (1.14)
+
+**Принцип:** listener — пассивный. Только observability/audit/persistence. Контроль flow остаётся в Pattern-коде.
 
 ---
 
@@ -574,4 +1447,16 @@ Inter-agent коммуникация (Pattern → Pattern across services / exte
 
 ## Open Questions (remaining)
 
+### Pending for v1
 - [ ] **Golden scenario для MVP** — нужен конкретный бизнес-кейс (домен, entities, что агент решает). Без него Section 3 будет в абстракции.
+
+### Deferred to v2
+
+- **Multi-actor approval (Quorum)** — `QuorumApprovalStage` с weighted quorum, parallel HITL workflows. Влечёт `parent_quorum_id` в `hitl_requests` и view `quorum_responses` в L4.
+- **Modify + Quorum combined** — UX-сложно (какая версия побеждает если двое modify).
+- **Early-termination для Quorum** — через `DBOS.recv` polling вместо `gather` (экономит latency).
+- **PartialApprovalStrategy** — `partial_strategy: PartialApprovalStrategy = DropOnPartial()` для unreached quorum.
+- **Hierarchical reduce в MapReduce** — когда items > prompt budget.
+- **Streaming partial results** — `progress_publisher: ProgressPublisher | None` в SelfRAG / PlanAndExecute для UI прогресса.
+- **`agent.iter()` checkpointing** — мост между L1 capabilities и L3 durability для возобновления mid-run.
+- **Custom `Det.now/uuid4` overrides** для testing time travel.
