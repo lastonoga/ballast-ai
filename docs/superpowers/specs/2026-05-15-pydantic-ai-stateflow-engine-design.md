@@ -1,7 +1,7 @@
 # pydantic-ai-stateflow-engine — Design Spec
 
 - **Date:** 2026-05-15
-- **Status:** Section 1 (Foundation) approved. Sections 2–3 TBD.
+- **Status:** Section 1 (Foundation) + addenda 1.12–1.14 approved. Section 2A (L0 impl) and 2B (L1 capability catalog) approved in chat — to be written to spec when full Section 2 closes. Sections 2C–2E and Section 3 TBD.
 - **Authors:** Kir + Claude (brainstorming session)
 - **Source material:** `.context/attachments/pasted_text_2026-05-15_15-09-12.txt` (architectural analysis of LLM production failures, RU)
 
@@ -537,9 +537,41 @@ class Reflection(Pattern[InT, OutT]):
 
 ---
 
-## Open Questions
+## Section 1 — Addenda (approved 2026-05-15)
+
+### 1.12 Multi-tenant as first-class concept
+
+Multi-tenancy входит во **все** слои с v1:
+
+- **L4 State:** каждая infra-таблица имеет `tenant_id: UUID` + FK на `tenants(id)` + индекс. Row-Level Security (Postgres RLS) — hardening на v1.1.
+- **L7 API:** `tenant_id` извлекается из auth token (FastAPI `Depends`) → `RunContext.tenant_id`. Endpoint без tenant context → 401.
+- **L3 DBOS:** `tenant_id` входит в `workflow_id = hash(tenant_id, pattern, input)` — идемпотентность строго per-tenant. Никаких cross-tenant конфликтов.
+- **L2 Patterns:** `RunContext.tenant_id` пробрасывается во все child workflows. Pattern не запускается без context-а.
+- **L1 Capabilities:** Capability видит tenant через `ctx.deps.tenant_id`. Eval store пишет per-tenant. Budget'ы могут быть per-tenant.
+- **L0 GroundedSchema:** не затрагивается (type-level concern).
+- **L5 Evals:** `Dataset` фильтруется по `tenant_id`; кросс-tenant eval запрещён.
+- **Repository:** все методы — `repo.load(id, tenant_id)`. Без `tenant_id` — ошибка типа (Repository.Protocol).
+- **Ruff rule:** "Repository method без `tenant_id` argument" — fails CI.
+
+### 1.13 A2A as primary inter-agent protocol
+
+Inter-agent коммуникация (Pattern → Pattern across services / external agents) — через **A2A** (`agent.to_a2a()` нативно от pydantic-ai). AG-UI и Vercel AI SDK — **только** для UI streaming.
+
+- **L7** дополняется `/.well-known/agent.json` (A2A discovery) + `/a2a/{agent_name}` endpoints
+- **L2 Patterns** вызывают удалённых агентов через `RemoteAgent("https://service/a2a/agent")` — он реализует тот же `Agent`-протокол, замены не требуется
+- **Authentication for A2A:** signed tokens (issuer per-tenant); Voter проверяет grant на cross-service call
+- **Outbound A2A call** — это `@DBOS.step` (side effect), не workflow-level код
+
+### 1.14 Eval-from-trace tooling (L5)
+
+Каждый production run автоматически становится reusable eval-кейсом.
+
+- **CLI:** `stateflow evals dataset-from-traces --since <date> --pattern <name> --filter <expr> --out <path>`
+- Под капотом: запрос в DBOS state (`workflow_runs`, `step_results`, `outbox`) → группировка по run → `Case(inputs=..., expected=..., metadata={run_id, tenant_id, outcome})`
+- `run_id` сохраняется как metadata → eval failure прослеживается обратно к production incident
+- Закрывает "Automated Feedback Loops (CLHF)" из исходного документа
+- Cross-tenant export запрещён (см. 1.12)
+
+## Open Questions (remaining)
 
 - [ ] **Golden scenario для MVP** — нужен конкретный бизнес-кейс (домен, entities, что агент решает). Без него Section 3 будет в абстракции.
-- [ ] **Eval-from-trace формат** — нужен ли инструмент конвертации DBOS workflow traces → pydantic-evals Dataset? (вероятно да на v2)
-- [ ] **Multi-tenant** — нужен ли scope thread/proposals по tenant_id с самого начала? (если да — добавить в L4 schema)
-- [ ] **A2A vs AG-UI** — какой протокол primary для inter-agent коммуникации (если она вообще нужна в v1)?
