@@ -4,7 +4,11 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread
+from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
+
+
+class ThreadClosedError(Exception):
+    """Raised when trying to add a message to a closed thread."""
 
 
 @runtime_checkable
@@ -12,6 +16,11 @@ class ThreadRepository(Protocol):
     """Port for thread + message persistence.
 
     All methods require `tenant_id` — multi-tenant first-class per spec 1.12.
+
+    Threads have a lifecycle: created OPEN, may be CLOSED. Adding messages
+    to a CLOSED thread raises `ThreadClosedError`. Closing is the terminal
+    state (no re-open). Reason for closing is application-specific (HITL
+    resolved, onboarding done, etc.) — the repo just provides the primitive.
     """
 
     async def create(
@@ -24,6 +33,7 @@ class ThreadRepository(Protocol):
     async def history(
         self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
     ) -> list[Message]: ...
+    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
 
 
 class InMemoryThreadRepository:
@@ -43,7 +53,9 @@ class InMemoryThreadRepository:
             purpose_metadata=dict(purpose_metadata),
             workflow_id=None,
             actor_id=actor_id,
+            status=ThreadStatus.OPEN,
             created_at=datetime.now(tz=UTC),
+            closed_at=None,
         )
         self._threads[thread.id] = thread
         self._messages[thread.id] = []
@@ -61,6 +73,8 @@ class InMemoryThreadRepository:
         thread = self._threads.get(thread_id)
         if thread is None or thread.tenant_id != tenant_id:
             raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        if thread.status == ThreadStatus.CLOSED:
+            raise ThreadClosedError(f"Thread {thread_id} is closed; cannot add message")
         msg = Message(
             id=uuid4(),
             tenant_id=tenant_id,
@@ -79,3 +93,14 @@ class InMemoryThreadRepository:
         if thread is None or thread.tenant_id != tenant_id:
             return []
         return self._messages[thread_id][:limit]
+
+    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        thread = self._threads.get(thread_id)
+        if thread is None or thread.tenant_id != tenant_id:
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        closed = thread.model_copy(update={
+            "status": ThreadStatus.CLOSED,
+            "closed_at": datetime.now(tz=UTC),
+        })
+        self._threads[thread_id] = closed
+        return closed

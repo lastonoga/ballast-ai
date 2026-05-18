@@ -25,9 +25,14 @@ class ThreadRow(SQLModel, table=True):
     )
     workflow_id: UUID | None = Field(default=None, index=True)
     actor_id: str
+    status: str = Field(default="open", index=True)  # ThreadStatus enum value
     created_at: datetime = Field(
         default_factory=_now_utc,
         sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    closed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 

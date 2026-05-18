@@ -16,6 +16,19 @@ class ThreadPurpose(StrEnum):
     HITL = "hitl"
 
 
+class ThreadStatus(StrEnum):
+    """Lifecycle state of a thread.
+
+    A thread is `OPEN` from creation until closed. Closing is the terminal
+    state — once closed, no further messages can be appended. Reason for
+    closing is application-specific (HITL resolved, onboarding done,
+    conversation archived, etc.).
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
 class Thread(BaseModel):
     model_config = ConfigDict(frozen=True)
     id: UUID
@@ -24,7 +37,9 @@ class Thread(BaseModel):
     purpose_metadata: dict[str, Any]
     workflow_id: UUID | None
     actor_id: str
+    status: ThreadStatus
     created_at: datetime
+    closed_at: datetime | None
 
     @classmethod
     def from_row(cls, row: ThreadRow) -> Thread:
@@ -40,7 +55,9 @@ class Thread(BaseModel):
             purpose_metadata=row.purpose_metadata,
             workflow_id=row.workflow_id,
             actor_id=row.actor_id,
+            status=ThreadStatus(row.status),
             created_at=row.created_at,
+            closed_at=row.closed_at,
         )
 
 

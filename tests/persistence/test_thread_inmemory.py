@@ -4,8 +4,10 @@ import pytest
 
 from pydantic_ai_stateflow.persistence.thread import (
     InMemoryThreadRepository,
+    ThreadClosedError,
     ThreadPurpose,
     ThreadRepository,
+    ThreadStatus,
 )
 
 
@@ -100,3 +102,59 @@ async def test_history_cross_tenant_isolation(repo, tenant_id, other_tenant_id):
         await repo.add_message(
             thread.id, role="user", parts=[], tenant_id=other_tenant_id
         )
+
+
+@pytest.mark.asyncio
+async def test_new_thread_status_is_open(repo, tenant_id):
+    thread = await repo.create(
+        purpose=ThreadPurpose.CONVERSATION.value,
+        purpose_metadata={},
+        actor_id="a",
+        tenant_id=tenant_id,
+    )
+    assert thread.status == ThreadStatus.OPEN
+    assert thread.closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_close_thread_transitions_to_closed(repo, tenant_id):
+    thread = await repo.create(
+        purpose=ThreadPurpose.HITL.value,
+        purpose_metadata={"gate_kind": "strategy_review"},
+        actor_id="a",
+        tenant_id=tenant_id,
+    )
+    closed = await repo.close(thread.id, tenant_id=tenant_id)
+    assert closed.status == ThreadStatus.CLOSED
+    assert closed.closed_at is not None
+    # Reload and verify state persisted
+    loaded = await repo.load(thread.id, tenant_id=tenant_id)
+    assert loaded.status == ThreadStatus.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_add_message_to_closed_thread_raises(repo, tenant_id):
+    thread = await repo.create(
+        purpose=ThreadPurpose.CONVERSATION.value,
+        purpose_metadata={},
+        actor_id="a",
+        tenant_id=tenant_id,
+    )
+    await repo.close(thread.id, tenant_id=tenant_id)
+    with pytest.raises(ThreadClosedError):
+        await repo.add_message(
+            thread.id, role="user", parts=[{"kind": "text", "content": "hi"}],
+            tenant_id=tenant_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_close_cross_tenant_raises(repo, tenant_id, other_tenant_id):
+    thread = await repo.create(
+        purpose=ThreadPurpose.CONVERSATION.value,
+        purpose_metadata={},
+        actor_id="a",
+        tenant_id=tenant_id,
+    )
+    with pytest.raises(KeyError):
+        await repo.close(thread.id, tenant_id=other_tenant_id)

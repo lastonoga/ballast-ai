@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import asc, select
+from sqlalchemy import asc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread
+from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+from pydantic_ai_stateflow.persistence.thread.repository import ThreadClosedError
 
 
 class PostgresThreadRepository:
@@ -61,14 +63,19 @@ class PostgresThreadRepository:
         parts: list[dict[str, Any]],
         tenant_id: UUID,
     ) -> Message:
-        # Verify thread exists for this tenant (FK + tenant isolation).
+        # Verify thread exists for this tenant AND is open.
         stmt = select(ThreadRow).where(
             col(ThreadRow.id) == thread_id,
             col(ThreadRow.tenant_id) == tenant_id,
         )
         result = await self._session.execute(stmt)
-        if result.scalar_one_or_none() is None:
+        thread_row = result.scalar_one_or_none()
+        if thread_row is None:
             raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        if thread_row.status == ThreadStatus.CLOSED.value:
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot add message"
+            )
 
         msg_row = MessageRow(
             tenant_id=tenant_id,
@@ -80,6 +87,21 @@ class PostgresThreadRepository:
         await self._session.flush()
         await self._session.refresh(msg_row)
         return Message.from_row(msg_row)
+
+    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        now = datetime.now(tz=UTC)
+        stmt = (
+            update(ThreadRow)
+            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
+            .values(status=ThreadStatus.CLOSED.value, closed_at=now)
+        )
+        result = await self._session.execute(stmt)
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        # Reload to return canonical view
+        loaded = await self.load(thread_id, tenant_id=tenant_id)
+        assert loaded is not None
+        return loaded
 
     async def history(
         self,
