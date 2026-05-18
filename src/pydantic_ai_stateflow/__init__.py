@@ -31,6 +31,12 @@ Sub-project #5 (Patterns):
     TimeoutResponse, Policy, Voter, AllowAll, DenyAll, AccessDecision),
     pattern errors (PatternError, ReflectionExhausted, HITLDenied,
     HITLTimedOut, MutationRejected).
+
+Sub-project #6 (HITL channels):
+    UIChannel, WebhookChannel, WebhookConfig, ConversationalChannel,
+    HelperVerdict, HelperAgentFactory, HelperDeps, HelperToolBox,
+    HelperSessionInput, HelperSessionRunner, DefaultHelperSessionRunner,
+    make_helper_agent_with_approval_tools, build_hitl_router.
 """
 
 from pydantic_ai_stateflow.capabilities import (
@@ -81,7 +87,15 @@ from pydantic_ai_stateflow.patterns.hitl import (
     AccessDecision,
     AllowAll,
     ApprovedResponse,
+    ConversationalChannel,
+    DefaultHelperSessionRunner,
     DenyAll,
+    HelperAgentFactory,
+    HelperDeps,
+    HelperSessionInput,
+    HelperSessionRunner,
+    HelperToolBox,
+    HelperVerdict,
     HITLChannel,
     HITLOption,
     HITLPrompt,
@@ -91,7 +105,12 @@ from pydantic_ai_stateflow.patterns.hitl import (
     Policy,
     RejectedResponse,
     TimeoutResponse,
+    UIChannel,
     Voter,
+    WebhookChannel,
+    WebhookConfig,
+    build_hitl_router,
+    make_helper_agent_with_approval_tools,
 )
 from pydantic_ai_stateflow.patterns.mutation import (
     AcceptedResult,
@@ -129,10 +148,12 @@ __all__ = [
     "BudgetGuard",
     "Chunker",
     "Container",
+    "ConversationalChannel",
     "CoreProvider",
     "Critique",
     "DBOSConfig",
     "DefaultContainer",
+    "DefaultHelperSessionRunner",
     "DenyAll",
     "Det",
     "DropOnReject",
@@ -153,6 +174,12 @@ __all__ = [
     "HITLPrompt",
     "HITLResponse",
     "HITLTimedOut",
+    "HelperAgentFactory",
+    "HelperDeps",
+    "HelperSessionInput",
+    "HelperSessionRunner",
+    "HelperToolBox",
+    "HelperVerdict",
     "IdempotencyInput",
     "IdempotencyValue",
     "InMemoryHITLChannel",
@@ -185,7 +212,12 @@ __all__ = [
     "StateflowCapability",
     "TimeoutResponse",
     "TypedLoopGuard",
+    "UIChannel",
     "Voter",
+    "WebhookChannel",
+    "WebhookConfig",
     "as_critique",
     "build_dbos_config",
+    "build_hitl_router",
+    "make_helper_agent_with_approval_tools",
 ]
