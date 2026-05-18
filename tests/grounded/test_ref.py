@@ -38,3 +38,11 @@ def test_ref_inequality_different_types():
     a = Ref[Entity](ent_id)
     b = Ref[OtherEntity](ent_id)
     assert a != b
+
+
+def test_ref_subscription_is_cached():
+    """Class identity: Ref[Entity] is Ref[Entity] (same class object).
+
+    Critical for the resolver in Tasks 9-11 which compares classes by `is`.
+    """
+    assert Ref[Entity] is Ref[Entity]

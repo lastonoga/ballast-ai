@@ -32,16 +32,19 @@ class Ref(Generic[EntityT]):
 
     def __class_getitem__(cls, item: type[BaseModel]) -> type[Ref[Any]]:
         # Each subscripted form gets a dedicated subclass that remembers the type.
-        # Cache to ensure Ref[Entity] is Ref[Entity] (same class identity).
-        if not hasattr(cls, "_subscript_cache"):
-            cls._subscript_cache = {}  # type: ignore
-        cache: dict[type, type[Ref[Any]]] = cls._subscript_cache  # type: ignore
-        if item in cache:
-            return cache[item]
+        # Cache via cls.__dict__.setdefault so each class gets its own cache
+        # (not inherited from parent via MRO).
+        cache_dict: Any = cls.__dict__.get("_subscript_cache")
+        if cache_dict is None:
+            cache_dict = {}
+            type.__setattr__(cls, "_subscript_cache", cache_dict)
+
+        if item in cache_dict:
+            return cache_dict[item]  # type: ignore[no-any-return]
 
         cls_name = f"Ref[{item.__name__}]"
         new_cls = type(cls_name, (Ref,), {"__entity_type__": item})
-        cache[item] = new_cls
+        cache_dict[item] = new_cls
         return new_cls
 
     def __eq__(self, other: object) -> bool:
