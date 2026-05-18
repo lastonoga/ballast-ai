@@ -106,6 +106,22 @@ def build_dynamic(
                     inner_annotation: Any = _make_ref_annotation(target, ids)
                     fields[name] = (inner_annotation | None, field_info)
 
+            case FieldRole.NESTED:
+                inner_target = fspec.target_type
+                inner_spec = fspec.nested_spec
+                assert inner_target is not None, "NESTED field must have target_type"
+                assert inner_spec is not None, "NESTED field must have nested_spec"
+                nested_dynamic = build_dynamic(inner_target, inner_spec, sources)
+                fields[name] = (nested_dynamic, field_info)
+
+            case FieldRole.LIST_NESTED:
+                list_inner_target = fspec.target_type
+                list_inner_spec = fspec.nested_spec
+                assert list_inner_target is not None, "LIST_NESTED field must have target_type"
+                assert list_inner_spec is not None, "LIST_NESTED field must have nested_spec"
+                nested_dynamic_list = build_dynamic(list_inner_target, list_inner_spec, sources)
+                fields[name] = (list[nested_dynamic_list], field_info)  # type: ignore[valid-type]
+
             case FieldRole.FREE:
                 fields[name] = (field_info.annotation, field_info)
 
