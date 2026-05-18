@@ -107,13 +107,11 @@ def scan_context(context: BaseModel, output_spec: OutputSpec, *, max_depth: int 
     """Walk a Pydantic context, collect instances of types referenced by output_spec.
 
     Returns a `ContextSources` with `by_entity_type[T]` mapping to all `t.id`
-    values for each `T` instance encountered, recursively.
+    values for each `T` instance encountered, recursively. Also collects
+    Literal-typed field values for enum intersection (independent of entity targets).
     """
     sources = ContextSources()
     targets = output_spec.referenced_entity_types
-    if not targets:
-        return sources
-
     _walk(context, targets, sources, depth=0, max_depth=max_depth)
     return sources
 
@@ -126,8 +124,13 @@ def _walk(obj: Any, targets: set[type], sources: ContextSources, depth: int, max
             id_val = getattr(obj, "id", None)
             if id_val is not None:
                 sources.by_entity_type.setdefault(type(obj), []).append(id_val)
-        for field_name in type(obj).model_fields:
-            _walk(getattr(obj, field_name), targets, sources, depth + 1, max_depth)
+        for field_name, info in type(obj).model_fields.items():
+            value = getattr(obj, field_name)
+            # Capture Literal-typed field values for enum intersection
+            if get_origin(info.annotation) is Literal:
+                key = ContextSources.literal_key(get_args(info.annotation))
+                sources.by_literal_values.setdefault(key, set()).add(value)
+            _walk(value, targets, sources, depth + 1, max_depth)
     elif isinstance(obj, (list, tuple, set, frozenset)):
         for item in obj:
             _walk(item, targets, sources, depth + 1, max_depth)

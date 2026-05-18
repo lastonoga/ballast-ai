@@ -122,6 +122,22 @@ def build_dynamic(
                 nested_dynamic_list = build_dynamic(list_inner_target, list_inner_spec, sources)
                 fields[name] = (list[nested_dynamic_list], field_info)  # type: ignore[valid-type]
 
+            case FieldRole.LITERAL:
+                allowed = fspec.literal_values or ()
+                key = ContextSources.literal_key(allowed)
+                observed = sources.by_literal_values.get(key)
+                if observed:
+                    intersected = tuple(v for v in allowed if v in observed)
+                    if intersected:
+                        fields[name] = (_make_literal(intersected), field_info)
+                    else:
+                        # Empty intersection — keep original to avoid creating an
+                        # uninhabited Literal that would reject every value.
+                        fields[name] = (_make_literal(allowed), field_info)
+                else:
+                    # No observations — keep original Literal as-is.
+                    fields[name] = (_make_literal(allowed), field_info)
+
             case FieldRole.FREE:
                 fields[name] = (field_info.annotation, field_info)
 

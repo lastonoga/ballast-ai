@@ -49,3 +49,11 @@ class OutputSpec:
 @dataclass
 class ContextSources:
     by_entity_type: dict[type, list[Any]] = field(default_factory=dict)
+    # Track observed Literal-field values keyed by a stable string fingerprint
+    # of the Literal's allowed values (e.g. "draft|ready|sent" — sorted) so
+    # different Literal types with the same value set share intersections.
+    by_literal_values: dict[str, set[Any]] = field(default_factory=dict)
+
+    @staticmethod
+    def literal_key(args: tuple[Any, ...]) -> str:
+        return "|".join(sorted(str(a) for a in args))
