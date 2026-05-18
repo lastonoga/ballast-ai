@@ -5,6 +5,7 @@ from pydantic_ai_stateflow.patterns.errors import (
     PatternError,
     ReflectionExhausted,
 )
+from pydantic_ai_stateflow.patterns.hitl import HITLGate
 from pydantic_ai_stateflow.patterns.loop_recovery import AbortOnLoop, LoopRecoveryPolicy
 from pydantic_ai_stateflow.patterns.mapreduce import Chunker, MapReduce, Reducer
 from pydantic_ai_stateflow.patterns.protocol import Pattern
@@ -14,6 +15,7 @@ __all__ = [
     "AbortOnLoop",
     "Chunker",
     "HITLDenied",
+    "HITLGate",
     "HITLTimedOut",
     "LoopRecoveryPolicy",
     "MapReduce",

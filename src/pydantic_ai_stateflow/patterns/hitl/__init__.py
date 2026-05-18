@@ -1,4 +1,5 @@
 from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel, InMemoryHITLChannel
+from pydantic_ai_stateflow.patterns.hitl.gate import HITLGate
 from pydantic_ai_stateflow.patterns.hitl.policy import (
     AccessDecision,
     AllowAll,
@@ -21,6 +22,7 @@ __all__ = [
     "ApprovedResponse",
     "DenyAll",
     "HITLChannel",
+    "HITLGate",
     "HITLOption",
     "HITLPrompt",
     "HITLResponse",
