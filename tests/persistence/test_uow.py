@@ -10,8 +10,12 @@ from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork, UnitOfWork
 @pytest.fixture
 async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    # Only create SQLite-compatible tables (JSONB tables require Postgres).
+    sqlite_tables = [
+        t for t in SQLModel.metadata.sorted_tables if t.name not in ("threads", "messages")
+    ]
     async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(lambda c: SQLModel.metadata.create_all(c, tables=sqlite_tables))
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     yield factory
     await engine.dispose()
