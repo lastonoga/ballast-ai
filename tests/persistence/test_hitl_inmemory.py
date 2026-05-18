@@ -85,3 +85,30 @@ async def test_list_pending_for_tenant(repo, tenant_id):
     pending = await repo.list_pending(tenant_id=tenant_id)
     assert all(p.tenant_id == tenant_id for p in pending)
     assert len(pending) == 1
+
+
+@pytest.mark.asyncio
+async def test_purpose_accepts_custom_string_for_app_extension(repo, tenant_id):
+    """Apps can pass their own purpose strings (not in HITLPurpose enum) —
+    they round-trip as raw strings on the domain model (extensibility point)."""
+    req = await repo.persist_request(
+        prompt={}, workflow_id=uuid4(), gate_kind="g",
+        purpose="compliance_review",  # ← not in HITLPurpose enum
+        tenant_id=tenant_id,
+    )
+    assert req.purpose == "compliance_review"
+    loaded = await repo.load_request(req.id, tenant_id=tenant_id)
+    assert loaded is not None
+    assert loaded.purpose == "compliance_review"
+
+
+@pytest.mark.asyncio
+async def test_purpose_known_value_coerces_to_enum(repo, tenant_id):
+    """Framework-known purposes round-trip as the HITLPurpose enum."""
+    req = await repo.persist_request(
+        prompt={}, workflow_id=uuid4(), gate_kind="g",
+        purpose=HITLPurpose.APPROVAL.value,
+        tenant_id=tenant_id,
+    )
+    assert req.purpose == HITLPurpose.APPROVAL
+    assert isinstance(req.purpose, HITLPurpose)

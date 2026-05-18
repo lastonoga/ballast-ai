@@ -158,3 +158,18 @@ async def test_close_cross_tenant_raises(repo, tenant_id, other_tenant_id):
     )
     with pytest.raises(KeyError):
         await repo.close(thread.id, tenant_id=other_tenant_id)
+
+
+@pytest.mark.asyncio
+async def test_purpose_accepts_custom_app_string(repo, tenant_id):
+    """ThreadPurpose enum is suggestive — apps pass custom strings freely."""
+    thread = await repo.create(
+        purpose="hitl:strategy_review",  # ← custom domain-specific purpose
+        purpose_metadata={"wave_id": "abc"},
+        actor_id="founder-1",
+        tenant_id=tenant_id,
+    )
+    assert thread.purpose == "hitl:strategy_review"
+    loaded = await repo.load(thread.id, tenant_id=tenant_id)
+    assert loaded is not None
+    assert loaded.purpose == "hitl:strategy_review"

@@ -11,18 +11,32 @@ from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, Thr
 
 
 class ThreadPurpose(StrEnum):
+    """Framework-suggested values for thread purpose.
+
+    EXTENSIBLE: the DB stores `str` and the domain field type is
+    ``ThreadPurpose | str`` (union). Apps may pass their own purpose
+    strings (e.g. ``"task_planning"``, ``"approval_chain"``,
+    ``"hitl:strategy_review"`` for sub-categorisation) directly to
+    ``repo.create(purpose=...)``. Unknown values pass through as raw `str`
+    via ``Thread.from_row``.
+
+    Use the framework enum when one of the suggested values applies;
+    introduce a custom string otherwise.
+    """
+
     ONBOARDING = "onboarding"
     CONVERSATION = "conversation"
     HITL = "hitl"
 
 
 class ThreadStatus(StrEnum):
-    """Lifecycle state of a thread.
+    """CLOSED — finite lifecycle (OPEN → CLOSED, terminal).
 
-    A thread is `OPEN` from creation until closed. Closing is the terminal
-    state — once closed, no further messages can be appended. Reason for
-    closing is application-specific (HITL resolved, onboarding done,
-    conversation archived, etc.).
+    Once a thread is `CLOSED`, no further messages can be appended
+    (``add_message`` raises ``ThreadClosedError``). Closing reason is
+    application-specific (HITL resolved, onboarding done, conversation
+    archived, etc.) — the framework provides the primitive, callers
+    decide when to call ``repo.close(...)``.
     """
 
     OPEN = "open"

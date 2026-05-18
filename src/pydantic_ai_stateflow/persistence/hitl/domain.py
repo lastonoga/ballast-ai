@@ -15,6 +15,20 @@ from pydantic_ai_stateflow.persistence.hitl.persistence import (
 
 
 class HITLPurpose(StrEnum):
+    """Framework-suggested values for *why* a HITL gate was raised.
+
+    EXTENSIBLE: apps can pass their own purpose strings
+    (e.g. ``"compliance_review"``, ``"refund_above_threshold"``) directly
+    to ``persist_request(purpose=...)``. The DB stores `str`, and the
+    domain field type is ``HITLPurpose | str`` (union) — unknown values
+    pass through as raw `str`. Use the framework enum when one of the
+    suggested values applies; introduce a custom string otherwise.
+
+    Closed (non-extensible) framework enums by contrast:
+    - ``BlockingRequirementStatus`` — finite lifecycle (DB enforces)
+    - ``DecisionVerdict`` — finite verdicts for HITLGate Pattern logic
+    """
+
     APPROVAL = "approval"
     REJECT_RECOVERY = "reject_recovery"
     AMBIGUITY = "ambiguity"
@@ -22,6 +36,8 @@ class HITLPurpose(StrEnum):
 
 
 class BlockingRequirementStatus(StrEnum):
+    """CLOSED — finite lifecycle. New values added only by framework releases."""
+
     PENDING = "pending"
     RESOLVED = "resolved"
     TIMED_OUT = "timed_out"
@@ -29,10 +45,20 @@ class BlockingRequirementStatus(StrEnum):
 
 
 class DecisionVerdict(StrEnum):
+    """CLOSED — HITLGate Pattern's logic branches on these specific verdicts."""
+
     APPROVE = "approve"
     REJECT = "reject"
     REVISE = "revise"
     OVERRIDE = "override"
+
+
+def _coerce_hitl_purpose(value: str) -> HITLPurpose | str:
+    """Match known framework purposes to enum; pass-through unknown strings."""
+    try:
+        return HITLPurpose(value)
+    except ValueError:
+        return value
 
 
 class BlockingRequirement(BaseModel):
@@ -42,7 +68,7 @@ class BlockingRequirement(BaseModel):
     gate_kind: str
     workflow_id: UUID
     payload: dict[str, Any]
-    purpose: HITLPurpose
+    purpose: HITLPurpose | str  # ← extensible: apps may use custom strings
     status: BlockingRequirementStatus
     timeout_at: datetime | None
     created_at: datetime
@@ -53,7 +79,7 @@ class BlockingRequirement(BaseModel):
         return cls(
             id=row.id, tenant_id=row.tenant_id, gate_kind=row.gate_kind,
             workflow_id=row.workflow_id, payload=row.payload,
-            purpose=HITLPurpose(row.purpose),
+            purpose=_coerce_hitl_purpose(row.purpose),
             status=BlockingRequirementStatus(row.status),
             timeout_at=row.timeout_at, created_at=row.created_at,
             resolved_at=row.resolved_at,

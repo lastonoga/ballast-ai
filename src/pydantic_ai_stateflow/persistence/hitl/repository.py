@@ -10,7 +10,7 @@ from pydantic_ai_stateflow.persistence.hitl.domain import (
     BlockingRequirementStatus,
     Decision,
     DecisionVerdict,
-    HITLPurpose,
+    _coerce_hitl_purpose,
 )
 
 
@@ -55,7 +55,7 @@ class InMemoryHITLRepository:
         req = BlockingRequirement(
             id=uuid4(), tenant_id=tenant_id, gate_kind=gate_kind,
             workflow_id=workflow_id, payload=prompt,
-            purpose=HITLPurpose(purpose),
+            purpose=_coerce_hitl_purpose(purpose),
             status=BlockingRequirementStatus.PENDING,
             timeout_at=timeout_at, created_at=datetime.now(tz=UTC), resolved_at=None,
         )
