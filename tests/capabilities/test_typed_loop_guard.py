@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from pydantic import BaseModel
 
@@ -9,8 +11,8 @@ from pydantic_ai_stateflow.capabilities.helpers import (
 
 class _IdentityEmbedder:
     async def embed(self, text: str) -> list[float]:
-        h = abs(hash(text)) % 1_000_000
-        return [float(h % 100), float((h // 100) % 100)]
+        h = hashlib.md5(text.encode()).digest()
+        return [float(b) for b in h[:6]]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return [await self.embed(t) for t in texts]
