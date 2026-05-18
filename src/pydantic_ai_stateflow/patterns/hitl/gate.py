@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
@@ -103,12 +103,33 @@ class HITLGate(DBOSConfiguredInstance):
                 votes=dict(verdict.votes),
             )
 
+        helper_verdict_payload: dict[str, Any] | None = None
+        helper_verdict_context_type: str | None = None
+        helper_thread_id: UUID | None = None
+        raw_verdict = getattr(response, "helper_verdict", None)
+        if raw_verdict is not None:
+            # Mutable copy — `response` is frozen, but the dict itself isn't;
+            # copy for clarity and to avoid mutating shared state.
+            helper_verdict_payload = dict(raw_verdict)
+            # Optional sidecar keys carried inside the helper_verdict blob
+            # (set by ConversationalChannel via the helper agent). Stripped
+            # from the persisted blob so the row's typed columns hold them.
+            tid_str = helper_verdict_payload.pop("__helper_thread_id__", None)
+            fqn = helper_verdict_payload.pop("__context_type_fqn__", None)
+            if tid_str is not None:
+                helper_thread_id = UUID(tid_str)
+            if fqn is not None:
+                helper_verdict_context_type = fqn
+
         await self.repo.persist_response(
             request_id=request.id,
             actor_id=response.actor_id or "<anonymous>",
             verdict=_KIND_TO_VERDICT[response.kind],
             payload=response.model_dump(mode="json"),
             tenant_id=tenant_id,
+            helper_verdict_payload=helper_verdict_payload,
+            helper_verdict_context_type=helper_verdict_context_type,
+            helper_thread_id=helper_thread_id,
         )
         return response
 
