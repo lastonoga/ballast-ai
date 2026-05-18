@@ -1,3 +1,4 @@
+from pydantic_ai_stateflow.patterns.mutation.pipeline import MutationPipeline
 from pydantic_ai_stateflow.patterns.mutation.primitives import (
     AcceptedResult,
     ApplyTransaction,
@@ -16,6 +17,7 @@ __all__ = [
     "AcceptedResult",
     "ApplyTransaction",
     "DropOnReject",
+    "MutationPipeline",
     "Proposal",
     "RaiseOnReject",
     "RejectAction",
