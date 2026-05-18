@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column
+from sqlalchemy import Column, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -25,7 +25,10 @@ class ThreadRow(SQLModel, table=True):
     )
     workflow_id: UUID | None = Field(default=None, index=True)
     actor_id: str
-    created_at: datetime = Field(default_factory=_now_utc)
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MessageRow(SQLModel, table=True):
@@ -39,4 +42,7 @@ class MessageRow(SQLModel, table=True):
         default_factory=list,
         sa_column=Column(JSONB, nullable=False, server_default="[]"),
     )
-    created_at: datetime = Field(default_factory=_now_utc)
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
