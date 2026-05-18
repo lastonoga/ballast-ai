@@ -1,7 +1,7 @@
 # pydantic-ai-stateflow-engine — Design Spec
 
 - **Date:** 2026-05-15
-- **Status:** Sections 1 + 2 (A–E) approved. Section 3 (infrastructure & process) TBD.
+- **Status:** Sections 1 + 2 (A–E) + 3 (A–K, Reference Example: Waves) approved. Section 4 (architectural deltas + infrastructure + MVP scope) TBD.
 - **Authors:** Kir + Claude (brainstorming session)
 - **Source material:** `.context/attachments/pasted_text_2026-05-15_15-09-12.txt` (architectural analysis of LLM production failures, RU)
 
@@ -1354,59 +1354,773 @@ class EventDispatcher:
 
 ---
 
-## Section 3 — Infrastructure & Process (TBD)
+## Section 3 — Reference Example: Waves Validation System (approved)
 
-Будет покрывать:
+Полный реализующий пример поверх stateflow-engine. Source: `.context/attachments/pasted_text_2026-05-15_20-56-28.txt` (ТЗ цикла валидации waves).
 
-- **L4 State schema:**
-  - SQLModel-классы для всех infra-таблиц (threads, chats, messages, checkpoints, outbox, drift_metrics, eval_runs, hitl_requests, hitl_responses)
-  - Repository protocols + базовые реализации (`PostgresRepository`, `InMemoryRepository`)
-  - Alembic setup
-  - Indexes, partitioning гипотезы
+Цель Section 3 — **прогнать архитектуру через реальный production-grade сценарий**, выявить gaps и подсветить, где патерны работают как заявлено, а где требуют расширения. Все выявленные gaps идут в Section 4 как dёлта к Section 1-2.
 
-- **L5 Evals:**
-  - Кастомные Scorers (`SchemaAdherenceScorer`, `MutationAcceptanceScorer`, `IterationBudgetScorer`, `GroundedReferenceScorer`)
-  - `Dataset` builders из production traces
-  - CI integration
+### 3A — Overview & Domain Mapping
 
-- **L6 Observability:**
-  - Logfire instrumentation setup
-  - Span conventions (Pattern, Step, Capability, Channel)
-  - Pre-configured dashboards (drift, HITL latency, budget burn, schema-adherence)
-  - Drift detection pipeline (embedding-based + statistical)
+#### 3A.1 Что строит example
 
-- **L7 FastAPI API surface:**
-  - REST endpoints полный список (threads, chats, messages, runs, proposals, hitl, evals)
-  - SSE streaming через AG-UI и Vercel formats
-  - Auth setup (Bearer, OAuth examples)
-  - DBOS-FastAPI integration
+Founder ставит продуктовую гипотезу, бюджет, kill-criteria → система крутит **wave loop** (длинноживущий DBOS workflow): планирует tests → запускает tools (research / experiments / опросы founder'а) → интерпретирует артефакты → обновляет уверенность в гипотезах → предлагает решения → founder одобряет в чате → программа движется к терминальному решению (`promote_to_mvp` / `abandon_program` / `paused`).
 
-- **Project structure (DDD bounded contexts):**
-  - Recommended layout: `agents/<context>/{patterns.py, capabilities.py, models/persistence.py, models/domain.py, repositories.py, evals.py}`
-  - Public API через `__all__`
-  - Custom ruff rule для `*Row`-imports
+Stress-test нашей архитектуры: long-running workflows с HITL-паузами на дни, неизменяемый аудит-журнал, плагин-система с инвариантом покрытия слотов, идемпотентность wave loop, многоуровневые гарантии (RDBMS partial unique index + DBOS workflow_id + HITL approval).
 
-- **Testing strategy:**
-  - Unit: `TestModel` / `FunctionModel` + `InMemoryRepository` + `FakeChannel`
-  - Integration: реальный PG через testcontainers + DBOS test mode
-  - End-to-end: один golden scenario через все слои
-  - Eval: pydantic-evals в CI
+#### 3A.2 Mapping ТЗ → слои фреймворка
 
-- **MVP scope (v1) — тонкий вертикальный срез:**
-  - L0: `Ref[T]` + resolver + escape hatch
-  - L1: `SemanticLoopDetector` + `BudgetGuard`
-  - L2: `Reflection` + `MapReduce` + `MutationPipeline` + `HITLGate` с `ThreadToolChannel` и `UIChannel`
-  - L3: полная DBOS интеграция
-  - L4: infra-таблицы (без advanced indexing)
-  - L5: `SchemaAdherenceScorer` + один Dataset
-  - L6: базовый logfire
-  - L7: FastAPI surface с AG-UI и Vercel adapters
+| Концепция из ТЗ | Слой | Что используется |
+|---|---|---|
+| Project, Branch, Hypothesis, Assumption, Uncertainty | L4 Domain | Pydantic domain + SQLModel persistence + Repository |
+| Wave, WavePlan, WaveStrategy, WaveOutcome | L4 Domain | те же |
+| WorkPlan, WorkPackage, Artifact | L4 Persistence | + special DAG-execution в Pattern |
+| Evidence, CandidateFinding, UncertaintyAttempt | L4 Domain | append-only |
+| BranchOutcome, ProgramOutcome | L4 Domain | append-only через MutationPipeline |
+| HumanApprovalGate / Decision / BlockingRequirement | L4 + L2 | надстройка над HITL слоем |
+| HitlAdvisorCache | L4 + L1 | за autopilot отвечает Capability |
+| Tool capability declaration | L2 (Plugin) | ServiceProvider + Registry |
+| Tool registry coverage invariant | L3 Bootstrap | engine.boot() проверяет |
+| Wave Loop (Phase 2) | L2 Pattern | top-level long-running DBOS workflow |
+| Phase 1 — Wave planning (LLM + hard-rules) | L2 | `Reflection` (writer=стратег, critic=non-LLM hard-rule validator) |
+| Phase 2 — Wave design (deterministic) | L2 | pure function в L3 step |
+| Phase 3 — Wave run (DAG executor) | L2 | `PlanAndExecute` over WorkPackages |
+| Phase 4 — Interpretation (per Artifact → Evidence) | L2 | `MapReduce` (chunker=artifacts list, extractor=interpreter agent) |
+| Phase 5 — Materialization (CandidateFinding classification) | L2 | data-driven dispatch + MutationPipeline для novel |
+| Phase 6 — Strategy decision (LLM proposal + HITL) | L2 | `Reflection` + `MutationPipeline` с `PartialApprovalStage(allow_modify=True)` |
+| Phase 7 — Wave close (atomic next-wave open) | L2 | `@DBOS.transaction` |
+| HITL gates (kill_criteria, strategy_review, launch_go_no_go, tool gates) | L2 | разные `ApprovalStage` через разные HITLChannel |
+| Budget cap, MIN_WAVE_COST guard | L1 | `BudgetGuard` capability + project-level pre-check |
+| Goal drift (founder's thesis vs wave focus) | L1 | `GoalDriftDetector` |
+| Belief updates (numeric shifts с evidence) | L2 + L0 | typed proposals через Ref[Evidence], Ref[Uncertainty] |
+| Autopilot для gate | L1 + 3J | встроен в HelperAgent через cached recommendation check |
+| Партиальный unique index "не более одной не-closed волны на project" | L4 SQL | Postgres partial unique index |
+| Idempotent wave loop start | L3 DBOS | `workflow_id = hash(tenant_id, project_id, "wave_loop")` |
+| Recovery после рестарта | L3 DBOS | автоматически через DBOS replay |
+| Eval-from-trace | L5 | каждый approved/rejected proposal — eval case |
+| Dashboard (pending approvals, status, budget, history) | L7 | REST + SSE для real-time updates |
+| Chat (онбординг + рутина + HITL helper threads) | L7 | AG-UI streaming + ChatChannel / ConversationalChannel |
 
-- **Golden scenario** — конкретный бизнес-сценарий, через который прогоняется весь MVP (TBD — нужен от пользователя).
+#### 3A.3 Конкретные использования Ref[T]
 
-- **Examples:**
-  - End-to-end Pattern + Capability + MutationPipeline + HITLGate
-  - Test suite для каждого слоя
+```python
+# Стратег возвращает WaveStrategy. GroundedSchema гарантирует:
+# - tool физически не выбран вне реестра проекта
+# - target_uncertainties физически из открытых UC
+# - target_branches физически из live веток
+class ToolChoice(BaseModel):
+    tool: Ref[Tool]
+    target_uncertainties: list[Ref[Uncertainty]]
+    target_branches: list[Ref[Branch]]
+
+class WaveStrategy(BaseModel):
+    wave_tier: Literal["fast", "medium", "slow"]
+    selected_uncertainties: list[Ref[Uncertainty]]
+    tool_choices: list[ToolChoice]
+
+# StrategyProposal (фаза 6) — самое типобезопасное место:
+class BeliefUpdate(BaseModel):
+    uc: Ref[Uncertainty]
+    from_belief: BeliefLevel
+    to_belief: BeliefLevel
+    contributing_evidence: list[Ref[Evidence]]   # closed set = свежие Evidence волны
+
+class BranchDecision(BaseModel):
+    branch: Ref[Branch]
+    decision: Literal["continue", "kill", "promote_to_mvp"]
+```
+
+→ LLM физически не может упомянуть несуществующее `branch_id` / `evidence_id`. GroundedSchema гарантирует.
+
+#### 3A.4 Главный workflow (skeleton)
+
+```python
+@DBOS.workflow()
+async def wave_loop(project_id: UUID, *, tenant_id: UUID) -> None:
+    """Top-level. workflow_id = hash(tenant, project, "wave_loop"). Идемпотентен."""
+    project = await load_project(project_id, tenant_id)
+    while await can_continue(project):
+        wave = await open_or_resume_wave(project)         # partial unique idx — single open
+        strategy = await WavePlanning(...).run(...)
+        packages = await ExperimentDesign(...).run(...)
+        artifacts = await ExperimentRun(...).run(...)
+        interp = await Interpretation(...).run(...)
+        await Materialization(...).run(...)
+        outcome = await StrategyDecision(...).run(...)    # HITL pause via DBOS.recv
+        await WaveClose(...).run(...)
+        project = await load_project(project_id, tenant_id)
+```
+
+### 3B — Project Structure (DDD Bounded Contexts)
+
+```
+waves_app/
+├── domain/
+│   ├── project/         {persistence.py, domain.py, repositories.py, policies.py}
+│   ├── wave/            {... + invariants.sql}
+│   ├── experiment/      {WorkPlan/Package/Artifact}
+│   ├── knowledge/       {Evidence, CandidateFinding}
+│   ├── outcome/         {BranchOutcome, ProgramOutcome — append-only}
+│   ├── hitl/            {... + channels.py с ConversationalChannel + helper_agent.py}
+│   └── tool/            {capability, registry, protocols}
+├── patterns/
+│   ├── wave_loop.py
+│   ├── wave_planning.py
+│   ├── experiment_design.py
+│   ├── experiment_run.py
+│   ├── interpretation.py
+│   ├── materialization.py
+│   ├── strategy_decision.py
+│   └── wave_close.py
+├── capabilities/        {project_budget, advisor_autopilot, thesis_drift, strategy_review_helper}
+├── tools/               {plugin directory: web_research/, founder_questionnaire/, paid_funnel/, ...}
+├── api/                 {chat, dashboard, hitl, a2a, deps, auth}
+├── providers/           {core, persistence, domain providers, hitl, tools, patterns, auth}
+├── alembic/
+├── tests/               {unit, integration, e2e}
+├── main.py
+├── settings.py
+└── pyproject.toml
+```
+
+**Правила:** Persistence ≠ Domain (linter), Bounded contexts через `__init__.py`, Tools — самодостаточные модули, Thin API, Bootstrap явный.
+
+### 3C — Domain & Persistence Models (key examples)
+
+#### 3C.1 Project context
+
+```python
+class ProjectRow(SQLModel, table=True):
+    __tablename__ = "projects"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
+    founder_id: str
+    thesis: str
+    budget_cap_usd: Decimal
+    budget_spent_usd: Decimal = Decimal("0")
+    kill_criteria_ack: bool = False
+    status: Literal["onboarding", "running", "promoted", "abandoned", "paused"]
+
+class UncertaintyRow(SQLModel, table=True):
+    __tablename__ = "uncertainties"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
+    project_id: UUID = Field(foreign_key="projects.id", index=True)
+    branch_id: UUID | None = Field(foreign_key="branches.id")
+    kind: UncertaintyKind
+    stage: Stage
+    description: str
+    belief: BeliefLevel
+    lifecycle: Literal["open", "reduced", "merged_into", "split"]
+```
+
+#### 3C.2 Wave context — CRITICAL partial unique index
+
+```python
+class WaveRow(SQLModel, table=True):
+    __tablename__ = "waves"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
+    project_id: UUID = Field(foreign_key="projects.id", index=True)
+    index: int
+    status: WaveStatus
+    workflow_id: UUID                                # связка с DBOS-workflow
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "index", name="uq_wave_project_index"),
+        # КЛЮЧЕВОЙ ИНВАРИАНТ (§5.1 ТЗ): не более одной не-closed волны на проект
+        Index("uq_wave_project_one_open", "project_id", unique=True,
+              postgresql_where=text("status != 'closed'")),
+    )
+```
+
+Defense in depth: partial unique idx (DB) + DBOS workflow_id (runtime) + ApprovalStage (logic).
+
+#### 3C.3 Outcome context — append-only via DB triggers
+
+```python
+class BranchOutcomeRow(SQLModel, table=True):
+    __tablename__ = "branch_outcomes"
+    # ... поля + approval_decision_id FK
+    # NO updated_at — append-only
+
+# Alembic migration:
+# CREATE TRIGGER block_branch_outcomes_update BEFORE UPDATE OR DELETE
+#   ON branch_outcomes FOR EACH ROW EXECUTE FUNCTION reject_outcome_mutation();
+```
+
+Application-level inv (MutationPipeline) + DB enforcement.
+
+#### 3C.4 Tool capability + registry coverage invariant
+
+```python
+@dataclass(frozen=True)
+class Capability:
+    tool_id: str
+    version: str
+    description: str
+    cls: ToolClass                                    # research | experiment
+    time_class: TimeClass                             # fast | medium | slow
+    branch_scope: BranchScope                         # cross_branch | per_branch
+    covers_uncertainty_kinds: frozenset[UncertaintyKind]
+    produces_artifact_kinds: frozenset[str]
+    input_slots: dict[str, SlotClass]
+    output_slots: dict[str, SlotClass]
+    cost_profile: CostProfile
+    requires_credentials: frozenset[CredentialKind]
+    hitl_gates: tuple[GateKind, ...]
+    visible_to_strategist: bool = True
+    phased: bool = False
+
+    def validate(self) -> None:
+        # §6.1: time_class == bucket(p95_hours)
+        ...
+
+class ToolRegistry:
+    def check_coverage_invariant(self, seed_slots: set[str]) -> CoverageReport:
+        """§6.3: every input_slot must have a producer tool (except seeds).
+        Bootstrap-time check. Failure blocks app startup."""
+```
+
+### 3D — WaveLoop как Top-level Pattern
+
+```python
+class WaveLoop(Pattern[UUID, None]):
+    name = "wave_loop"
+    
+    @DBOS.workflow()
+    async def run(self, project_id: UUID, *, tenant_id: UUID) -> None:
+        """workflow_id = hash(tenant, project, 'wave_loop') — идемпотентность гарантирована."""
+        while True:
+            project = await self._load_project(project_id, tenant_id)
+            if project.status != "running" or not await self._can_continue(project):
+                return
+            
+            wave = await self._open_or_resume_wave(project, tenant_id)
+            strategy = await self.planning.run(WavePlanningInput(...), tenant_id=tenant_id)
+            packages = await self.design.run(DesignInput(strategy, ...), tenant_id=tenant_id)
+            artifacts = await self.run.run(ExperimentRunInput(...), tenant_id=tenant_id)
+            interp = await self.interpretation.run(InterpretationInput(...), tenant_id=tenant_id)
+            await self.materialization.run(MaterializationInput(...), tenant_id=tenant_id)
+            outcome = await self.strategy.run(StrategyDecisionInput(...), tenant_id=tenant_id)  # HITL pause
+            await self.close.run(WaveCloseInput(wave, outcome), tenant_id=tenant_id)
+```
+
+**Гарантии:** параллельные wave_loop одного проекта (DBOS workflow_id), параллельные открытые waves (partial unique idx), recovery (DBOS replay), HITL пауза без потери прогресса (DBOS.recv).
+
+### 3E — Phase Patterns
+
+#### 3E.1 — Phase 1: WavePlanning (Reflection + non-LLM hard-rule critic)
+
+Стратег-агент строит `WaveStrategy`. **Hard-rule validator — pure Python, не LLM**. При нарушении правил Reflection делает retry с structured feedback.
+
+Правила (§5.2 ТЗ):
+- tier-consistency: `tool.time_class` совместим с `wave_tier`
+- credentials: tools должны иметь requires_credentials, доступные в tenant
+- coverage UC: каждое selected_uncertainty покрыто хотя бы одним tool_choice
+- budget per-wave: суммарный cost не превышает budget
+
+```python
+class HardRuleCritic:
+    """Не LLM. Pure Python validator. Адаптируется к Critique через as_critique()."""
+    async def check(self, strategy: WaveStrategy, ctx: WavePlanningInput) -> HardRuleVerdict: ...
+
+class WavePlanning(Pattern[WavePlanningInput, WaveStrategy]):
+    def __init__(self, strategist_agent, hard_rule_critic, wave_repo, *, max_iterations=4):
+        self._reflection = Reflection(
+            writer=strategist_agent,
+            critic=as_critique(hard_rule_critic),     # ← framework helper для non-LLM critic
+            max_iterations=max_iterations,
+            loop_guard=TypedLoopGuard(
+                embedder=embedder,
+                selector=lambda s: ", ".join(sorted(t.tool.id for t in s.tool_choices)),
+                threshold=0.99,
+            ),
+            loop_recovery=AbortOnLoop(),
+            feedback_renderer=_wave_planning_feedback_renderer,
+        )
+```
+
+**Подсвечивает:**
+- Critic не обязан быть LLM (нужен framework adapter `as_critique(callable)`)
+- GroundedSchema через Ref[Tool], Ref[Uncertainty], Ref[Branch] — стратег физически не может галлюцинировать
+- TypedLoopGuard по конкретному полю output (selector)
+- На exhaustion — wave terminates errored
+
+#### 3E.2 — Phase 2: ExperimentDesign (deterministic, no LLM)
+
+Pure function + `@DBOS.transaction` для атомарной записи WorkPackages + transition wave status.
+
+```python
+class ExperimentDesign(Pattern):
+    @DBOS.workflow()
+    async def run(self, input, *, tenant_id):
+        packages = self._render_packages(input)        # pure
+        await self._persist(input.wave_id, packages, tenant_id)
+        return packages
+```
+
+WorkPackage.id = `uuid_for(inputs)` — deterministic UUID5 от stable hash → idempotency на replay (нужен framework helper `Det.uuid_for(inputs)`).
+
+#### 3E.3 — Phase 3: ExperimentRun (PlanAndExecute over DAG)
+
+```python
+class ExperimentRun(Pattern[ExperimentRunInput, list[Artifact]]):
+    @DBOS.workflow()
+    async def run(self, input, *, tenant_id):
+        waves = topological_waves(input.packages)      # slot-based DAG
+        queue = DBOS.Queue(f"exp-run-{input.wave_id}", concurrency_limit=self.concurrency)
+        completed_slots = {}
+        for wave_group in waves:
+            handles = [queue.enqueue(self._execute_package, pkg, completed_slots, tenant_id) for pkg in wave_group]
+            results = await asyncio.gather(*[h.get_result() for h in handles])
+            # merge output slots для DAG-resolution
+            ...
+    
+    @DBOS.workflow()                                   # ← child workflow per package — recovery per-package
+    async def _execute_package(self, pkg, prior_slots, tenant_id):
+        tool = self.tool_registry.get(pkg.tool_id)
+        try:
+            result = await self._invoke_tool(tool, resolved_inputs)  # @DBOS.step
+            artifacts = self._normalize(result, pkg)
+            await self._persist_artifacts_and_complete(pkg.id, artifacts, tenant_id)
+            return artifacts
+        except ToolNeedsHITL as e:                     # ← framework exception для durable pause
+            await self._mark_package_hitl_blocked(pkg.id, e.gate, tenant_id)
+            raise
+```
+
+**Подсвечивает gaps:**
+- Slot-based DAG (output_slots → input_slots) — расширение PlanAndExecute или новый pattern
+- ToolNeedsHITL exception — формальный signal механизм для tools внутри patterns
+
+#### 3E.4 — Phase 4: Interpretation (MapReduce)
+
+```python
+class Interpretation(Pattern):
+    def __init__(self, interpreter_agent, ..., *, concurrency=8):
+        self._map_reduce = MapReduce(
+            chunker=_ArtifactChunker(),
+            extractor=interpreter_agent,               # NewEvidence.uncertainty: Ref[Uncertainty]
+            reducer=_ConcatReducer(),
+            concurrency=concurrency,
+        )
+    
+    @DBOS.workflow()
+    async def run(self, input, *, tenant_id):
+        interpretations = await self._map_reduce.run(MapReduceDoc(items=input.artifacts, context=input.project), tenant_id=tenant_id)
+        # GroundedSchema гарантирует — interpreter не сошлётся на закрытую/несуществующую UC
+        all_evidence = self._flatten_evidence(interpretations, input.wave_id)
+        all_candidates = await self._build_candidates(interpretations, input.wave_id)  # с embeddings
+        await self._persist(all_evidence, all_candidates, tenant_id)
+```
+
+Append-only persist + transition wave to `interpreting`.
+
+#### 3E.5 — Phase 5: Materialization (data-driven dispatch + MutationPipeline)
+
+```python
+class Materialization(Pattern):
+    @DBOS.workflow()
+    async def run(self, input, *, tenant_id):
+        existing_ucs = await self._load_existing_ucs(input.wave_id, tenant_id)
+        queue = DBOS.Queue(...)
+        handles = [queue.enqueue(self._classify_one, c, existing_ucs, tenant_id) for c in input.candidates]
+        classifications = await asyncio.gather(*[h.get_result() for h in handles])
+        for c, cls in zip(input.candidates, classifications):
+            await self._apply_classification(c, cls, tenant_id)
+    
+    @DBOS.step()
+    async def _classify_one(self, candidate, existing_ucs, tenant_id):
+        # Defense in depth: сначала детерминированный embedding-dedup, потом LLM-judge
+        for uc in existing_ucs:
+            if cosine(candidate.embedding, uc.embedding) >= self.dedup_threshold:
+                return ClassificationResult(classification="duplicate", duplicate_of_uc=Ref(uc.id, ...))
+        # LLM-judge с GroundedSchema (duplicate_of_uc: Ref[Uncertainty] closed)
+        return (await self.dedup_classifier_agent.run(...)).output
+
+# Для novel — full MutationPipeline (create new UC через transactional outbox)
+```
+
+#### 3E.6 — Phase 6: StrategyDecision (Reflection + PartialApprovalStage с modify)
+
+**Gap #1:** существующий `ApprovalStage` поддерживает modify только целого proposal. Нужен `PartialApprovalStage` — per-element approve/reject с partial modify.
+
+```python
+class PartialApprovalStage(Stage[T]):
+    """Расширение L2: per-element approval с modify."""
+    name: str
+    def __init__(
+        self,
+        hitl: HITLGate, *,
+        when: Callable = lambda _: True,
+        prompt_builder: Callable[[T], HITLPrompt],
+        element_extractor: ProposalElementExtractor[T],
+        stage_name: str = "partial_approval",
+        allow_modify: bool = False,
+        editable_paths: set[str] | None = None,
+        revalidate_stages: list[Stage[T]] = (),
+    ): ...
+    
+    async def process(self, proposal):
+        resp = await self.hitl.run(prompt, purpose="approval")
+        match resp.decision:
+            case "all_approved":   return Accept(proposal)
+            case "all_rejected" | "timeout": return RejectedAt(...)
+            case "partial":         return await self._handle_partial(proposal, resp)
+    
+    async def _handle_partial(self, proposal, resp: PartialApprovalResponse):
+        subset = self.element_extractor.with_approved_subset(proposal, resp.approved_element_ids, resp.modifications)
+        await self._emit_partial_event(proposal, approved=..., rejected=..., actor=resp.actor_id)
+        for s in self.revalidate_stages:
+            r = await s.process(subset)
+            if isinstance(r, RejectedAt): return r
+        return Accept(subset)
+
+class StrategyDecision(Pattern):
+    def __init__(self, strategist_agent, hard_rule_critic, strategy_hitl, outcome_repo, policy, *, max_iterations=3):
+        self._reflection = Reflection(writer=strategist_agent, critic=as_critique(hard_rule_critic), max_iterations=max_iterations)
+        self._pipeline = MutationPipeline(
+            stages=[
+                ValidateStage(), ResolveRefsStage(...),
+                QualityStage(MinConfidence(0.7)), PolicyStage(policy),
+                PartialApprovalStage(
+                    hitl=strategy_hitl,                # ← может быть ConversationalChannel
+                    prompt_builder=_build_strategy_review_prompt,
+                    element_extractor=_StrategyProposalElementExtractor(),
+                    stage_name="strategy_review",
+                    allow_modify=True,
+                    editable_paths={"proposed_belief_updates[*].to_belief", "per_branch[*].decision", "program.action"},
+                    revalidate_stages=[QualityStage(MinConfidence(0.7)), PolicyStage(policy)],
+                ),
+            ],
+            apply=ApplyStrategyDecision(outcome_repo),  # @DBOS.transaction (atomic BranchOut+ProgramOut+Outbox)
+            emit_event=StrategyDecisionAppliedEvent,
+            reject_policy=DropOnReject(),               # founder rejected all — wave stays open
+        )
+```
+
+#### 3E.7 — Phase 7: WaveClose (`@DBOS.transaction` для transition)
+
+```python
+class WaveClose(Pattern):
+    @DBOS.transaction()
+    async def _close_atomically(self, input, session, tenant_id):
+        session.add(WaveOutcomeRow(...))
+        await self.wave_repo.transition(input.wave.id, to=WaveStatus.CLOSED, session=session, tenant_id=tenant_id)
+        match input.outcome.program_action:
+            case "continue":   # open next wave atomically; partial unique idx unlocks
+                next_wave = await self.wave_repo.create(..., session=session, tenant_id=tenant_id)
+                return WaveCloseOutput(next_wave_id=next_wave.id)
+            case "promote_to_mvp" | "abandon_program" | "paused":
+                await self.project_repo.set_status(..., session=session, tenant_id=tenant_id)
+        return WaveCloseOutput(next_wave_id=None)
+```
+
+### 3F — Tool Plugin System
+
+`tools/<tool>/` — самодостаточный модуль. Capability через декоратор + регистрация при импорте.
+
+```python
+@tool(Capability(
+    tool_id="web_research_v1", version="1.0.0",
+    cls=ToolClass.RESEARCH, time_class=TimeClass.FAST, branch_scope=BranchScope.CROSS_BRANCH,
+    covers_uncertainty_kinds=frozenset({UncertaintyKind.PROBLEM_EXISTS, UncertaintyKind.MARKET_SIZE}),
+    produces_artifact_kinds=frozenset({"research_report"}),
+    input_slots={"query_topic": SlotClass.TEXT},
+    output_slots={"research_report": SlotClass.REPORT},
+    cost_profile=CostProfile(...),
+    requires_credentials=frozenset({CredentialKind.WEB_SEARCH_API}),
+    hitl_gates=(),
+))
+class WebResearchTool:
+    async def run(self, inputs: dict) -> Artifact: ...
+```
+
+Tool с фазами и HITL (paid_funnel):
+
+```python
+@tool(Capability(
+    tool_id="paid_funnel_v1", cls=ToolClass.EXPERIMENT, time_class=TimeClass.SLOW, branch_scope=BranchScope.PER_BRANCH,
+    hitl_gates=(GateKind.CJM_REVIEW, GateKind.REVIEW_CREATIVE, GateKind.APPROVE_CHARGES, GateKind.LAUNCH_GO_NO_GO),
+    phased=True,
+    ...
+))
+class PaidFunnelTool:
+    async def run(self, inputs: dict):
+        cjm = await self._draft_cjm(inputs)                                    # @DBOS.step
+        await self._hitl_gates[GateKind.CJM_REVIEW].run(HITLPrompt(...))      # raise ToolNeedsHITL if rejected
+        creative = await self._generate_creative(cjm, inputs)
+        await self._hitl_gates[GateKind.REVIEW_CREATIVE].run(...)
+        await self._hitl_gates[GateKind.APPROVE_CHARGES].run(...)
+        await self._hitl_gates[GateKind.LAUNCH_GO_NO_GO].run(...)
+        run_data = await self._run_ads_and_collect(...)
+        return Artifact(kind="full_funnel_report", body=run_data)
+```
+
+Coverage invariant (§6.3): bootstrap-time check блокирует старт при нарушении.
+
+### 3G — HITL Channels Catalog для waves
+
+| Gate | Канал | Timeout | Кто отвечает |
+|---|---|---|---|
+| `kill_criteria_ack` | `ChatChannel` (онбординг) | 7 дней | founder |
+| `strategy_review` | `ConversationalChannel` (помощник + tools) | 24 часа | founder + helper agent |
+| `launch_go_no_go` | `UIChannel` + `SlackChannel` (опц.) | 12 часов | founder |
+| `cjm_review`, `review_creative`, `approve_charges` | `ConversationalChannel` (tool-specific helper) | 24-72 часа | founder + helper |
+| 3rd-party tool gates | `WebhookChannel` | по спецификации tool | external system |
+
+### 3H — FastAPI Endpoints (thin layer)
+
+```python
+# api/chat.py
+@router.post("/chat/{project_id}/wave/start")
+async def start_wave(
+    project_id: UUID,
+    actor: Actor = Depends(get_current_actor),
+    tenant_id: UUID = Depends(get_tenant_id),
+    wave_loop: WaveLoop = Depends(container.fastapi_dependency(WaveLoop)),
+    policy: Policy = Depends(container.fastapi_dependency(ProjectPolicy)),
+):
+    decision = await policy.can(actor=actor, action="start_wave", resource=project_id, tenant_id=tenant_id)
+    if not decision.is_grant: raise HTTPException(403, decision.summary())
+    handle = await DBOS.start_workflow_idempotent(
+        wave_loop.run, project_id, tenant_id=tenant_id,
+        idempotency_key=f"wave_loop:{tenant_id}:{project_id}",
+    )
+    return {"workflow_id": handle.workflow_id, "status": "started_or_resumed"}
+
+# api/hitl.py
+@router.post("/hitl/{request_id}/respond")
+async def respond_to_hitl(request_id: UUID, body: HITLResponse, actor: Actor = Depends(get_current_actor)):
+    body.actor_id = actor.id
+    await DBOS.send(topic=str(request_id), payload=body)
+    return {"status": "delivered"}
+
+# api/a2a.py — discovery + invoke endpoints для advisor agents
+```
+
+### 3I — Bootstrap (main.py)
+
+```python
+async def build_engine() -> Engine:
+    settings = AppSettings()
+    engine = Engine(providers=[
+        ObservabilityProvider(),                    # первым (Logfire)
+        PersistenceProvider(),                      # session factory + Alembic check
+        CoreProvider(),                             # LLM clients, Embedder, EventDispatcher
+        ProjectsProvider(), WavesProvider(), KnowledgeProvider(),
+        HITLProvider(),                             # channels, repo
+        ToolsProvider(seed_slots={"query_topic", "branch_offer", "creative_brief"}),
+        PatternsProvider(),                         # WaveLoop с wired deps
+        AuthProvider(),
+    ], settings=settings)
+    
+    await engine.boot()
+    
+    # Bootstrap-time invariants — fail fast
+    coverage = engine.container.get(ToolRegistry).check_coverage_invariant(seed_slots={...})
+    
+    return engine
+```
+
+### 3J — ConversationalChannel + HelperAgent + generic HelperVerdict
+
+#### 3J.1 ConversationalChannel
+
+```python
+class ConversationalChannel(HITLChannel):
+    """HITL через thread с helper agent. Approve/reject — agent tools."""
+    name = "conversational"
+    def __init__(self, helper_factory: HelperAgentFactory, thread_repo, chat_runtime,
+                 *, default_timeout=timedelta(hours=24), budget_per_conversation: TokenBudget | None = None):
+        ...
+    
+    async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:
+        thread = await self._open_or_resume_thread(prompt, request_id)
+        agent = await self.helper_factory.build(prompt=prompt, request_id=request_id, thread_id=thread.id, tenant_id=prompt.tenant_id)
+        await self.chat_runtime.kick_off(agent=agent, thread_id=thread.id, initial_context=_build_helper_intro(prompt))
+        # Workflow паузится в DBOS.recv пока helper не вызовет approval tool
+        return await DBOS.recv(topic=str(request_id), timeout=prompt.timeout or self.default_timeout)
+```
+
+Clarification = просто ChatMessage в thread → founder отвечает в том же thread → continuing agent run видит ответ. Никаких новых abstractions.
+
+#### 3J.2 Generic HelperVerdict (framework — domain-agnostic base)
+
+```python
+# pydantic_ai_stateflow/hitl/verdict.py
+ContextT = TypeVar("ContextT", bound=BaseModel)
+
+class HelperVerdict(BaseModel, Generic[ContextT]):
+    """Structured verdict from a HelperAgent. Base fields apply to all domains."""
+    # ALWAYS present:
+    rationale: str
+    confidence: float
+    conversation_turn_count: int
+    tools_invoked: list[str]
+    
+    # Autopilot eligibility (framework feature):
+    autopilot_eligible: bool = False
+    autopilot_confidence: float | None = None
+    
+    # Domain extension:
+    context: ContextT | None = None
+```
+
+#### 3J.3 Domain-specific contexts
+
+```python
+# waves_app/hitl/contexts.py — расширения для конкретных gate
+class StrategyReviewContext(BaseModel):
+    cited_evidence: list[Ref[Evidence]] = []
+    cited_uncertainties: list[Ref[Uncertainty]] = []
+    modifications_summary: list[ModificationRecord] = []
+
+class CJMReviewContext(BaseModel):                  # для paid_funnel.cjm_review
+    cited_personas: list[Ref[Persona]]
+    suggested_steps_revisions: list[StepRevision]
+    competitor_references: list[Ref[Competitor]] = []
+    # никаких evidence/uncertainties — другой домен
+
+# Helper эмиттит:
+HelperVerdict[StrategyReviewContext](rationale=..., confidence=..., context=StrategyReviewContext(...))
+HelperVerdict[CJMReviewContext](rationale=..., confidence=..., context=CJMReviewContext(...))
+HelperVerdict[None](rationale=..., confidence=...)  # тривиальный случай
+```
+
+#### 3J.4 Approval tools factory (typed)
+
+```python
+def make_helper_agent_with_approval_tools(
+    *, base_agent: Agent[HelperDeps, str], request_id: UUID,
+    context_type: type[ContextT] | None = None,    # ← типизированный context
+    allow_modify: bool = False, allow_partial: bool = False,
+) -> Agent[HelperDeps, str]:
+    
+    if context_type is not None:
+        @base_agent.tool
+        async def approve(ctx: RunContext[HelperDeps], rationale: str, confidence: float, context: context_type) -> str:
+            verdict = HelperVerdict[context_type](
+                rationale=rationale, confidence=confidence,
+                conversation_turn_count=ctx.deps.turn_count,
+                tools_invoked=ctx.deps.tools_invoked_so_far,
+                autopilot_eligible=ctx.deps.autopilot_eligible,
+                autopilot_confidence=ctx.deps.cached_recommendation_confidence,
+                context=context,
+            )
+            await DBOS.send(topic=str(request_id), payload=HITLResponse(
+                decision="approved", feedback=rationale,
+                actor_id=ctx.deps.actor_id, answered_at=datetime.now(UTC),
+                helper_verdict=verdict.model_dump(),
+            ))
+            return "✓ Approved with verdict."
+    else:
+        # Без context — простой approve(rationale, confidence)
+        ...
+    # ... reject / modify_element / finalize_partial аналогично
+```
+
+**Tool args через GroundedSchema** — если `context_type` содержит `Ref[T]`-поля, GroundedSchema resolver обеспечивает closed-set (helper физически не процитирует несуществующее).
+
+#### 3J.5 Persistence
+
+```python
+class DecisionRow(SQLModel, table=True):
+    # ... поля как раньше
+    helper_verdict_payload: dict | None = Field(sa_type=JSONB)             # любой shape
+    helper_verdict_context_type: str | None = None                          # FQN класса для restore
+    helper_thread_id: UUID | None = Field(foreign_key="threads.id")
+```
+
+#### 3J.6 Что становится framework vs domain
+
+| Слой | Принадлежность |
+|---|---|
+| `HelperVerdict[ContextT]` (base+generic) | **Framework** (`pydantic_ai_stateflow.hitl`) |
+| `make_helper_agent_with_approval_tools(context_type=...)` | **Framework** |
+| `ConversationalChannel`, `HelperAgentFactory` Protocol | **Framework** |
+| `DecisionRow.helper_verdict_payload` JSONB schema | **Framework** persistence |
+| `StrategyReviewContext`, `CJMReviewContext`, …, конкретные read tools | **Domain** |
+
+### 3K — Section 3 Output: Architectural Gaps для Section 4
+
+Прохождение примера выявило **9 gaps** — дельта к Section 1-2:
+
+1. `PartialApprovalStage` — новый Stage класс в L2 (per-element approve/reject + modify + revalidate)
+2. Slot-based DAG расширение PlanAndExecute (output_slots → input_slots вместо `step_id`-based deps)
+3. `as_critique(callable)` adapter в L1/utils — non-LLM критик для Reflection
+4. `Det.uuid_for(inputs)` — deterministic UUID5 для идемпотентных IDs
+5. `ToolNeedsHITL` — формальный exception для durable-pause signal из tool в Pattern
+6. `ProposalPartiallyApproved` event + standard `ProposalAuditListener` в EventDispatcher (стандартный audit для partial approvals)
+7. `ConversationalChannel` + `HelperAgent` + `HelperAgentFactory` + `HelperVerdict[ContextT]` в L2 HITL раздел
+8. `Thread.purpose` enum расширяется `hitl:<gate>`; `DecisionRow` получает `helper_verdict_payload`, `helper_verdict_context_type`, `helper_thread_id`
+9. GroundedSchema на tool arguments (для `cited_evidence_ids` в helper tools и подобных) — проверить что работает out-of-the-box, иначе добавить tooling
+
+Эти gaps + project structure rules + MVP scope + testing strategy + bootstrap rules → **Section 4** (отдельный TBD блок ниже).
+
+---
+
+## Section 4 — Infrastructure & Process (TBD)
+
+Закроется после Section 3 review. Будет покрывать:
+
+### 4A — Architectural deltas из Section 3 (gaps 1-9)
+
+Финализированные API для каждого из 9 gaps. Каждый — patch к Section 1 или Section 2 spec.
+
+### 4B — L4 State schema infrastructure
+
+- SQLModel классы для infra-таблиц (threads, chats, messages, checkpoints, outbox, drift_metrics, eval_runs, hitl_requests, hitl_responses, hitl_advisor_cache)
+- Repository protocols + базовые реализации (PostgresRepository, InMemoryRepository)
+- Alembic setup + autogenerate routine + custom migrations (partial unique idx, triggers, pgvector)
+- Indexes, partitioning гипотезы (per-tenant sharding via tenant_id)
+
+### 4C — L5 Evals infrastructure
+
+- Кастомные Scorers (SchemaAdherenceScorer, MutationAcceptanceScorer, IterationBudgetScorer, GroundedReferenceScorer, HelperVerdictDisagreementScorer)
+- `Dataset` builders из DBOS traces (CLI: `stateflow evals dataset-from-traces`)
+- CI integration
+
+### 4D — L6 Observability infrastructure
+
+- Logfire instrumentation setup (one-liner в bootstrap)
+- Span conventions per layer (Pattern, Step, Capability, Channel)
+- Pre-configured dashboards (drift, HITL latency, budget burn, schema-adherence, autopilot eligibility rate)
+- Drift detection pipeline (embedding-based + statistical via DBOS query)
+
+### 4E — Testing strategy
+
+- Unit: TestModel / FunctionModel + InMemoryRepository + FakeChannel + FakeHelperAgent
+- Integration: реальный PG через testcontainers + DBOS test mode
+- End-to-end: waves golden scenario через все слои
+- Eval: pydantic-evals в CI (один Dataset minimum)
+
+### 4F — MVP scope (v1) — тонкий вертикальный срез
+
+После того как gaps закрылись:
+- L0: `Ref[T]` + resolver + escape hatch + hydration
+- L1: `BudgetGuard` + `SemanticLoopDetector` + `GoalDriftDetector` + `LLMJudgeHook` + `PIIGuard` + `GroundedRetry` + helpers (`SemanticDeduper`, `TypedLoopGuard`, `as_critique`, `Det`)
+- L2 Core: `Reflection` + `MapReduce` + `MutationPipeline` (с `ApprovalStage` modify + `PartialApprovalStage`) + `HITLGate`
+- L2 Channels: `UIChannel` + `ChatChannel` + `ConversationalChannel` (+ FakeChannel для тестов)
+- L2 Extended (v1.1): `SelfRAG`, `CorrectiveRAG`, `DivergentConvergent`, `PlanAndExecute` (with slot-based DAG), `SemanticRouter`
+- L3: полная DBOS интеграция + lint rules STATEFLOW001-009
+- L4: infra-таблицы + Alembic + base Repositories
+- L5: один `SchemaAdherenceScorer` + один Dataset + CLI eval-from-trace
+- L6: базовый logfire + один dashboard
+- L7: FastAPI surface с AG-UI + Vercel adapters + базовые endpoints
+
+### 4G — Project structure rules
+
+- Recommended layout (см. 3B как образец)
+- Custom ruff rules: `STATEFLOW001-009` (см. 2E.1)
+- Public API через `__all__` в каждом bounded context
+
+### 4H — Bootstrap rules
+
+- Engine + ServiceProvider order
+- Bootstrap-time invariants (Tool coverage, capability validation, credentials check, Alembic pending check)
+- Observability + DBOS launch sequence
 
 ---
 
@@ -1447,8 +2161,19 @@ Inter-agent коммуникация (Pattern → Pattern across services / exte
 
 ## Open Questions (remaining)
 
-### Pending for v1
-- [ ] **Golden scenario для MVP** — нужен конкретный бизнес-кейс (домен, entities, что агент решает). Без него Section 3 будет в абстракции.
+### Pending for v1 (will be addressed in Section 4)
+- [ ] Финализация API для 9 architectural deltas из 3K
+- [ ] Phase 1 (Program Init) онбординг chat-agent — не покрыт детально в 3E (фокус был на Wave Loop). Включить в Section 4 / Examples.
+
+### Closed in Section 3
+- ✅ **Golden scenario для MVP** — waves validation system (Section 3) выбрана как референс
+- ✅ **Eval-from-trace** — закрыто в 1.14
+- ✅ **Multi-tenant** — закрыто в 1.12
+- ✅ **A2A vs AG-UI** — закрыто в 1.13
+- ✅ **Modify-flow для approval** — реализовано в `ApprovalStage` (2C.3) и `PartialApprovalStage` (3K gap #1)
+- ✅ **Conversational HITL через helper agent с approval tools** — `ConversationalChannel` (3J)
+- ✅ **Structured helper output в audit-log** — `HelperVerdict[ContextT]` generic (3J.2)
+- ✅ **Clarification через ChatMessage** — без новых abstractions, использует pydantic-ai native message history
 
 ### Deferred to v2
 
