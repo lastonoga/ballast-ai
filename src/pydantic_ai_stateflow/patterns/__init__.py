@@ -8,12 +8,17 @@ from pydantic_ai_stateflow.patterns.errors import (
 from pydantic_ai_stateflow.patterns.hitl import HITLGate
 from pydantic_ai_stateflow.patterns.loop_recovery import AbortOnLoop, LoopRecoveryPolicy
 from pydantic_ai_stateflow.patterns.mapreduce import Chunker, MapReduce, Reducer
-from pydantic_ai_stateflow.patterns.mutation import MutationPipeline
+from pydantic_ai_stateflow.patterns.mutation import (
+    ApprovalStage,
+    MutationPipeline,
+    PartialApprovalStage,
+)
 from pydantic_ai_stateflow.patterns.protocol import Pattern
 from pydantic_ai_stateflow.patterns.reflection import Reflection
 
 __all__ = [
     "AbortOnLoop",
+    "ApprovalStage",
     "Chunker",
     "HITLDenied",
     "HITLGate",
@@ -22,6 +27,7 @@ __all__ = [
     "MapReduce",
     "MutationPipeline",
     "MutationRejected",
+    "PartialApprovalStage",
     "Pattern",
     "PatternError",
     "Reducer",
