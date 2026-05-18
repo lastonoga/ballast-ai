@@ -1,0 +1,53 @@
+[project]
+name = "notes-app"
+version = "0.1.0"
+description = "Dogfood reference app for pydantic-ai-stateflow — iteration 2 backend"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic-ai-stateflow",
+    "pydantic-ai>=1.97",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-dotenv>=1.0",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.uv.sources]
+pydantic-ai-stateflow = { path = "../../..", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.11.14,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "PT", "RET", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+# Framework ships without `py.typed`; treat it as untyped for now.
+# Recorded as a gap in RETRO.md.
+[[tool.mypy.overrides]]
+module = "pydantic_ai_stateflow.*"
+ignore_missing_imports = true
+follow_imports = "skip"
