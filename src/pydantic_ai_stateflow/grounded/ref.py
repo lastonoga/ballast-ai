@@ -31,21 +31,18 @@ class Ref(Generic[EntityT]):
         return self.__class__.__entity_type__
 
     def __class_getitem__(cls, item: type[BaseModel]) -> type[Ref[Any]]:
-        # Each subscripted form gets a dedicated subclass that remembers the type.
-        # Cache via cls.__dict__.setdefault so each class gets its own cache
-        # (not inherited from parent via MRO).
-        cache_dict: Any = cls.__dict__.get("_subscript_cache")
-        if cache_dict is None:
-            cache_dict = {}
-            type.__setattr__(cls, "_subscript_cache", cache_dict)
+        # Per-class cache (not inherited via MRO). `cls.__dict__` is a
+        # `mappingproxy` (immutable view) so we cannot call `.setdefault`
+        # on it directly — we install the cache via `setattr` and check
+        # presence with `in cls.__dict__` (MRO-local).
+        if "_subscript_cache" not in cls.__dict__:
+            cls._subscript_cache = {}  # type: ignore[attr-defined]
+        cache: dict[type, type[Ref[Any]]] = cls._subscript_cache  # type: ignore[attr-defined]
 
-        if item in cache_dict:
-            return cache_dict[item]  # type: ignore[no-any-return]
-
-        cls_name = f"Ref[{item.__name__}]"
-        new_cls = type(cls_name, (Ref,), {"__entity_type__": item})
-        cache_dict[item] = new_cls
-        return new_cls
+        if item not in cache:
+            cls_name = f"Ref[{item.__name__}]"
+            cache[item] = type(cls_name, (Ref,), {"__entity_type__": item})
+        return cache[item]
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Ref):
