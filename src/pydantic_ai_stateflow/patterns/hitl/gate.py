@@ -6,6 +6,7 @@ from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
 
+from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.patterns.errors import HITLDenied, HITLTimedOut
 from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
 from pydantic_ai_stateflow.patterns.hitl.policy import Policy
@@ -63,6 +64,9 @@ class HITLGate(DBOSConfiguredInstance):
         self.repo = repo
 
     @DBOS.workflow()
+    @traced("pattern.hitl_gate", attrs=lambda self, prompt, *, tenant_id: {
+        "tenant_id": str(tenant_id), "pattern": self.name,
+    })
     async def run(self, prompt: HITLPrompt, *, tenant_id: UUID) -> HITLResponse:
         if prompt.tenant_id != tenant_id:
             raise ValueError(

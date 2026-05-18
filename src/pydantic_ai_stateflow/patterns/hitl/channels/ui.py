@@ -7,6 +7,7 @@ from uuid import UUID
 from dbos import DBOS
 from pydantic import TypeAdapter
 
+from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
 from pydantic_ai_stateflow.patterns.hitl.response import (
     HITLResponse,
@@ -30,6 +31,9 @@ class UIChannel:
 
     name: ClassVar[str] = "ui"
 
+    @traced("channel.ui", attrs=lambda self, prompt, *, request_id: {
+        "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
+    })
     async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:
         topic = _hitl_topic(prompt.tenant_id, request_id)
         timeout_seconds = (

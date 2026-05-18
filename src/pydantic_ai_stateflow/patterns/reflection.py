@@ -14,6 +14,7 @@ from pydantic_ai_stateflow.capabilities.helpers import (
     SemanticLoopDetected,
     TypedLoopGuard,
 )
+from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.patterns.errors import ReflectionExhausted
 from pydantic_ai_stateflow.patterns.loop_recovery import AbortOnLoop, LoopRecoveryPolicy
 
@@ -81,6 +82,9 @@ class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
         self.feedback_renderer = feedback_renderer
 
     @DBOS.workflow()
+    @traced("pattern.reflection", attrs=lambda self, task, *, tenant_id: {
+        "tenant_id": str(tenant_id), "pattern": self.name,
+    })
     async def run(self, task: InT, *, tenant_id: UUID) -> OutT:
         feedback: list[Critique] = []
         for _ in range(self.max_iterations):
