@@ -44,3 +44,8 @@ class OutputSpec:
             elif f.role in (FieldRole.NESTED, FieldRole.LIST_NESTED) and f.nested_spec:
                 out |= f.nested_spec.referenced_entity_types
         return out
+
+
+@dataclass
+class ContextSources:
+    by_entity_type: dict[type, list[Any]] = field(default_factory=dict)

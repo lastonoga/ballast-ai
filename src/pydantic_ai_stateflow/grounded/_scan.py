@@ -6,7 +6,7 @@ from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded._spec import FieldRole, FieldSpec, OutputSpec
+from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, FieldSpec, OutputSpec
 from pydantic_ai_stateflow.grounded.ref import Ref
 
 
@@ -101,3 +101,37 @@ def _ref_target(annotation: Any) -> type[BaseModel]:
     if target is None:
         raise TypeError(f"Subscripted Ref expected, got {annotation!r}")
     return target
+
+
+def scan_context(context: BaseModel, output_spec: OutputSpec, *, max_depth: int = 5) -> ContextSources:
+    """Walk a Pydantic context, collect instances of types referenced by output_spec.
+
+    Returns a `ContextSources` with `by_entity_type[T]` mapping to all `t.id`
+    values for each `T` instance encountered, recursively.
+    """
+    sources = ContextSources()
+    targets = output_spec.referenced_entity_types
+    if not targets:
+        return sources
+
+    _walk(context, targets, sources, depth=0, max_depth=max_depth)
+    return sources
+
+
+def _walk(obj: Any, targets: set[type], sources: ContextSources, depth: int, max_depth: int) -> None:
+    if depth > max_depth:
+        return
+    if isinstance(obj, BaseModel):
+        if type(obj) in targets:
+            id_val = getattr(obj, "id", None)
+            if id_val is not None:
+                sources.by_entity_type.setdefault(type(obj), []).append(id_val)
+        for field_name in type(obj).model_fields:
+            _walk(getattr(obj, field_name), targets, sources, depth + 1, max_depth)
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        for item in obj:
+            _walk(item, targets, sources, depth + 1, max_depth)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _walk(v, targets, sources, depth + 1, max_depth)
+    # primitives — stop
