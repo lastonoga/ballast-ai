@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, GetCoreSchemaHandler
+from pydantic_core import CoreSchema, core_schema
 
 EntityT = TypeVar("EntityT", bound=BaseModel)
 
@@ -43,6 +44,30 @@ class Ref(Generic[EntityT]):
             cls_name = f"Ref[{item.__name__}]"
             cache[item] = type(cls_name, (Ref,), {"__entity_type__": item})
         return cache[item]
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler: GetCoreSchemaHandler
+    ) -> CoreSchema:
+        # Validate as UUID, then wrap into Ref instance carrying entity_type.
+        # Serialize as plain UUID string (no wrapper).
+        def _validate(value: Any) -> Ref[Any]:
+            if isinstance(value, Ref):
+                return value
+            uuid_value = UUID(value) if isinstance(value, str) else value
+            if not isinstance(uuid_value, UUID):
+                raise TypeError(f"Ref value must be UUID or UUID-string, got {type(value)}")
+            return cls(uuid_value)
+
+        def _serialize(ref: Ref[Any]) -> str:
+            return str(ref.id)
+
+        return core_schema.no_info_plain_validator_function(
+            _validate,
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                _serialize, return_schema=core_schema.str_schema()
+            ),
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Ref):
