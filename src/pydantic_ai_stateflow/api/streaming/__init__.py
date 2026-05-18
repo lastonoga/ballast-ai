@@ -4,5 +4,12 @@ from pydantic_ai_stateflow.api.streaming.router import (
     StreamEvent,
     build_streaming_router,
 )
+from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
 
-__all__ = ["AGUIEncoder", "StreamEncoder", "StreamEvent", "build_streaming_router"]
+__all__ = [
+    "AGUIEncoder",
+    "StreamEncoder",
+    "StreamEvent",
+    "VercelEncoder",
+    "build_streaming_router",
+]

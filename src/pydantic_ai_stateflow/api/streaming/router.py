@@ -4,12 +4,13 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
+from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 
@@ -33,7 +34,10 @@ class _PostMessageBody(BaseModel):
 
 AgentRunner = Callable[..., AsyncIterator[StreamEvent]]
 
+_ENCODERS: dict[str, type] = {"ag-ui": AGUIEncoder, "vercel": VercelEncoder}
+
 _TenantDep = Depends(get_tenant_id)
+_ProtocolQuery = Query(default="ag-ui")
 
 
 def build_streaming_router(
@@ -49,16 +53,24 @@ def build_streaming_router(
     Provide a fake in tests; production wires it to `agent.run_stream(...)` /
     `agent.iter(...)`. The user message is persisted BEFORE the stream starts
     so a client crash mid-stream still leaves the thread consistent.
+
+    If `encoder` is supplied it overrides the per-request `?protocol=` query
+    param; otherwise the encoder is chosen from `_ENCODERS` by protocol.
     """
     router = APIRouter(prefix=prefix)
-    enc: StreamEncoder = encoder or AGUIEncoder()
 
     @router.post("/threads/{thread_id}/messages")
     async def post_message(
         thread_id: UUID,
         body: _PostMessageBody,
         tenant_id: UUID = _TenantDep,
+        protocol: str = _ProtocolQuery,
     ) -> StreamingResponse:
+        if protocol not in _ENCODERS:
+            raise HTTPException(
+                status_code=400, detail=f"unknown protocol: {protocol}",
+            )
+        chosen: StreamEncoder = encoder or _ENCODERS[protocol]()
         thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
@@ -70,8 +82,8 @@ def build_streaming_router(
             async for event in agent_runner(
                 thread_id=thread_id, message=body, tenant_id=tenant_id,
             ):
-                yield enc.encode(event)
+                yield chosen.encode(event)
 
-        return StreamingResponse(_gen(), media_type=enc.media_type)
+        return StreamingResponse(_gen(), media_type=chosen.media_type)
 
     return router
