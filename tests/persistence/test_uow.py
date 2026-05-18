@@ -14,7 +14,10 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     sqlite_tables = [
         t
         for t in SQLModel.metadata.sorted_tables
-        if t.name not in ("threads", "messages", "outbox")
+        if t.name not in (
+            "threads", "messages", "outbox",
+            "hitl_blocking_requirements", "hitl_decisions", "hitl_authz_denials",
+        )
     ]
     async with engine.begin() as conn:
         await conn.run_sync(lambda c: SQLModel.metadata.create_all(c, tables=sqlite_tables))
