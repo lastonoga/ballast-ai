@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
 
 EntityT = TypeVar("EntityT", bound=BaseModel)
+RepoEntityT = TypeVar("RepoEntityT", bound=BaseModel, covariant=True)
+
+
+class RepositoryLike(Protocol[RepoEntityT]):
+    async def load(self, id: UUID) -> RepoEntityT: ...
 
 
 class Ref(Generic[EntityT]):
@@ -81,6 +86,15 @@ class Ref(Generic[EntityT]):
                 _serialize, return_schema=core_schema.str_schema()
             ),
         )
+
+    async def hydrate(self, repo: RepositoryLike[EntityT]) -> EntityT:
+        """Materialize this reference via a repository.
+
+        `repo` must be any object with `async def load(id: UUID) -> EntityT`.
+        We deliberately accept any structurally compatible object, not a
+        specific Protocol, to keep this module dependency-free.
+        """
+        return await repo.load(self.id)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Ref):
