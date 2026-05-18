@@ -12,6 +12,8 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "dbos>=1.0",
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
