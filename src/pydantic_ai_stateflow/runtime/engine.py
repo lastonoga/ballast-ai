@@ -48,7 +48,21 @@ class Engine:
     async def boot(self) -> None:
         if self._booted:
             raise RuntimeError("Engine already booted")
+        # Lazy import to avoid a cycle: observability.provider imports
+        # EngineInvariantViolation from this module.
+        from pydantic_ai_stateflow.observability.provider import ObservabilityProvider
+
         for provider in self._providers:
+            # Spec 4H: ObservabilityProvider must be first. Before invoking
+            # any non-Observability provider, set a tripwire on the container
+            # — if ObservabilityProvider runs later it will detect this and
+            # raise EngineInvariantViolation.
+            if not isinstance(provider, ObservabilityProvider) and not getattr(
+                self.container,
+                "_observability_registered",
+                False,
+            ):
+                self.container._observability_first_violated = True  # type: ignore[attr-defined]
             await provider.register(self.container)
         for invariant in self._invariants:
             await invariant(self.container)
