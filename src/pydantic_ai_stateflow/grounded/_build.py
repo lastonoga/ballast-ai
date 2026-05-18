@@ -38,6 +38,21 @@ def _make_ref_wrapper(entity_type: type[BaseModel]) -> Any:
     return AfterValidator(_wrap)
 
 
+def _make_ref_annotation(target: type[BaseModel], ids: list[Any]) -> Any:
+    """Build Annotated[Literal[*id_strs], BV-to-str, AV-to-Ref[target]].
+
+    Single source of truth for all REF / LIST_REF / OPTIONAL_REF item types.
+    """
+    id_strs = tuple(str(i) for i in ids)
+    literal_type: Any = _make_literal(id_strs)
+    _before = BeforeValidator(
+        lambda v: str(v.id) if isinstance(v, Ref)
+        else str(v) if isinstance(v, UUID)
+        else v
+    )
+    return Annotated[literal_type, _before, _make_ref_wrapper(target)]
+
+
 def build_dynamic(
     model: type[BaseModel],
     spec: OutputSpec,
@@ -66,21 +81,30 @@ def build_dynamic(
                         f"No instances of {target.__name__} in context "
                         f"for {fspec.path}"
                     )
-                # Literal of stringified UUIDs → JSON schema enum advertises
-                # allowed values to the LLM as strings.
-                # BeforeValidator: coerce input UUID/Ref to string for the
-                # Literal membership check.
-                # AfterValidator: wrap matched string into Ref[Entity] so
-                # downstream code receives the typed reference.
-                id_strs = tuple(str(i) for i in ids)
-                literal_type: Any = _make_literal(id_strs)
-                _before = BeforeValidator(
-                    lambda v: str(v.id) if isinstance(v, Ref)
-                    else str(v) if isinstance(v, UUID)
-                    else v
-                )
-                annotation = Annotated[literal_type, _before, _make_ref_wrapper(target)]
-                fields[name] = (annotation, field_info)
+                fields[name] = (_make_ref_annotation(target, ids), field_info)
+
+            case FieldRole.LIST_REF:
+                target = fspec.target_type
+                assert target is not None, "LIST_REF field must have a target_type"
+                ids = sources.by_entity_type.get(target, [])
+                if not ids:
+                    raise GroundedBuildError(
+                        f"No instances of {target.__name__} in context "
+                        f"for {fspec.path} (list[Ref])"
+                    )
+                item_annotation: Any = _make_ref_annotation(target, ids)
+                fields[name] = (list[item_annotation], field_info)
+
+            case FieldRole.OPTIONAL_REF:
+                target = fspec.target_type
+                assert target is not None, "OPTIONAL_REF field must have a target_type"
+                ids = sources.by_entity_type.get(target, [])
+                if not ids:
+                    # No instances — Optional means only None is valid.
+                    fields[name] = (type(None), field_info)
+                else:
+                    inner_annotation: Any = _make_ref_annotation(target, ids)
+                    fields[name] = (inner_annotation | None, field_info)
 
             case FieldRole.FREE:
                 fields[name] = (field_info.annotation, field_info)
