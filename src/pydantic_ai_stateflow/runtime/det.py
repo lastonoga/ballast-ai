@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TypeVar
 from uuid import UUID, uuid5
@@ -34,7 +35,10 @@ class Det:
         return _uuid4()
 
     @staticmethod
-    async def random_choice(seq: list[T]) -> T:
+    async def random_choice(seq: Sequence[T]) -> T:
+        # Accepts any Sequence (list, tuple, etc.) — broader than list-only.
+        # CPython random.choice is thread-safe (module-level Random instance
+        # is GIL-protected); do not replace with a non-thread-safe variant.
         return random.choice(seq)
 
     @staticmethod
