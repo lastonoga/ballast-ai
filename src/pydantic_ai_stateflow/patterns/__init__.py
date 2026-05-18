@@ -12,6 +12,7 @@ from pydantic_ai_stateflow.patterns.mutation import (
     ApprovalStage,
     MutationPipeline,
     PartialApprovalStage,
+    Proposal,
 )
 from pydantic_ai_stateflow.patterns.protocol import Pattern
 from pydantic_ai_stateflow.patterns.reflection import Reflection
@@ -30,6 +31,7 @@ __all__ = [
     "PartialApprovalStage",
     "Pattern",
     "PatternError",
+    "Proposal",
     "Reducer",
     "Reflection",
     "ReflectionExhausted",
