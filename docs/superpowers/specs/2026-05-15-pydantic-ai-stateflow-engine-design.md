@@ -1139,7 +1139,11 @@ class AuthzDenialRow(SQLModel, table=True):
 
 ---
 
-### 2D — L2 Patterns: Extended (5 more)
+### 2D — L2 Patterns: Extended (5 more) — *DESIGN-ONLY, NOT IN v1*
+
+> **Status (post-review):** these 5 patterns are designed but **deferred from v1 MVP**. The reference example (Section 3, waves validation) does not use them directly. They are kept here as architectural contracts for v1.1/v2 implementation, but no v1 implementation plan task references them.
+>
+> If a v1 use case for one emerges, promote it from this section without redesign — APIs stay stable.
 
 #### 2D.1 SelfRAG
 
@@ -2077,25 +2081,97 @@ async def build_engine() -> Engine:
 
 ### 3J — ConversationalChannel + HelperAgent + generic HelperVerdict
 
-#### 3J.1 ConversationalChannel
+#### 3J.1 ConversationalChannel  *(updated per code-review)*
 
 ```python
 class ConversationalChannel(HITLChannel):
-    """HITL через thread с helper agent. Approve/reject — agent tools."""
-    name = "conversational"
-    def __init__(self, helper_factory: HelperAgentFactory, thread_repo, chat_runtime,
-                 *, default_timeout=timedelta(hours=24), budget_per_conversation: TokenBudget | None = None):
-        ...
+    """HITL через thread с helper agent. Approve/reject — agent tools.
     
-    async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:
+    Runtime model (explicit):
+    - helper agent runs as a SEPARATE DBOS workflow ("helper_session"),
+      NOT inside HITLGate's workflow. Reason: helper conversation is
+      long-running (founder may take hours/days), interactive
+      (founder messages arrive via separate API endpoints), and has
+      its own state machine. Embedding it inside HITLGate's workflow
+      would deadlock DBOS event log on every founder message.
+    - HITLGate workflow paused on DBOS.recv (waiting for tool to send).
+    - Helper session workflow consumes user messages, runs agent
+      iterations, invokes approval tools when ready.
+    - Approval tool call inside helper agent ⇒ DBOS.send to HITLGate's
+      tenant-scoped topic ⇒ HITLGate wakes up.
+    """
+    name = "conversational"
+    
+    def __init__(
+        self,
+        helper_factory: HelperAgentFactory,
+        thread_repo: ThreadRepository,
+        helper_session_runner: HelperSessionRunner,  # explicit type, see below
+        *,
+        default_timeout: timedelta = timedelta(hours=24),
+        budget_per_conversation: TokenBudget | None = None,
+    ): ...
+    
+    async def ask(
+        self, prompt: HITLPrompt, *, request_id: UUID, policy: Policy,
+    ) -> HITLResponse:
+        """Spawn helper session as separate workflow; wait via tenant-scoped topic."""
         thread = await self._open_or_resume_thread(prompt, request_id)
-        agent = await self.helper_factory.build(prompt=prompt, request_id=request_id, thread_id=thread.id, tenant_id=prompt.tenant_id)
-        await self.chat_runtime.kick_off(agent=agent, thread_id=thread.id, initial_context=_build_helper_intro(prompt))
-        # Workflow паузится в DBOS.recv пока helper не вызовет approval tool
-        return await DBOS.recv(topic=str(request_id), timeout=prompt.timeout or self.default_timeout)
+        
+        # Start helper session as INDEPENDENT workflow.
+        # workflow_id = hash(tenant, request_id, "helper_session") — idempotent.
+        await DBOS.start_workflow_idempotent(
+            self.helper_session_runner.run,
+            HelperSessionInput(
+                prompt=prompt,
+                request_id=request_id,
+                thread_id=thread.id,
+                tenant_id=prompt.tenant_id,
+            ),
+            idempotency_key=f"helper:{prompt.tenant_id}:{request_id}",
+        )
+        
+        # Wait for approval tool to deliver — receive-and-validate loop
+        return await _receive_authorized(
+            request_id=request_id, prompt=prompt, policy=policy,
+            timeout=prompt.timeout or self.default_timeout,
+        )
+
+
+class HelperSessionRunner(Protocol):
+    @DBOS.workflow()
+    async def run(self, input: HelperSessionInput) -> None:
+        """Manages the helper conversation lifecycle in its own workflow.
+        
+        Loop: receive next founder message (from thread inbox via DBOS.recv on
+        separate topic) → invoke agent.run for one iteration → if agent
+        called approval tool, exit; otherwise loop.
+        """
+
+
+# Approval tools INSIDE helper agent invoke DBOS.send to HITLGate topic:
+async def approve(ctx, rationale, confidence, ...) -> str:
+    await DBOS.send(
+        topic=_topic(ctx.deps.tenant_id, ctx.deps.request_id),
+        payload=ApprovedResponse(
+            feedback=rationale, actor_id=ctx.deps.actor_id,
+            answered_at=datetime.now(UTC),
+            helper_verdict=verdict.model_dump(),
+        ),
+    )
+    return "✓ Approved. Closing helper session."
 ```
 
-Clarification = просто ChatMessage в thread → founder отвечает в том же thread → continuing agent run видит ответ. Никаких новых abstractions.
+**Why two workflows (HITLGate + HelperSession), not one:**
+- HITLGate workflow paused → no compute used, durable.
+- Helper session active → handles founder messages without blocking HITLGate.
+- Both reference the same `request_id` (audit ties them together via tenant-scoped topic).
+- Crash recovery: HITLGate workflow replay finds DBOS.recv pending; helper session replay resumes from last completed agent iteration. Independent.
+
+**Clarification flow (no new abstractions):**
+- Founder writes a question in chat UI → POST `/threads/{thread_id}/messages` → endpoint does `DBOS.send(topic=f"helper:{...}", payload=user_message)`.
+- HelperSession workflow's loop receives via `DBOS.recv` on that topic → triggers next agent iteration → agent's `Agent.run(message_history=...)` sees the new message and produces next response.
+- All idempotent and durable.
 
 #### 3J.2 Generic HelperVerdict (framework — domain-agnostic base)
 
@@ -2882,7 +2958,15 @@ class DecisionRow(SQLModel, table=True):
     helper_thread_id: UUID | None = Field(foreign_key="threads.id", default=None)
 ```
 
-#### Delta 9: GroundedSchema on tool arguments
+#### Delta 9: GroundedSchema on tool arguments  *(STATUS: requires pydantic-ai internal API verification)*
+
+> **⚠ Status note:** This delta claims runtime Literal injection into tool-argument schemas works "out of the box" because pydantic-ai validates tool args through Pydantic. **Verification needed before implementation:** pydantic-ai derives tool schemas from function signatures statically at Agent construction. Runtime injection requires hooking into the tool-registration pipeline (or pre-decorating tool definitions with dynamic types per-run).
+>
+> **Plan for v1 implementation:**
+> 1. Verify via spike: can we provide tool arg types dynamically per `agent.run()` invocation?
+> 2. If YES: implement as described below.
+> 3. If NO: fallback to post-hoc validation — tool body validates `cited_evidence: list[UUID]` against allowed set, raises `ModelRetry` on hallucinated ID (uses existing `GroundedRetry` Capability).
+> 4. Either way, contract is the same from caller's perspective: hallucinated refs in tool args cause loop-back, not silent acceptance.
 
 Расширение L0 `GroundedAgent`: сканирует tool argument schemas (не только output_type) и применяет Literal-binding через Ref[T]-резолвер.
 
@@ -2891,7 +2975,7 @@ class GroundedAgent(Generic[CtxT, OutT]):
     def __init__(
         self, agent: Agent, *,
         output_type: type[OutT],
-        bind_tool_args: bool = True,                   # NEW: default True
+        bind_tool_args: bool = True,                   # NEW: default True (subject to spike result)
     ):
         self.agent = agent
         self.output_type = output_type
@@ -2899,7 +2983,7 @@ class GroundedAgent(Generic[CtxT, OutT]):
         self._tool_arg_resolvers = self._build_tool_arg_resolvers() if bind_tool_args else {}
 ```
 
-Default `True` — helpers не могут процитировать несуществующее.
+Default `True` — helpers не могут процитировать несуществующее. **Final mechanism (compile-time hook vs runtime validation) — TBD спайком на implementation.**
 
 ---
 
