@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from types import NoneType, UnionType
 from typing import Any, Literal, Union, get_args, get_origin
 
@@ -60,8 +61,34 @@ def _classify(name: str, path: str, annotation: Any) -> FieldSpec:
             target_type=annotation, nested_spec=scan_output(annotation, path=path),
         )
 
-    # Free (primitive / unrecognised — leave as-is)
+    # Free (primitive / unrecognised — leave as-is).
+    #
+    # KNOWN LIMITATIONS (planned for expanded type support in v1.1):
+    # - `Optional[list[Ref[X]]]`    → FREE (should be optional LIST_REF)
+    # - `Optional[BaseModel]`        → FREE (should be optional NESTED)
+    # - `Union[Ref[A], Ref[B]]`      → FREE (multi-type ref; ambiguous)
+    # - `dict[...]`                  → FREE (intentional; not in scope)
+    #
+    # Silent FREE means Refs inside these constructs do NOT get Literal
+    # narrowing, so the LLM could still hallucinate UUIDs there. We emit
+    # a warning to surface this latent gap.
+    if _contains_ref(annotation):
+        warnings.warn(
+            f"Field {path!r} has a Ref inside an unsupported type construct "
+            f"({annotation!r}). Classified as FREE — no Literal narrowing. "
+            "Use simpler shapes (bare Ref, list[Ref], Optional[Ref]) or wait "
+            "for v1.1 expanded support.",
+            stacklevel=3,
+        )
     return FieldSpec(name=name, path=path, role=FieldRole.FREE)
+
+
+def _contains_ref(annotation: Any) -> bool:
+    """True iff annotation is or contains a subscripted Ref anywhere in its
+    type tree. Used to warn about silent FREE-fallback on unhandled constructs."""
+    if _is_ref_type(annotation):
+        return True
+    return any(_contains_ref(arg) for arg in get_args(annotation))
 
 
 def _is_ref_type(annotation: Any) -> bool:

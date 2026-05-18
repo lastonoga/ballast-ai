@@ -78,3 +78,21 @@ def test_scan_detects_literal_field():
     spec = scan_output(Out)
     assert spec.fields["state"].role == FieldRole.LITERAL
     assert spec.fields["state"].literal_values == ("draft", "ready", "sent")
+
+
+def test_scan_warns_when_ref_buried_in_unsupported_construct(recwarn):
+    """Known v1 limitation: Optional[list[Ref[X]]] / Union[Ref[A], Ref[B]] /
+    Optional[BaseModel-with-Ref] silently classify as FREE. Emit warning so
+    developers see the latent gap instead of hallucination risk hiding."""
+    import warnings
+
+    class Out(BaseModel):
+        maybe_list: Optional[list[Ref[Item]]] = None  # noqa: UP007,UP045
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        spec = scan_output(Out)
+
+    assert spec.fields["maybe_list"].role == FieldRole.FREE
+    matched = [w for w in recwarn.list if "FREE" in str(w.message) and "maybe_list" in str(w.message)]
+    assert len(matched) >= 1, f"Expected FREE-fallback warning, got: {[str(w.message) for w in recwarn.list]}"
