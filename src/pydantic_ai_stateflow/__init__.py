@@ -14,8 +14,30 @@ Sub-project #3 (Runtime):
     Container, DefaultContainer, Engine, EngineInvariantViolation
     ServiceProvider, CoreProvider, PersistenceProvider
     DBOSConfig, build_dbos_config
+
+Sub-project #4 (Capabilities):
+    BudgetExhausted, BudgetGuard, GroundedRetry, PIIGuard,
+    SemanticLoopDetector, StateflowCapability
+    Critique, Embedder, SemanticDeduper, SemanticLoopDetected,
+    TypedLoopGuard, as_critique
 """
 
+from pydantic_ai_stateflow.capabilities import (
+    BudgetExhausted,
+    BudgetGuard,
+    GroundedRetry,
+    PIIGuard,
+    SemanticLoopDetector,
+    StateflowCapability,
+)
+from pydantic_ai_stateflow.capabilities.helpers import (
+    Critique,
+    Embedder,
+    SemanticDeduper,
+    SemanticLoopDetected,
+    TypedLoopGuard,
+    as_critique,
+)
 from pydantic_ai_stateflow.grounded import (
     GroundedAgent,
     GroundedBuildError,
@@ -41,11 +63,15 @@ from pydantic_ai_stateflow.runtime import (
 )
 
 __all__ = [
+    "BudgetExhausted",
+    "BudgetGuard",
     "Container",
     "CoreProvider",
+    "Critique",
     "DBOSConfig",
     "DefaultContainer",
     "Det",
+    "Embedder",
     "Engine",
     "EngineInvariantViolation",
     "GroundedAgent",
@@ -54,11 +80,19 @@ __all__ = [
     "GroundedHydrationError",
     "GroundedResolver",
     "GroundedResult",
+    "GroundedRetry",
     "IdempotencyInput",
     "IdempotencyValue",
+    "PIIGuard",
     "Pattern",
     "PersistenceProvider",
     "Ref",
+    "SemanticDeduper",
+    "SemanticLoopDetected",
+    "SemanticLoopDetector",
     "ServiceProvider",
+    "StateflowCapability",
+    "TypedLoopGuard",
+    "as_critique",
     "build_dbos_config",
 ]
