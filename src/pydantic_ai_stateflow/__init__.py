@@ -9,6 +9,11 @@ Runtime helpers:
 
 Patterns:
     Pattern (Protocol)
+
+Sub-project #3 (Runtime):
+    Container, DefaultContainer, Engine, EngineInvariantViolation
+    ServiceProvider, CoreProvider, PersistenceProvider
+    DBOSConfig, build_dbos_config
 """
 
 from pydantic_ai_stateflow.grounded import (
@@ -21,10 +26,28 @@ from pydantic_ai_stateflow.grounded import (
     Ref,
 )
 from pydantic_ai_stateflow.patterns import Pattern
-from pydantic_ai_stateflow.runtime import Det, IdempotencyInput, IdempotencyValue
+from pydantic_ai_stateflow.providers import CoreProvider, PersistenceProvider
+from pydantic_ai_stateflow.runtime import (
+    Container,
+    DBOSConfig,
+    DefaultContainer,
+    Det,
+    Engine,
+    EngineInvariantViolation,
+    IdempotencyInput,
+    IdempotencyValue,
+    ServiceProvider,
+    build_dbos_config,
+)
 
 __all__ = [
+    "Container",
+    "CoreProvider",
+    "DBOSConfig",
+    "DefaultContainer",
     "Det",
+    "Engine",
+    "EngineInvariantViolation",
     "GroundedAgent",
     "GroundedBuildError",
     "GroundedError",
@@ -34,5 +57,8 @@ __all__ = [
     "IdempotencyInput",
     "IdempotencyValue",
     "Pattern",
+    "PersistenceProvider",
     "Ref",
+    "ServiceProvider",
+    "build_dbos_config",
 ]
