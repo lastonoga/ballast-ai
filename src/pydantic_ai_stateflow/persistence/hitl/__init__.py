@@ -11,6 +11,11 @@ from pydantic_ai_stateflow.persistence.hitl.persistence import (
     BlockingRequirementRow,
     DecisionRow,
 )
+from pydantic_ai_stateflow.persistence.hitl.postgres import PostgresHITLRepository
+from pydantic_ai_stateflow.persistence.hitl.repository import (
+    HITLRepository,
+    InMemoryHITLRepository,
+)
 
 __all__ = [
     "AuthzDenial",
@@ -22,4 +27,7 @@ __all__ = [
     "DecisionRow",
     "DecisionVerdict",
     "HITLPurpose",
+    "HITLRepository",
+    "InMemoryHITLRepository",
+    "PostgresHITLRepository",
 ]
