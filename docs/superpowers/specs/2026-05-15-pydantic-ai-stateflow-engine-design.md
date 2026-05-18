@@ -729,6 +729,28 @@ class PIIGuard(StateflowCapability):
         return response
 ```
 
+#### 2B.7.1 LLMJudgeHook — error semantics  *(clarification)*
+
+`DBOS.start_workflow(self._judge_and_store, ...)` — fire-and-forget. Если запуск падает (DBOS overload, BD недоступен), capability **MUST log + continue**, не ронять primary run. Это **best-effort observability**, не at-least-once delivery.
+
+Если нужны at-least-once метрики — использовать outbox-listener (Section 4 EventDispatcher) с durable retry. LLMJudgeHook остаётся async-fire-and-forget по дизайну (нагрузка на primary run < 10ms).
+
+```python
+class LLMJudgeHook(StateflowCapability):
+    async def after_run(self, ctx, *, result):
+        if random.random() > self.sample_rate: return result
+        try:
+            DBOS.start_workflow(
+                self._judge_and_store,
+                run_id=ctx.run_id, output=result.output, criteria=self.criteria,
+                tenant_id=ctx.tenant_id,
+            )
+        except DBOSStartFailed as e:
+            logfire.warn("llm_judge_start_failed", error=str(e), run_id=ctx.run_id)
+            # NEVER fail primary run for observability
+        return result
+```
+
 #### 2B.8 GroundedRetry
 
 Превращает ValidationError → структурированный feedback через `ModelRetry`. Бьёт в "boundary-condition failures" из исходного документа.
@@ -805,6 +827,17 @@ class EscalateToHITL:
         raise ReflectionAborted(by_actor=resp.actor_id)
 
 class Reflection(Pattern[InT, OutT]):
+    """Loop-guard ordering note (post-review):
+    
+    Loop_guard runs AFTER _critique, not BEFORE. Reason:
+    - If we check loop before critique and the draft is loop-detected,
+      we'd return the draft without ever quality-checking it (silent
+      quality bypass).
+    - Now: critique runs first; if passed, return. If not passed AND
+      loop detected on the failed-draft history, recovery handler
+      decides what to do (abort / accept_last with quality warning /
+      escalate HITL).
+    """
     name = "reflection"
     def __init__(
         self,
@@ -822,13 +855,15 @@ class Reflection(Pattern[InT, OutT]):
         feedback: list[Critique] = []
         for i in range(self.max_iterations):
             draft = await self._write(task, feedback=feedback)
+            critique = await self._critique(draft, task)
+            if critique.passed:
+                return draft
+            feedback.append(critique)
+            # Loop check AFTER critique — recovery handler sees full critique history
             if self.loop_guard:
                 try:    await self.loop_guard.check(draft)
                 except SemanticLoopDetected:
                     return await self.loop_recovery.handle(self._ctx, draft, feedback)
-            critique = await self._critique(draft, task)
-            if critique.passed: return draft
-            feedback.append(critique)
         raise ReflectionExhausted(iterations=self.max_iterations, last_feedback=feedback)
 
     @DBOS.step()
@@ -898,6 +933,20 @@ class RetryModelOnReject:         # feedback для LLM → ModelRetry
 class EscalateToHITLOnReject:     # вторая попытка через approval
 
 class MutationPipeline(Pattern[Proposal[T], AcceptedResult[T] | RejectedAt]):
+    """workflow_id derivation (post-review):
+    
+    workflow_id = Det.uuid_for(IdempotencyInput(
+        namespace="mutation_pipeline",
+        parts={
+            "pipeline_name": self.name,
+            "proposal_id": proposal.proposal_id,
+            "tenant_id": tenant_id,
+        },
+    ))
+    
+    Retries of same proposal from flaky parent share workflow_id →
+    DBOS dedupes, cached AcceptedResult/RejectedAt returned.
+    """
     name = "mutation_pipeline"
     def __init__(
         self,
