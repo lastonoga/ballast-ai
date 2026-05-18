@@ -49,21 +49,34 @@ class Ref(Generic[EntityT]):
     def __get_pydantic_core_schema__(
         cls, source_type: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
-        # Validate as UUID, then wrap into Ref instance carrying entity_type.
-        # Serialize as plain UUID string (no wrapper).
-        def _validate(value: Any) -> Ref[Any]:
-            if isinstance(value, Ref):
+        # Validate using Pydantic's native UUID schema, then wrap into Ref.
+        # Using `no_info_after_validator_function` (instead of plain) gives us
+        # proper JSON Schema generation ({"type": "string", "format": "uuid"})
+        # which the LLM-facing dynamic models (Tasks 11-13) need to advertise.
+        def _wrap(value: Any) -> Ref[Any]:
+            # Same-type passthrough (already correctly typed).
+            if isinstance(value, cls):
                 return value
-            uuid_value = UUID(value) if isinstance(value, str) else value
-            if not isinstance(uuid_value, UUID):
-                raise TypeError(f"Ref value must be UUID or UUID-string, got {type(value)}")
-            return cls(uuid_value)
+            # Different-type Ref → re-wrap into THIS subscripted class to enforce typing.
+            # (Prevents Ref[B] silently slipping into a Ref[A] field.)
+            if isinstance(value, Ref):
+                return cls(value.id)
+            # Bare UUID — wrap.
+            return cls(value)
 
         def _serialize(ref: Ref[Any]) -> str:
             return str(ref.id)
 
-        return core_schema.no_info_plain_validator_function(
-            _validate,
+        # Use union to accept either Ref instances (from Python) or UUID strings/objects (from JSON).
+        # The uuid_schema validates strings/UUID objects; the is_instance_schema allows
+        # already-wrapped Ref instances to pass through.
+        return core_schema.no_info_after_validator_function(
+            function=_wrap,
+            schema=core_schema.union_schema([
+                core_schema.is_instance_schema(cls),
+                core_schema.is_instance_schema(Ref),
+                core_schema.uuid_schema(),
+            ]),
             serialization=core_schema.plain_serializer_function_ser_schema(
                 _serialize, return_schema=core_schema.str_schema()
             ),
