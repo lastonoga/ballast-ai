@@ -4,20 +4,38 @@ import typing
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, BeforeValidator, create_model
+from pydantic import AfterValidator, BaseModel, BeforeValidator, create_model
 
 from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, OutputSpec
 from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from pydantic_ai_stateflow.grounded.ref import Ref
 
 
-def _make_literal(values: list[Any]) -> Any:
-    """Create a Literal type from a list of values at runtime.
+def _make_literal(values: tuple[Any, ...]) -> Any:
+    """Create a Literal type from values at runtime.
 
-    Uses the internal ``typing._GenericAlias`` to construct the Literal because
-    the public API requires static arguments. This is stable across Python 3.11+
-    and is the accepted pattern for dynamic Literal construction.
+    Public Literal[...] subscription needs static args at parse time, so we
+    go through typing._GenericAlias for dynamic construction. Stable across
+    Python 3.11+; documented private-ish entry point.
     """
-    return typing._GenericAlias(Literal, tuple(values))  # type: ignore[attr-defined]
+    return typing._GenericAlias(Literal, values)  # type: ignore[attr-defined]
+
+
+def _make_ref_wrapper(entity_type: type[BaseModel]) -> Any:
+    """Build an AfterValidator that wraps a validated UUID into Ref[entity_type].
+
+    This is what makes `result.value.chosen` come back as a `Ref[Entity]` instance
+    (matching the user's static type) rather than a bare UUID.
+    """
+    def _wrap(value: Any) -> Ref[Any]:
+        if isinstance(value, Ref):
+            # Re-wrap to the exact subscripted class so entity_type is correct.
+            return Ref[entity_type](value.id)  # type: ignore[valid-type]
+        if isinstance(value, UUID):
+            return Ref[entity_type](value)  # type: ignore[valid-type]
+        # Stringified UUID — coerce.
+        return Ref[entity_type](UUID(value))  # type: ignore[valid-type]
+    return AfterValidator(_wrap)
 
 
 def build_dynamic(
@@ -25,10 +43,15 @@ def build_dynamic(
     spec: OutputSpec,
     sources: ContextSources,
 ) -> type[BaseModel]:
-    """Build a dynamic Pydantic model where Ref/Enum fields become Literals.
+    """Build a dynamic Pydantic model where Ref fields become Literal[*ids]
+    + an AfterValidator that wraps the matched UUID back into Ref[Entity].
+
+    User code sees `result.value.chosen` as `Ref[Entity]` at runtime, matching
+    the static type signature. The Literal layer is what gives the LLM-facing
+    JSON Schema its `enum` constraint.
 
     Recursive (in future tasks): nested BaseModel fields will be rebuilt with
-    dynamic Literals. Existing (non-grounded) fields are passed through.
+    dynamic Literals. Other (non-grounded) fields are passed through.
     """
     fields: dict[str, Any] = {}
     for name, fspec in spec.fields.items():
@@ -43,12 +66,20 @@ def build_dynamic(
                         f"No instances of {target.__name__} in context "
                         f"for {fspec.path}"
                     )
-                # Pydantic stores the inner Literal as `annotation` on FieldInfo,
-                # so `get_origin(field.annotation) is Literal` holds.
-                # `BeforeValidator(UUID)` coerces string input to UUID before the
-                # Literal membership check, so LLM string output validates cleanly.
-                literal_type = _make_literal(ids)
-                annotation = Annotated[literal_type, BeforeValidator(UUID)]  # type: ignore[valid-type]
+                # Literal of stringified UUIDs → JSON schema enum advertises
+                # allowed values to the LLM as strings.
+                # BeforeValidator: coerce input UUID/Ref to string for the
+                # Literal membership check.
+                # AfterValidator: wrap matched string into Ref[Entity] so
+                # downstream code receives the typed reference.
+                id_strs = tuple(str(i) for i in ids)
+                literal_type: Any = _make_literal(id_strs)
+                _before = BeforeValidator(
+                    lambda v: str(v.id) if isinstance(v, Ref)
+                    else str(v) if isinstance(v, UUID)
+                    else v
+                )
+                annotation = Annotated[literal_type, _before, _make_ref_wrapper(target)]
                 fields[name] = (annotation, field_info)
 
             case FieldRole.FREE:

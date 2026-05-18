@@ -1,4 +1,3 @@
-from typing import Literal, get_args, get_origin
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,7 +14,9 @@ class Item(BaseModel):
     name: str
 
 
-def test_build_replaces_ref_with_literal_of_ids():
+def test_build_advertises_ids_as_json_schema_enum_for_llm():
+    """Dynamic model's REF field must expose allowed ids as JSON Schema
+    `enum` of stringified UUIDs so the LLM sees the closed set."""
     class Out(BaseModel):
         chosen: Ref[Item]
         rationale: str
@@ -25,16 +26,18 @@ def test_build_replaces_ref_with_literal_of_ids():
 
     ids = [uuid4(), uuid4()]
     ctx = Ctx(items=[Item(id=ids[0], name="a"), Item(id=ids[1], name="b")])
-    out_spec = scan_output(Out)
-    sources = scan_context(ctx, out_spec)
-    Dynamic = build_dynamic(Out, out_spec, sources)  # noqa: N806
+    Dynamic = build_dynamic(Out, scan_output(Out), scan_context(ctx, scan_output(Out)))  # noqa: N806
 
-    chosen_field = Dynamic.model_fields["chosen"]
-    assert get_origin(chosen_field.annotation) is Literal
-    assert set(get_args(chosen_field.annotation)) == set(ids)
+    schema = Dynamic.model_json_schema()
+    chosen_schema = schema["properties"]["chosen"]
+    assert "enum" in chosen_schema
+    assert set(chosen_schema["enum"]) == {str(i) for i in ids}
 
 
-def test_build_validation_passes_for_allowed_value():
+def test_build_validation_returns_typed_ref_for_allowed_value():
+    """User-visible runtime: obj.chosen must be a Ref[Item] (matching the
+    static type), not a bare UUID or string. This is what makes the
+    downstream `result.hydrate(repo)` API work."""
     class Out(BaseModel):
         chosen: Ref[Item]
 
@@ -46,7 +49,9 @@ def test_build_validation_passes_for_allowed_value():
     Dynamic = build_dynamic(Out, scan_output(Out), scan_context(ctx, scan_output(Out)))  # noqa: N806
 
     obj = Dynamic.model_validate({"chosen": str(ids[0])})
-    assert obj.chosen == ids[0]
+    assert isinstance(obj.chosen, Ref)
+    assert obj.chosen.id == ids[0]
+    assert obj.chosen.entity_type is Item
 
 
 def test_build_validation_rejects_unknown_value():
