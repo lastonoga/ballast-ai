@@ -1,7 +1,7 @@
 # pydantic-ai-stateflow-engine — Design Spec
 
 - **Date:** 2026-05-15
-- **Status:** Sections 1 + 2 (A–E) + 3 (A–K, Reference Example: Waves) approved. Section 4 (architectural deltas + infrastructure + MVP scope) TBD.
+- **Status:** Sections 1 + 2 + 3 + 4 approved. Design complete; ready for implementation planning.
 - **Authors:** Kir + Claude (brainstorming session)
 - **Source material:** `.context/attachments/pasted_text_2026-05-15_15-09-12.txt` (architectural analysis of LLM production failures, RU)
 
@@ -1226,6 +1226,8 @@ Route.handler — `Agent` или `Pattern`; единая точка dispatch. Em
 - `STATEFLOW008` — `_*Row` SQLModel import outside `repositories/`
 - `STATEFLOW009` — Repository protocol method without `tenant_id` parameter
 
+Дополнительные DI / architecture rules расширяются в Section 4G: `STATEFLOW010-012`.
+
 **`Det` helpers:**
 
 ```python
@@ -2057,70 +2059,505 @@ class DecisionRow(SQLModel, table=True):
 8. `Thread.purpose` enum расширяется `hitl:<gate>`; `DecisionRow` получает `helper_verdict_payload`, `helper_verdict_context_type`, `helper_thread_id`
 9. GroundedSchema на tool arguments (для `cited_evidence_ids` в helper tools и подобных) — проверить что работает out-of-the-box, иначе добавить tooling
 
-Эти gaps + project structure rules + MVP scope + testing strategy + bootstrap rules → **Section 4** (отдельный TBD блок ниже).
+Эти gaps + project structure rules + MVP scope + testing strategy + bootstrap rules финализированы в **Section 4** ниже.
 
 ---
 
-## Section 4 — Infrastructure & Process (TBD)
+## Section 4 — Infrastructure, Architectural Deltas & MVP (approved)
 
-Закроется после Section 3 review. Будет покрывать:
+### 4A — Финализированные API для 9 deltas из Section 3K
 
-### 4A — Architectural deltas из Section 3 (gaps 1-9)
+#### Delta 1: `PartialApprovalStage` (L2)
 
-Финализированные API для каждого из 9 gaps. Каждый — patch к Section 1 или Section 2 spec.
+```python
+# pydantic_ai_stateflow/patterns/mutation/stages.py
+class ProposalElementExtractor(Protocol[T]):
+    def elements(self, proposal: Proposal[T]) -> list[ProposalElement]: ...
+    def with_approved_subset(
+        self, proposal: Proposal[T],
+        approved_ids: list[str],
+        modifications: dict[str, dict],
+    ) -> Proposal[T]: ...
 
-### 4B — L4 State schema infrastructure
+class ProposalElement(BaseModel):
+    element_id: str                                    # stable, content-derived
+    kind: str
+    path: str
+    summary: str
+    payload: dict
 
-- SQLModel классы для infra-таблиц (threads, chats, messages, checkpoints, outbox, drift_metrics, eval_runs, hitl_requests, hitl_responses, hitl_advisor_cache)
-- Repository protocols + базовые реализации (PostgresRepository, InMemoryRepository)
-- Alembic setup + autogenerate routine + custom migrations (partial unique idx, triggers, pgvector)
-- Indexes, partitioning гипотезы (per-tenant sharding via tenant_id)
+class PartialApprovalResponse(HITLResponse):
+    decision: Literal["all_approved", "partial", "all_rejected", "timeout"]
+    approved_element_ids: list[str] = []
+    rejected_element_ids: list[str] = []
+    modifications: dict[str, dict] = {}
 
-### 4C — L5 Evals infrastructure
+class PartialApprovalStage(Stage[T]):
+    name: str
+    def __init__(
+        self, hitl: HITLGate, *,
+        when: Callable[[Proposal[T]], bool] = lambda _: True,
+        prompt_builder: Callable[[Proposal[T]], HITLPrompt],
+        element_extractor: ProposalElementExtractor[T],
+        stage_name: str = "partial_approval",
+        allow_modify: bool = False,
+        editable_paths: set[str] | None = None,
+        revalidate_stages: list[Stage[T]] = (),
+    ):
+        if allow_modify and editable_paths is None:
+            raise ConfigError("allow_modify=True requires editable_paths whitelist")
+```
 
-- Кастомные Scorers (SchemaAdherenceScorer, MutationAcceptanceScorer, IterationBudgetScorer, GroundedReferenceScorer, HelperVerdictDisagreementScorer)
-- `Dataset` builders из DBOS traces (CLI: `stateflow evals dataset-from-traces`)
-- CI integration
+#### Delta 2: Slot-based DAG (расширение `PlanAndExecute`)
 
-### 4D — L6 Observability infrastructure
+```python
+class SlotRef(BaseModel):
+    producing_step_id: str
+    slot_name: str
 
-- Logfire instrumentation setup (one-liner в bootstrap)
-- Span conventions per layer (Pattern, Step, Capability, Channel)
-- Pre-configured dashboards (drift, HITL latency, budget burn, schema-adherence, autopilot eligibility rate)
-- Drift detection pipeline (embedding-based + statistical via DBOS query)
+class PlanStep(BaseModel):
+    step_id: str
+    description: str
+    executor_name: str
+    depends_on: list[str] = []                         # step-id-based (legacy)
+    input_slots: dict[str, SlotRef] = {}               # slot-based (new, opt-in)
+    output_slots: dict[str, SlotClass] = {}
+    inputs: dict[str, Any] = {}
+    
+    @model_validator(mode="after")
+    def _derive_depends_on(self):
+        if not self.depends_on and self.input_slots:
+            self.depends_on = list({sr.producing_step_id for sr in self.input_slots.values()})
+        return self
+```
 
-### 4E — Testing strategy
+Не ломает существующий API. `input_slots` — opt-in extension.
 
-- Unit: TestModel / FunctionModel + InMemoryRepository + FakeChannel + FakeHelperAgent
-- Integration: реальный PG через testcontainers + DBOS test mode
-- End-to-end: waves golden scenario через все слои
-- Eval: pydantic-evals в CI (один Dataset minimum)
+#### Delta 3: `as_critique(callable)` adapter (L1 helper)
 
-### 4F — MVP scope (v1) — тонкий вертикальный срез
+```python
+# pydantic_ai_stateflow/adapters/critique.py
+def as_critique(fn: Callable[[Any], Awaitable[Any]] | object) -> Agent[Any, Critique]:
+    """Адаптирует non-LLM critic (pure Python функцию или объект с .check()) под Agent.
+    
+    Использует FunctionModel — никаких внешних LLM вызовов.
+    Возвращаемое значение coercится к Critique.
+    """
+    if hasattr(fn, "check"):
+        fn = fn.check
+    
+    async def model_fn(messages, info) -> ModelResponse:
+        input_payload = _extract_input_from_messages(messages)
+        result = await fn(input_payload)
+        critique = _coerce_to_critique(result)
+        return ModelResponse(parts=[ToolCallPart(tool_name="critique_output", args=critique.model_dump())])
+    
+    return Agent(model=FunctionModel(model_fn), output_type=Critique)
+```
 
-После того как gaps закрылись:
-- L0: `Ref[T]` + resolver + escape hatch + hydration
-- L1: `BudgetGuard` + `SemanticLoopDetector` + `GoalDriftDetector` + `LLMJudgeHook` + `PIIGuard` + `GroundedRetry` + helpers (`SemanticDeduper`, `TypedLoopGuard`, `as_critique`, `Det`)
-- L2 Core: `Reflection` + `MapReduce` + `MutationPipeline` (с `ApprovalStage` modify + `PartialApprovalStage`) + `HITLGate`
-- L2 Channels: `UIChannel` + `ChatChannel` + `ConversationalChannel` (+ FakeChannel для тестов)
-- L2 Extended (v1.1): `SelfRAG`, `CorrectiveRAG`, `DivergentConvergent`, `PlanAndExecute` (with slot-based DAG), `SemanticRouter`
-- L3: полная DBOS интеграция + lint rules STATEFLOW001-009
-- L4: infra-таблицы + Alembic + base Repositories
-- L5: один `SchemaAdherenceScorer` + один Dataset + CLI eval-from-trace
-- L6: базовый logfire + один dashboard
-- L7: FastAPI surface с AG-UI + Vercel adapters + базовые endpoints
+#### Delta 4: `Det.uuid_for(inputs)` (расширение `Det`)
 
-### 4G — Project structure rules
+```python
+# pydantic_ai_stateflow/runtime/det.py
+class Det:
+    # existing: now(), uuid4(), random_choice() — все @DBOS.step
+    
+    @staticmethod
+    def uuid_for(inputs: Any, namespace: UUID = UUID_NAMESPACE) -> UUID:
+        """Deterministic UUID5 от stable JSON serialization.
+        
+        НЕ @DBOS.step — детерминистическая операция, доступна в workflow
+        body (не нарушает 2E.1).
+        
+        Используется для idempotency keys:
+        package_id = Det.uuid_for(work_package_inputs)
+        """
+        canonical = json.dumps(inputs, sort_keys=True, default=_stable_json_encoder)
+        return uuid5(namespace, canonical)
+```
 
-- Recommended layout (см. 3B как образец)
-- Custom ruff rules: `STATEFLOW001-009` (см. 2E.1)
-- Public API через `__all__` в каждом bounded context
+#### Delta 5: `ToolNeedsHITL` exception (L2 signals)
 
-### 4H — Bootstrap rules
+```python
+# pydantic_ai_stateflow/patterns/signals.py
+class ToolNeedsHITL(Exception):
+    """Универсальный signal от tool к enclosing Pattern: жди HITL response.
+    
+    Tool уже создал BlockingRequirement и вызвал DBOS.recv внутри своего .ask().
+    Exception сообщает enclosing Pattern (ExperimentRun / PlanAndExecute):
+    'эта неудача не retryable — package/step переходит в hitl_blocked'.
+    """
+    def __init__(self, gate: GateKind | str, request_id: UUID,
+                 payload: HITLResponse | None = None, message: str = ""):
+        self.gate = gate
+        self.request_id = request_id
+        self.payload = payload
+        super().__init__(message or f"Tool needs HITL gate '{gate}', request_id={request_id}")
+```
 
-- Engine + ServiceProvider order
-- Bootstrap-time invariants (Tool coverage, capability validation, credentials check, Alembic pending check)
-- Observability + DBOS launch sequence
+#### Delta 6: `ProposalPartiallyApproved` event + `ProposalAuditListener`
+
+```python
+# pydantic_ai_stateflow/events/standard.py
+class ProposalPartiallyApproved(DomainEvent):
+    proposal_id: UUID
+    pattern_name: str
+    stage_name: str
+    approved_element_ids: list[str]
+    rejected_element_ids: list[str]
+    modifications: dict[str, dict] = {}
+    actor_id: str | None
+    helper_verdict: dict | None = None
+
+# pydantic_ai_stateflow/listeners/proposal_audit.py
+class ProposalAuditListener(EventListener[
+    ProposalAccepted | ProposalRejected | ProposalPartiallyApproved | ProposalModified
+]):
+    """Стандартный listener — пишет в proposal_audit таблицу.
+    Удовлетворяет §5.7 ТЗ waves: 'система должна объяснить почему'."""
+```
+
+#### Delta 7: ConversationalChannel + HelperAgent + HelperVerdict
+
+Полностью описано в Section 3J — финальные пакеты:
+- `pydantic_ai_stateflow/hitl/conversational.py` — `ConversationalChannel`, `HelperAgentFactory` Protocol
+- `pydantic_ai_stateflow/hitl/helper.py` — `HelperVerdict[ContextT]`, `make_helper_agent_with_approval_tools`
+- Domain-specific context-классы — в app code (не framework)
+
+#### Delta 8: Thread purpose enum + DecisionRow helper columns
+
+```python
+# pydantic_ai_stateflow/state/persistence.py
+class ThreadPurpose(StrEnum):
+    ONBOARDING = "onboarding"
+    CONVERSATION = "conversation"
+    HITL = "hitl"
+
+class ThreadRow(SQLModel, table=True):
+    __tablename__ = "threads"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
+    purpose: str                                       # enum value или domain-specific str
+    purpose_metadata: dict = Field(sa_type=JSONB, default_factory=dict)
+    workflow_id: UUID | None = Field(index=True)
+    actor_id: str
+    created_at: datetime
+
+class DecisionRow(SQLModel, table=True):
+    __tablename__ = "hitl_decisions"
+    # ... existing fields
+    helper_verdict_payload: dict | None = Field(sa_type=JSONB, default=None)
+    helper_verdict_context_type: str | None = None    # FQN для restore в eval-export
+    helper_thread_id: UUID | None = Field(foreign_key="threads.id", default=None)
+```
+
+#### Delta 9: GroundedSchema on tool arguments
+
+Расширение L0 `GroundedAgent`: сканирует tool argument schemas (не только output_type) и применяет Literal-binding через Ref[T]-резолвер.
+
+```python
+class GroundedAgent(Generic[CtxT, OutT]):
+    def __init__(
+        self, agent: Agent, *,
+        output_type: type[OutT],
+        bind_tool_args: bool = True,                   # NEW: default True
+    ):
+        self.agent = agent
+        self.output_type = output_type
+        self._resolver = GroundedResolver(output_type)
+        self._tool_arg_resolvers = self._build_tool_arg_resolvers() if bind_tool_args else {}
+```
+
+Default `True` — helpers не могут процитировать несуществующее.
+
+---
+
+### 4B — L4 State Schema Infrastructure (framework tables)
+
+Framework предоставляет базовые таблицы и Repository-protocols. Приложение добавляет свои domain tables.
+
+#### Framework tables (первая Alembic миграция stateflow-engine)
+
+```python
+# pydantic_ai_stateflow/state/persistence.py
+
+class TenantRow(SQLModel, table=True):
+    __tablename__ = "tenants"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str
+    created_at: datetime
+
+class ThreadRow(SQLModel, table=True): ...                       # см. Delta 8
+class MessageRow(SQLModel, table=True): ...                      # parts JSONB, role enum
+class CheckpointRow(SQLModel, table=True): ...                   # workflow_id PK
+class OutboxRow(SQLModel, table=True): ...                       # event_type, payload, delivered_at
+class BlockingRequirementRow(SQLModel, table=True): ...          # gate_kind, status, timeout_at
+class DecisionRow(SQLModel, table=True): ...                     # см. Delta 8
+class AdvisorCacheRow(SQLModel, table=True): ...                 # для autopilot
+class ProposalAuditRow(SQLModel, table=True): ...                # для §5.7 ТЗ
+class EvalRunRow(SQLModel, table=True): ...                      # score, metadata
+class DriftMetricRow(SQLModel, table=True): ...                  # metric_name, value, baseline
+```
+
+Все таблицы имеют `tenant_id: UUID FK + index`.
+
+#### Repository protocols (framework — все принимают tenant_id)
+
+```python
+class ThreadRepository(Protocol):
+    async def create(self, *, purpose: str, purpose_metadata: dict, actor_id: str, tenant_id: UUID) -> Thread: ...
+    async def load(self, id: UUID, *, tenant_id: UUID) -> Thread: ...
+    async def add_message(self, thread_id: UUID, message: ModelMessage, *, tenant_id: UUID) -> None: ...
+    async def history(self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100) -> list[ModelMessage]: ...
+
+class HITLRepository(Protocol):
+    async def persist_request(self, prompt: HITLPrompt, *, request_id: UUID, tenant_id: UUID, purpose: str) -> None: ...
+    async def persist_response(self, request_id: UUID, response: HITLResponse, *, tenant_id: UUID) -> None: ...
+    async def persist_timeout(self, request_id: UUID, *, tenant_id: UUID) -> None: ...
+    async def list_pending(self, scope: Any, *, tenant_id: UUID) -> list[BlockingRequirement]: ...
+
+class OutboxRepository(Protocol): ...
+class CheckpointRepository(Protocol): ...
+class EvalStore(Protocol): ...
+class ProposalAuditRepository(Protocol): ...
+```
+
+#### Alembic strategy
+
+- Framework миграции в `pydantic_ai_stateflow/alembic/versions/` — выполняются первыми
+- Application миграции в `<app>/alembic/versions/` — после framework
+- Custom (non-autogenerate): partial unique indexes, append-only triggers, pgvector extension
+- Bootstrap-time check: `engine.boot()` падает при pending migrations
+
+---
+
+### 4C — L5 Evals Infrastructure
+
+#### Standard Scorers
+
+| Scorer | Что измеряет |
+|---|---|
+| `SchemaAdherenceScorer` | Был ли output валиден после первой генерации? Score 1.0 если retries=0 |
+| `MutationAcceptanceScorer` | % proposals прошедших pipeline; breakdown по reject-stages |
+| `IterationBudgetScorer` | Сколько Reflection iterations потребовалось |
+| `GroundedReferenceScorer` | 0 hallucinated refs в output (ловит ошибки hydration кода) |
+| `HelperVerdictDisagreementScorer` | helper.confidence > 0.9 но founder rejected — для improvement helper instructions |
+
+#### Eval-from-trace CLI
+
+```bash
+$ stateflow evals dataset-from-traces \
+    --since 2026-05-01 --pattern strategy_decision \
+    --filter "outcome=hitl_rejected" --tenant <uuid> \
+    --out datasets/strategy_failures.yaml
+```
+
+Под капотом — JOIN по `eval_runs` / `proposal_audit` / `DecisionRow` / `thread.history`.
+
+#### CI integration
+
+```python
+async def test_strategy_pattern_quality(strategy_dataset):
+    pattern = build_strategy_decision_pattern(...)
+    report = await strategy_dataset.evaluate(
+        pattern.run,
+        evaluators=[
+            SchemaAdherenceScorer(threshold=0.95),
+            MutationAcceptanceScorer(threshold=0.7),
+            GroundedReferenceScorer(threshold=1.0),
+        ],
+    )
+    assert report.passed
+```
+
+---
+
+### 4D — L6 Observability Infrastructure
+
+#### One-line setup (через ObservabilityProvider)
+
+```python
+logfire.configure(service_name="stateflow-engine", environment=settings.env)
+logfire.instrument_pydantic_ai()
+logfire.instrument_httpx(capture_all=True)
+logfire.instrument_sqlalchemy(engine=...)
+logfire.instrument_fastapi(app=...)
+```
+
+#### Span conventions
+
+| Span name | Attributes | Где |
+|---|---|---|
+| `pattern.<name>` | tenant_id, workflow_id, outcome | Each Pattern.run() |
+| `stage.<name>` | stage_name, pipeline_name, accepted/rejected | Each Stage.process() |
+| `step.<name>` | step_name, duration_ms, retry_count | @DBOS.step |
+| `capability.<name>` | capability_name, run_step | Each capability hook |
+| `channel.<name>` | channel_name, gate_kind, latency_ms | HITLChannel.ask |
+| `agent.run.<agent_name>` | model, output_type, token_usage | Each agent.run |
+
+#### Pre-configured dashboards
+
+1. **Drift detection** — embedding distance vs baseline per pattern/tenant
+2. **HITL latency** — P50/P95 по gate_kind / channel
+3. **Budget burn** — token usage per tenant/project, by Pattern
+4. **Schema adherence** — % runs с retries > 0
+5. **Autopilot eligibility rate** — % gates где helper marked autopilot_eligible
+6. **Mutation acceptance funnel** — % proposals accepted at each stage
+
+#### Drift detection pipeline
+
+- Embedding-based: периодический DBOS scheduled workflow сравнивает distribution свежих запросов с baseline
+- Statistical: percentile shifts (token usage, latency, retry count)
+- Threshold breach → DriftMetricRow + EventDispatcher event → alert
+
+---
+
+### 4E — Testing Strategy
+
+#### Layer matrix
+
+| Test type | Что | Tools |
+|---|---|---|
+| Unit (L0) | Resolver, hydration, Pydantic schemas | Pure pytest |
+| Unit (L1) | Capabilities в изоляции | TestModel / FunctionModel + agent.override() |
+| Unit (L2) | Pattern логика без durability | InMemoryRepository + FakeChannel + FakeHelperAgent + DBOS test mode |
+| Integration | Полный stack локально | testcontainers PG + real DBOS + TestModel для LLM |
+| End-to-end (golden) | Один реальный сценарий через все слои | testcontainers PG + real DBOS + recorded LLM (VCR) |
+| Eval (regression) | Quality gates на ключевые pattern | pydantic-evals Dataset + scorers в CI |
+
+#### Framework testing helpers
+
+```python
+# pydantic_ai_stateflow.testing
+class InMemoryRepository(Repository[T]): ...           # generic in-memory любого Repository protocol
+
+class FakeChannel(HITLChannel):
+    def __init__(self, answer: HITLResponse | Callable[[HITLPrompt], HITLResponse]): ...
+
+class FakeHelperAgent:                                  # сценарный — предзаданная последовательность tool calls
+    def __init__(self, script: list[ToolCallScript]): ...
+
+class FakeEmbedder(Embedder):
+    def __init__(self, mapping: dict[str, list[float]]): ...
+
+@asynccontextmanager
+async def dbos_test_workflow(pg_dsn: str = TEST_PG_DSN):
+    """testcontainers PG + DBOS test mode."""
+```
+
+---
+
+### 4F — MVP Scope (v1)
+
+| Слой | В v1 | На v1.1 / v2 |
+|---|---|---|
+| **L0** | `Ref[T]` + resolver + escape hatch + hydration + tool args binding (Delta 9) | — |
+| **L1** | BudgetGuard, SemanticLoopDetector, GoalDriftDetector, LLMJudgeHook, PIIGuard, GroundedRetry + helpers (SemanticDeduper, TypedLoopGuard, as_critique, Det incl uuid_for) | — |
+| **L2 Core** | Reflection, MapReduce, MutationPipeline (с ApprovalStage modify + PartialApprovalStage), HITLGate, ToolNeedsHITL | — |
+| **L2 Channels** | UIChannel, ChatChannel, ConversationalChannel, FakeChannel | SlackChannel, WebhookChannel, EscalationChannel |
+| **L2 HITL** | HelperVerdict[ContextT], make_helper_agent_with_approval_tools, HelperAgentFactory Protocol | — |
+| **L2 Extended** | PlanAndExecute (slot-based DAG) | SelfRAG, CorrectiveRAG, DivergentConvergent, SemanticRouter |
+| **L3** | DBOS integration + lint rules STATEFLOW001-012 + Det.* | — |
+| **L4** | Framework tables (Tenant, Thread, Message, Checkpoint, Outbox, BlockingRequirement, Decision, ProposalAudit, EvalRun, DriftMetric) + Repository protocols + Alembic | AdvisorCacheRow для autopilot, advanced indexes |
+| **L5** | SchemaAdherenceScorer + один Dataset + CLI dataset-from-traces | остальные scorers |
+| **L6** | logfire instrumentation + один dashboard (HITL latency) | остальные dashboards, drift pipeline |
+| **L7** | FastAPI surface (threads, hitl, healthcheck) + AG-UI + Vercel adapters + A2A endpoints | расширенные dashboards |
+| **L2 v2** | — | QuorumApprovalStage и связанное (см. Open Questions v2) |
+
+**MVP smoke test:** waves reference example (Section 3) полностью работает на v1 scope.
+
+---
+
+### 4G — Project Structure + Ruff Rules
+
+#### Recommended layout (см. 3B как конкретный пример)
+
+```
+<app>/
+├── domain/<context>/{persistence.py, domain.py, repositories.py, __init__.py}
+├── patterns/                                          # custom Patterns поверх framework L2
+├── capabilities/                                      # custom L1 capabilities
+├── tools/<tool>/                                      # plugin tools (для приложений с plugins)
+├── api/                                               # thin FastAPI endpoints
+├── providers/                                         # ServiceProvider impl
+├── alembic/
+├── tests/{unit,integration,e2e,evals}
+├── main.py
+└── settings.py
+```
+
+#### Custom ruff rules (12 total)
+
+| Rule | Что проверяет |
+|---|---|
+| `STATEFLOW001` | Forbidden side-effect inside @DBOS.workflow body |
+| `STATEFLOW002` | `datetime.now()` / `time.time()` outside @DBOS.step |
+| `STATEFLOW003` | Direct httpx/requests call outside @DBOS.step |
+| `STATEFLOW004` | `random.*` outside @DBOS.step |
+| `STATEFLOW005` | `asyncio.sleep` inside workflow (use `DBOS.sleep`) |
+| `STATEFLOW006` | Repository call outside @DBOS.step |
+| `STATEFLOW007` | `agent.run(...)` outside @DBOS.step |
+| `STATEFLOW008` | `_*Row` SQLModel import outside `repositories/` |
+| `STATEFLOW009` | Repository protocol method без `tenant_id` parameter |
+| `STATEFLOW010` | Direct `Agent` instantiation в `patterns/` (должно через Provider) |
+| `STATEFLOW011` | `HITLChannel` instantiation в pattern (должно инжектиться) |
+| `STATEFLOW012` | `domain/` package не должен импортировать `api/`, `providers/`, `main` |
+
+Реализация через `pydantic_ai_stateflow_ruff` plugin (configurable strictness).
+
+---
+
+### 4H — Bootstrap Rules
+
+#### Provider order (mandatory)
+
+```python
+providers = [
+    ObservabilityProvider(),       # 1. logfire перед всем — instrument до бутстрапа
+    PersistenceProvider(),         # 2. DB session factory + Alembic check
+    CoreProvider(),                # 3. LLM clients, Embedder, EventDispatcher
+    *domain_providers,             # 4. per bounded context
+    HITLProvider(),                # 5. channels, repo, gates
+    ToolsProvider(seed_slots=...), # 6. tool registry + coverage check (если приложение использует tools)
+    PatternsProvider(),            # 7. wire patterns с deps (после tools и hitl)
+    AuthProvider(),                # 8. auth
+]
+```
+
+Order matters: providers с зависимостями регистрируются после.
+
+#### Bootstrap-time invariants (fail-fast)
+
+1. **Tool coverage** (§6.3 ТЗ waves): `tool_registry.check_coverage_invariant(seed_slots)`
+2. **Capability time-class consistency** (§6.1): валидируется в `@tool` декораторе
+3. **Required credentials**: для tools "минимального набора" (§6.5)
+4. **Alembic pending migrations**: блокировка старта при un-applied
+5. **DB schema sanity**: критические таблицы присутствуют (`tenants`, `threads`, `decisions`)
+6. **DBOS launch**: после всех providers
+
+```python
+async def main():
+    engine = await build_engine()
+    # ВСЕ invariants проверены к этому моменту
+    DBOS.launch()
+    app = engine.fastapi_app()
+    # uvicorn ...
+```
+
+---
+
+### 4I — Section 4 closing summary
+
+| Что | Status |
+|---|---|
+| 9 architectural deltas из 3K с финальными API | ✅ |
+| L4 framework tables + Repository protocols + Alembic strategy | ✅ |
+| L5 standard scorers + eval-from-trace CLI + CI integration | ✅ |
+| L6 logfire conventions + 6 dashboards + drift pipeline | ✅ |
+| Testing strategy matrix + framework helpers (Fake*) | ✅ |
+| MVP scope v1 + phasing v1.1 / v2 | ✅ |
+| Project structure + 12 ruff rules | ✅ |
+| Bootstrap order + 6 bootstrap-time invariants | ✅ |
 
 ---
 
@@ -2161,9 +2598,8 @@ Inter-agent коммуникация (Pattern → Pattern across services / exte
 
 ## Open Questions (remaining)
 
-### Pending for v1 (will be addressed in Section 4)
-- [ ] Финализация API для 9 architectural deltas из 3K
-- [ ] Phase 1 (Program Init) онбординг chat-agent — не покрыт детально в 3E (фокус был на Wave Loop). Включить в Section 4 / Examples.
+### Pending for v1
+- [ ] **Phase 1 (Program Init) онбординг chat-agent** для waves — не покрыт детально в Section 3 (фокус был на Wave Loop). Будет добавлен как Examples-приложение к спеке или в реализационных PR.
 
 ### Closed in Section 3
 - ✅ **Golden scenario для MVP** — waves validation system (Section 3) выбрана как референс
