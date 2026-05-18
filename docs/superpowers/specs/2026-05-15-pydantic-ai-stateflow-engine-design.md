@@ -1,7 +1,7 @@
 # pydantic-ai-stateflow-engine — Design Spec
 
 - **Date:** 2026-05-15
-- **Status:** Sections 1 + 2 + 3 + 4 approved. Design complete; ready for implementation planning.
+- **Status:** Sections 1 + 2 + 3 + 4 approved. Code-review pass complete: 3 critical, 18 major, 9 minor findings resolved (commits 535405c, e7a1c55, 67aa4fa, 6c4da81). Section 4A.0 contains the canonical truth where earlier sections were superseded. Design complete; ready for implementation planning.
 - **Authors:** Kir + Claude (brainstorming session)
 - **Source material:** `.context/attachments/pasted_text_2026-05-15_15-09-12.txt` (architectural analysis of LLM production failures, RU)
 
