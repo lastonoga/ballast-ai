@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+import warnings
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -81,6 +82,12 @@ def build_dynamic(
                         f"No instances of {target.__name__} in context "
                         f"for {fspec.path}"
                     )
+                if len(ids) > 1000:
+                    warnings.warn(
+                        f"Grounded field {fspec.path} has {len(ids)} allowed IDs; "
+                        "consider SemanticRouter pattern for large closed sets.",
+                        stacklevel=3,
+                    )
                 fields[name] = (_make_ref_annotation(target, ids), field_info)
 
             case FieldRole.LIST_REF:
@@ -91,6 +98,12 @@ def build_dynamic(
                     raise GroundedBuildError(
                         f"No instances of {target.__name__} in context "
                         f"for {fspec.path} (list[Ref])"
+                    )
+                if len(ids) > 1000:
+                    warnings.warn(
+                        f"Grounded field {fspec.path} has {len(ids)} allowed IDs; "
+                        "consider SemanticRouter pattern for large closed sets.",
+                        stacklevel=3,
                     )
                 item_annotation: Any = _make_ref_annotation(target, ids)
                 fields[name] = (list[item_annotation], field_info)
