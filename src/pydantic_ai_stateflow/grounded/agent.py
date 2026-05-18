@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from pydantic_ai import Agent
 
 from pydantic_ai_stateflow.grounded._spec import OutputSpec
@@ -22,7 +22,22 @@ class GroundedResult(BaseModel, Generic[OutT]):
 
     value: Any           # OutT-typed externally; runtime is DynamicOutT
     raw: Any             # AgentRunResult
-    _spec: OutputSpec    # internal; used by Task 18 hydration
+    _spec: OutputSpec = PrivateAttr()
+
+    async def hydrate(self, **repos: Any) -> dict[str, Any]:
+        """Replace Ref instances in `value` with entities from repos.
+
+        `repos` is keyed by entity class __name__: pass `Item=item_repo, ...`.
+        """
+        from pydantic_ai_stateflow.grounded.hydration import HydrationMap
+
+        repos_by_type: dict[type, Any] = {}
+        for type_name, repo in repos.items():
+            for t in self._spec.referenced_entity_types:
+                if t.__name__ == type_name:
+                    repos_by_type[t] = repo
+                    break
+        return await HydrationMap(self._spec).hydrate(self.value, repos=repos_by_type)
 
 
 class GroundedAgent(Generic[OutT]):
@@ -52,4 +67,6 @@ class GroundedAgent(Generic[OutT]):
         user_prompt = instructions or "Produce output matching the schema."
         run_result = await per_call_agent.run(user_prompt, **agent_kwargs)
 
-        return GroundedResult(value=run_result.output, raw=run_result, _spec=spec)
+        result: GroundedResult[OutT] = GroundedResult(value=run_result.output, raw=run_result)
+        result._spec = spec
+        return result
