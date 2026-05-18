@@ -37,8 +37,31 @@ Sub-project #6 (HITL channels):
     HelperVerdict, HelperAgentFactory, HelperDeps, HelperToolBox,
     HelperSessionInput, HelperSessionRunner, DefaultHelperSessionRunner,
     make_helper_agent_with_approval_tools, build_hitl_router.
+
+Sub-project #7 (API + Observability + Evals):
+    build_a2a_router, build_health_router, build_streaming_router,
+    build_threads_router, get_container, get_engine, get_tenant_id,
+    A2AAgentAdapter, AgentCard, AGUIEncoder, StreamEvent, VercelEncoder,
+    Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
+    ScoreResult, Scorer, ObservabilityProvider, has_logfire, traced.
 """
 
+from pydantic_ai_stateflow.api import (
+    A2AAgentAdapter,
+    AgentCard,
+    build_a2a_router,
+    build_health_router,
+    build_threads_router,
+    get_container,
+    get_engine,
+    get_tenant_id,
+)
+from pydantic_ai_stateflow.api.streaming import (
+    AGUIEncoder,
+    StreamEvent,
+    VercelEncoder,
+    build_streaming_router,
+)
 from pydantic_ai_stateflow.capabilities import (
     BudgetExhausted,
     BudgetGuard,
@@ -55,6 +78,15 @@ from pydantic_ai_stateflow.capabilities.helpers import (
     TypedLoopGuard,
     as_critique,
 )
+from pydantic_ai_stateflow.evals import (
+    Dataset,
+    EvalCase,
+    EvalReport,
+    EvalRunOutput,
+    SchemaAdherenceScorer,
+    Scorer,
+    ScoreResult,
+)
 from pydantic_ai_stateflow.grounded import (
     GroundedAgent,
     GroundedBuildError,
@@ -64,6 +96,7 @@ from pydantic_ai_stateflow.grounded import (
     GroundedResult,
     Ref,
 )
+from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire, traced
 from pydantic_ai_stateflow.patterns import (
     AbortOnLoop,
     ApprovalStage,
@@ -137,9 +170,12 @@ from pydantic_ai_stateflow.runtime import (
 )
 
 __all__ = [
+    "A2AAgentAdapter",
+    "AGUIEncoder",
     "AbortOnLoop",
     "AcceptedResult",
     "AccessDecision",
+    "AgentCard",
     "AllowAll",
     "ApplyTransaction",
     "ApprovalStage",
@@ -152,6 +188,7 @@ __all__ = [
     "CoreProvider",
     "Critique",
     "DBOSConfig",
+    "Dataset",
     "DefaultContainer",
     "DefaultHelperSessionRunner",
     "DenyAll",
@@ -160,6 +197,9 @@ __all__ = [
     "Embedder",
     "Engine",
     "EngineInvariantViolation",
+    "EvalCase",
+    "EvalReport",
+    "EvalRunOutput",
     "GroundedAgent",
     "GroundedBuildError",
     "GroundedError",
@@ -188,6 +228,7 @@ __all__ = [
     "ModifiedResponse",
     "MutationPipeline",
     "MutationRejected",
+    "ObservabilityProvider",
     "PIIGuard",
     "PartialApprovalStage",
     "Pattern",
@@ -204,20 +245,34 @@ __all__ = [
     "RejectPolicy",
     "RejectedAt",
     "RejectedResponse",
+    "SchemaAdherenceScorer",
+    "ScoreResult",
+    "Scorer",
     "SemanticDeduper",
     "SemanticLoopDetected",
     "SemanticLoopDetector",
     "ServiceProvider",
     "Stage",
     "StateflowCapability",
+    "StreamEvent",
     "TimeoutResponse",
     "TypedLoopGuard",
     "UIChannel",
+    "VercelEncoder",
     "Voter",
     "WebhookChannel",
     "WebhookConfig",
     "as_critique",
+    "build_a2a_router",
     "build_dbos_config",
+    "build_health_router",
     "build_hitl_router",
+    "build_streaming_router",
+    "build_threads_router",
+    "get_container",
+    "get_engine",
+    "get_tenant_id",
+    "has_logfire",
     "make_helper_agent_with_approval_tools",
+    "traced",
 ]
