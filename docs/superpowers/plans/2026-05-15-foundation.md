@@ -313,16 +313,18 @@ class Ref(Generic[EntityT]):
         return self.__class__.__entity_type__
 
     def __class_getitem__(cls, item: type[BaseModel]) -> type["Ref[Any]"]:
-        # Each subscripted form gets a dedicated subclass that remembers the type.
-        # Cache to ensure Ref[Entity] is Ref[Entity] (same class identity).
-        cache: dict[type, type[Ref[Any]]] = cls.__dict__.setdefault("_subscript_cache", {})
-        if item in cache:
-            return cache[item]
+        # Per-class cache (not inherited via MRO). `cls.__dict__` is a
+        # `mappingproxy` (immutable view) so we cannot call `.setdefault` on
+        # it directly — install the cache via `setattr` and check presence
+        # with `in cls.__dict__` (MRO-local).
+        if "_subscript_cache" not in cls.__dict__:
+            cls._subscript_cache = {}  # type: ignore[attr-defined]
+        cache: dict[type, type[Ref[Any]]] = cls._subscript_cache  # type: ignore[attr-defined]
 
-        cls_name = f"Ref[{item.__name__}]"
-        new_cls = type(cls_name, (Ref,), {"__entity_type__": item})
-        cache[item] = new_cls
-        return new_cls
+        if item not in cache:
+            cls_name = f"Ref[{item.__name__}]"
+            cache[item] = type(cls_name, (Ref,), {"__entity_type__": item})
+        return cache[item]
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Ref):
@@ -466,13 +468,13 @@ class Ref(Generic[EntityT]):
         return self.__class__.__entity_type__
 
     def __class_getitem__(cls, item: type[BaseModel]) -> type["Ref[Any]"]:
-        cache: dict[type, type[Ref[Any]]] = cls.__dict__.setdefault("_subscript_cache", {})
-        if item in cache:
-            return cache[item]
-        cls_name = f"Ref[{item.__name__}]"
-        new_cls = type(cls_name, (Ref,), {"__entity_type__": item})
-        cache[item] = new_cls
-        return new_cls
+        if "_subscript_cache" not in cls.__dict__:
+            cls._subscript_cache = {}  # type: ignore[attr-defined]
+        cache: dict[type, type[Ref[Any]]] = cls._subscript_cache  # type: ignore[attr-defined]
+        if item not in cache:
+            cls_name = f"Ref[{item.__name__}]"
+            cache[item] = type(cls_name, (Ref,), {"__entity_type__": item})
+        return cache[item]
 
     @classmethod
     def __get_pydantic_core_schema__(
