@@ -37,8 +37,29 @@ import pydantic_ai_stateflow.persistence.thread.persistence  # noqa: F401
 # ── Session-scoped container & DSN fixtures ──────────────────────────────────
 
 
+def _docker_available() -> bool:
+    """Detect whether a Docker daemon is reachable.
+
+    Returns False if Docker is not running OR not installed — in which case
+    tests requiring testcontainers will be skipped, not fail.
+    """
+    try:
+        import docker
+
+        client = docker.from_env()
+        client.ping()
+    except Exception:
+        return False
+    return True
+
+
+_DOCKER_OK = _docker_available()
+
+
 @pytest.fixture(scope="session")
 def pg_container() -> Iterator[PostgresContainer]:
+    if not _DOCKER_OK:
+        pytest.skip("Docker daemon not available — skipping testcontainers PG tests")
     with PostgresContainer("postgres:16-alpine") as container:
         yield container
 
@@ -68,7 +89,7 @@ def _make_engine(pg_dsn: str) -> AsyncEngine:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def create_all_tables(pg_dsn: str) -> None:
     """Create all SQLModel tables once per test session using a sync run via asyncpg.
 
@@ -90,8 +111,16 @@ def create_all_tables(pg_dsn: str) -> None:
 
 
 @pytest.fixture
-async def session_factory(pg_dsn: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """Async sessionmaker for one test; disposes engine on teardown."""
+async def session_factory(
+    pg_dsn: str, create_all_tables: None
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Async sessionmaker for one test; disposes engine on teardown.
+
+    Depends on `create_all_tables` to ensure schema exists. Tests that don't
+    use this fixture (e.g. test_uow.py with its own SQLite session_factory,
+    or test_thread_models which just inspects metadata) don't pay the
+    Docker / testcontainers cost.
+    """
     engine = _make_engine(pg_dsn)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     yield factory
