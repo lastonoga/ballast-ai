@@ -1001,6 +1001,18 @@ class HITLResponse(BaseModel):
     answered_at: datetime
 
 class HITLGate(Pattern[HITLPrompt, HITLResponse]):
+    """HITL pause + authz. Auth happens at TWO points:
+    
+    1. ENDPOINT-side (FastAPI): policy.can(...) BEFORE DBOS.send.
+       Unauthorized responders never reach the workflow's recv topic.
+    2. WORKFLOW-side (this Pattern): policy.can() VERIFIED again on receive,
+       as defense in depth — endpoint may be bypassed by other channels
+       (Slack callback, A2A, future channels).
+    
+    If endpoint-side check fails: persisted to hitl_authz_attempts table,
+    response NEVER reaches DBOS topic, founder is told (via SSE/UI) attempt
+    was denied. Topic remains open for legitimate responder.
+    """
     name = "hitl_gate"
     def __init__(self, channel: HITLChannel, *, policy: Policy, repo: HITLRepository): ...
 
@@ -1010,20 +1022,110 @@ class HITLGate(Pattern[HITLPrompt, HITLResponse]):
         prompt: HITLPrompt,
         *,
         tenant_id: UUID,
-        purpose: Literal["approval", "reject_recovery", "ambiguity", "policy_conflict"] = "approval",
+        purpose: HITLPurpose = HITLPurpose.APPROVAL,
     ) -> HITLResponse:
         request_id = await self.repo.persist_request(prompt, tenant_id=tenant_id, purpose=purpose)
+        
+        # ask() implements receive-and-validate loop internally — see FSM below
         try:
-            response = await self.channel.ask(prompt, request_id=request_id)
+            response = await self.channel.ask(prompt, request_id=request_id, policy=self.policy)
         except HITLTimeout:
-            await self.repo.persist_timeout(request_id)
-            return HITLResponse(decision="timeout", answered_at=datetime.now(UTC))
-
-        decision = await self.policy.can(actor=response.actor_id, action="decide", resource=prompt, tenant_id=tenant_id)
-        if not decision.is_grant: raise HITLAuthzDenied(actor=response.actor_id, votes=decision.votes)
-
-        await self.repo.persist_response(request_id, response)
+            await self.repo.persist_timeout(request_id, tenant_id=tenant_id)
+            return TimeoutResponse(answered_at=datetime.now(UTC))
+        
+        # Defense-in-depth: re-verify even though channel.ask did it
+        verdict = await self.policy.can(
+            actor=response.actor_id, action="decide",
+            resource=prompt, tenant_id=tenant_id,
+        )
+        if not verdict.is_grant:
+            await self.repo.persist_authz_denied(request_id, response.actor_id, verdict.votes, tenant_id=tenant_id)
+            raise HITLAuthzDenied(actor=response.actor_id, votes=verdict.votes)
+        
+        await self.repo.persist_response(request_id, response, tenant_id=tenant_id)
         return response
+```
+
+**HITL FSM (explicit lifecycle):**
+
+```
+                     persist_request
+                            │
+                            ▼
+                        REQUESTED ──── timeout ──► TIMED_OUT (persisted)
+                            │
+                            │ channel receives response (any source)
+                            ▼
+                  RECEIVED(authorized?)
+                       /        \
+                  yes /          \ no
+                     ▼            ▼
+                  RESPONDED    AUTHZ_DENIED (persisted, request stays open)
+                  (persisted)        │
+                                     │ next legitimate actor responds
+                                     ▼
+                                  ... loop ...
+```
+
+**Channel.ask() implements receive-and-validate loop:**
+
+```python
+class HITLChannel(Protocol):
+    async def ask(self, prompt: HITLPrompt, *, request_id: UUID, policy: Policy) -> HITLResponse:
+        """Loop: recv → authz check → if denied, persist+continue; if authorized, return."""
+
+# Default implementation (in framework):
+async def _receive_authorized(self, request_id: UUID, prompt: HITLPrompt, policy: Policy) -> HITLResponse:
+    while True:
+        candidate = await DBOS.recv(topic=_topic(prompt.tenant_id, request_id), timeout=prompt.timeout)
+        if candidate is None:
+            raise HITLTimeout()
+        verdict = await policy.can(actor=candidate.actor_id, action="decide", resource=prompt, tenant_id=prompt.tenant_id)
+        if verdict.is_grant:
+            return candidate
+        # Persist denied attempt; loop — topic stays open for next attempt
+        await self.repo.persist_authz_denied(request_id, candidate.actor_id, verdict.votes, tenant_id=prompt.tenant_id)
+```
+
+**FastAPI endpoint** (api/hitl.py) — authz BEFORE send:
+
+```python
+@router.post("/hitl/{request_id}/respond")
+async def respond_to_hitl(
+    request_id: UUID, body: HITLResponseSubmit,
+    actor: Actor = Depends(get_current_actor),
+    tenant_id: UUID = Depends(get_tenant_id),
+    policy: Policy = Depends(container.fastapi_dependency(HITLPolicy)),
+    hitl_repo: HITLRepository = Depends(container.fastapi_dependency(HITLRepository)),
+):
+    request = await hitl_repo.load_request(request_id, tenant_id=tenant_id)
+    if request is None:
+        raise HTTPException(404)
+    verdict = await policy.can(actor=actor, action="decide", resource=request.prompt, tenant_id=tenant_id)
+    if not verdict.is_grant:
+        await hitl_repo.persist_authz_denied(request_id, actor.id, verdict.votes, tenant_id=tenant_id)
+        raise HTTPException(403, verdict.summary())
+    
+    response = body.into_response(actor_id=actor.id)
+    await DBOS.send(topic=_topic(tenant_id, request_id), payload=response)
+    return {"status": "delivered"}
+
+def _topic(tenant_id: UUID, request_id: UUID) -> str:
+    """Tenant-scoped topic prevents cross-tenant collisions."""
+    return f"hitl:{tenant_id}:{request_id}"
+```
+
+**Persistence addition** — new table `hitl_authz_denials` for audit of denied attempts:
+
+```python
+class AuthzDenialRow(SQLModel, table=True):
+    __tablename__ = "hitl_authz_denials"
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
+    request_id: UUID = Field(foreign_key="blocking_requirements.id", index=True)
+    actor_id: str
+    voter_votes: dict = Field(sa_type=JSONB)
+    attempted_at: datetime
 ```
 
 #### 2C.5 SOLID review summary
@@ -1584,31 +1686,78 @@ class ToolRegistry:
         Bootstrap-time check. Failure blocks app startup."""
 ```
 
-### 3D — WaveLoop как Top-level Pattern
+### 3D — WaveLoop через ContinueAsNew (bounded workflow history)
+
+**Anti-pattern исключён:** monolithic `while True` workflow с неограниченной историей нереплеится после месяцев работы (DBOS реплеит весь event log на recovery). Канонический pattern — **один workflow на одну итерацию (wave)** + idempotent start-next.
 
 ```python
-class WaveLoop(Pattern[UUID, None]):
-    name = "wave_loop"
+class WaveIteration(Pattern[UUID, WaveCloseOutput]):
+    """Один workflow = одна wave (от open до close + start-next-if-needed).
+    
+    workflow_id = hash(tenant, project, "wave", wave_index)
+    
+    После close: если ProgramOutcome.action == "continue", делает
+    DBOS.start_workflow_idempotent для следующей wave. Это новый workflow
+    с собственным event log → bounded history.
+    """
+    name = "wave_iteration"
     
     @DBOS.workflow()
-    async def run(self, project_id: UUID, *, tenant_id: UUID) -> None:
-        """workflow_id = hash(tenant, project, 'wave_loop') — идемпотентность гарантирована."""
-        while True:
-            project = await self._load_project(project_id, tenant_id)
-            if project.status != "running" or not await self._can_continue(project):
-                return
-            
-            wave = await self._open_or_resume_wave(project, tenant_id)
-            strategy = await self.planning.run(WavePlanningInput(...), tenant_id=tenant_id)
-            packages = await self.design.run(DesignInput(strategy, ...), tenant_id=tenant_id)
-            artifacts = await self.run.run(ExperimentRunInput(...), tenant_id=tenant_id)
-            interp = await self.interpretation.run(InterpretationInput(...), tenant_id=tenant_id)
-            await self.materialization.run(MaterializationInput(...), tenant_id=tenant_id)
-            outcome = await self.strategy.run(StrategyDecisionInput(...), tenant_id=tenant_id)  # HITL pause
-            await self.close.run(WaveCloseInput(wave, outcome), tenant_id=tenant_id)
+    async def run(self, project_id: UUID, wave_index: int, *, tenant_id: UUID) -> WaveCloseOutput:
+        project = await self._load_project(project_id, tenant_id)
+        if project.status != "running":
+            return WaveCloseOutput(next_wave_id=None, terminated=True)
+        
+        if not await self._can_continue(project):
+            await self._record_pause(project, tenant_id)
+            return WaveCloseOutput(next_wave_id=None, terminated=True)
+        
+        wave = await self._open_or_resume_wave(project, wave_index, tenant_id)
+        strategy = await self.planning.run(WavePlanningInput(...), tenant_id=tenant_id)
+        packages = await self.design.run(DesignInput(strategy, ...), tenant_id=tenant_id)
+        artifacts = await self.experiment_run.run(ExperimentRunInput(...), tenant_id=tenant_id)
+        interp = await self.interpretation.run(InterpretationInput(...), tenant_id=tenant_id)
+        await self.materialization.run(MaterializationInput(...), tenant_id=tenant_id)
+        outcome = await self.strategy.run(StrategyDecisionInput(...), tenant_id=tenant_id)
+        result = await self.close.run(WaveCloseInput(wave, outcome), tenant_id=tenant_id)
+        
+        # Start next iteration if continuing — idempotent
+        if result.next_wave_id is not None:
+            await DBOS.start_workflow_idempotent(
+                self.run, project_id, wave_index + 1, tenant_id=tenant_id,
+                idempotency_key=f"wave:{tenant_id}:{project_id}:{wave_index + 1}",
+            )
+        return result
+
+
+class WaveCloseOutput(BaseModel):
+    next_wave_id: UUID | None
+    terminated: bool = False
 ```
 
-**Гарантии:** параллельные wave_loop одного проекта (DBOS workflow_id), параллельные открытые waves (partial unique idx), recovery (DBOS replay), HITL пауза без потери прогресса (DBOS.recv).
+**FastAPI: start_or_resume через начальный entry-point.**
+
+```python
+# api/chat.py
+@router.post("/chat/{project_id}/wave/start")
+async def start_wave(project_id: UUID, ...):
+    next_index = await wave_repo.next_wave_index(project_id, tenant_id=tenant_id)
+    handle = await DBOS.start_workflow_idempotent(
+        wave_iteration.run, project_id, next_index,
+        tenant_id=tenant_id,
+        idempotency_key=f"wave:{tenant_id}:{project_id}:{next_index}",
+    )
+    return {"workflow_id": handle.workflow_id, "wave_index": next_index}
+```
+
+**Defense in depth (по wave-уровню):**
+- **DBOS workflow_id** — `hash(tenant, project, "wave", index)` → idempotent start; параллельные старты одной wave невозможны
+- **DB partial unique idx** — `WaveRow` запрещает >1 open wave/project (sanity при гонке indexes)
+- **DBOS lifecycle** — каждая wave имеет bounded history (от open до close + start-next), реплеится за разумное время даже на самой длинной wave
+
+**STATEFLOW013 (new lint):** workflows не должны содержать unbounded loops (`while True`, `while always_true_var`). Используй ContinueAsNew pattern.
+
+**Гарантии:** параллельные iterations одной wave невозможны (DBOS workflow_id), параллельные открытые waves невозможны (partial unique idx), recovery (DBOS replay одной wave, не всего loop), HITL пауза без потери прогресса (DBOS.recv).
 
 ### 3E — Phase Patterns
 
@@ -2155,7 +2304,7 @@ def as_critique(fn: Callable[[Any], Awaitable[Any]] | object) -> Agent[Any, Crit
     return Agent(model=FunctionModel(model_fn), output_type=Critique)
 ```
 
-#### Delta 4: `Det.uuid_for(inputs)` (расширение `Det`)
+#### Delta 4: `Det.uuid_for(inputs)` — wrapped as @DBOS.step (safe across replay)
 
 ```python
 # pydantic_ai_stateflow/runtime/det.py
@@ -2163,18 +2312,49 @@ class Det:
     # existing: now(), uuid4(), random_choice() — все @DBOS.step
     
     @staticmethod
-    def uuid_for(inputs: Any, namespace: UUID = UUID_NAMESPACE) -> UUID:
-        """Deterministic UUID5 от stable JSON serialization.
+    @DBOS.step()
+    async def uuid_for(inputs: IdempotencyInput) -> UUID:
+        """Deterministic UUID5, durably recorded as @DBOS.step.
         
-        НЕ @DBOS.step — детерминистическая операция, доступна в workflow
-        body (не нарушает 2E.1).
+        Result cached by DBOS — replay returns same UUID without re-derivation.
+        This eliminates any risk that serialization variance across Pydantic
+        versions / Python upgrades / float representation would produce a
+        different UUID on recovery.
         
-        Используется для idempotency keys:
-        package_id = Det.uuid_for(work_package_inputs)
+        Inputs MUST be IdempotencyInput (validated structured type).
+        Loose dict/Any inputs are not allowed.
         """
-        canonical = json.dumps(inputs, sort_keys=True, default=_stable_json_encoder)
-        return uuid5(namespace, canonical)
+        canonical = inputs.canonical_json()
+        return uuid5(UUID_NAMESPACE, canonical)
+
+
+class IdempotencyInput(BaseModel):
+    """Strict input type for Det.uuid_for.
+    
+    Constraints (enforced by validators):
+    - No floats (use Decimal as string)
+    - No nested mutable types
+    - Only primitives: str, int, UUID, datetime, Decimal, bool, tuple, frozenset
+    - Nested BaseModels allowed if frozen=True
+    """
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    namespace: str                                     # logical scope: "work_package", "proposal", ...
+    parts: dict[str, IdempotencyValue]                 # constrained value types
+    
+    def canonical_json(self) -> str:
+        return json.dumps(
+            {"ns": self.namespace, "parts": self.parts},
+            sort_keys=True, separators=(",", ":"),
+            default=_strict_encoder,                   # rejects unknown types
+        )
+
+IdempotencyValue = str | int | UUID | datetime | Decimal | bool | tuple | frozenset
 ```
+
+**Why this design (post-review):**
+- Original spec made `Det.uuid_for` NOT a `@DBOS.step` — claimed safe in workflow body. This was unsound: any drift in serialization (Pydantic minor version, Python version, float representation) would produce different UUIDs on replay, defeating idempotency.
+- Now: result is durably recorded. Replay returns cached value. Serialization variance becomes irrelevant after first call.
+- `IdempotencyInput` enforces input contract at type level: no floats, no loose dicts, only stable primitive types. Caller cannot accidentally pass `{"amount": 1.0}` (which round-trips inconsistently).
 
 #### Delta 5: `ToolNeedsHITL` exception (L2 signals)
 
@@ -2457,7 +2637,7 @@ async def dbos_test_workflow(pg_dsn: str = TEST_PG_DSN):
 | **L2 Channels** | UIChannel, ChatChannel, ConversationalChannel, FakeChannel | SlackChannel, WebhookChannel, EscalationChannel |
 | **L2 HITL** | HelperVerdict[ContextT], make_helper_agent_with_approval_tools, HelperAgentFactory Protocol | — |
 | **L2 Extended** | PlanAndExecute (slot-based DAG) | SelfRAG, CorrectiveRAG, DivergentConvergent, SemanticRouter |
-| **L3** | DBOS integration + lint rules STATEFLOW001-012 + Det.* | — |
+| **L3** | DBOS integration + lint rules STATEFLOW001-013 + Det.* | — |
 | **L4** | Framework tables (Tenant, Thread, Message, Checkpoint, Outbox, BlockingRequirement, Decision, ProposalAudit, EvalRun, DriftMetric) + Repository protocols + Alembic | AdvisorCacheRow для autopilot, advanced indexes |
 | **L5** | SchemaAdherenceScorer + один Dataset + CLI dataset-from-traces | остальные scorers |
 | **L6** | logfire instrumentation + один dashboard (HITL latency) | остальные dashboards, drift pipeline |
@@ -2502,6 +2682,7 @@ async def dbos_test_workflow(pg_dsn: str = TEST_PG_DSN):
 | `STATEFLOW010` | Direct `Agent` instantiation в `patterns/` (должно через Provider) |
 | `STATEFLOW011` | `HITLChannel` instantiation в pattern (должно инжектиться) |
 | `STATEFLOW012` | `domain/` package не должен импортировать `api/`, `providers/`, `main` |
+| `STATEFLOW013` | `@DBOS.workflow` не должен содержать unbounded loops (`while True`, etc.) — используй ContinueAsNew |
 
 Реализация через `pydantic_ai_stateflow_ruff` plugin (configurable strictness).
 
