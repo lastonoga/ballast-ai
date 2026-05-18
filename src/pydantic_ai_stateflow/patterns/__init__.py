@@ -7,6 +7,7 @@ from pydantic_ai_stateflow.patterns.errors import (
 )
 from pydantic_ai_stateflow.patterns.loop_recovery import AbortOnLoop, LoopRecoveryPolicy
 from pydantic_ai_stateflow.patterns.protocol import Pattern
+from pydantic_ai_stateflow.patterns.reflection import Reflection
 
 __all__ = [
     "AbortOnLoop",
@@ -16,5 +17,6 @@ __all__ = [
     "MutationRejected",
     "Pattern",
     "PatternError",
+    "Reflection",
     "ReflectionExhausted",
 ]
