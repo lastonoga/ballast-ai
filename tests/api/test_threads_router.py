@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -283,3 +284,56 @@ async def test_delete_endpoint_cross_tenant_does_not_remove():
             f"/threads/{th.id}", headers={"X-Tenant-Id": str(tid)},
         )
         assert r2.status_code == 200
+
+
+# ── F18: offset pagination on GET /threads ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_endpoint_honors_offset_query_param():
+    repo = InMemoryThreadRepository()
+    tid = uuid4()
+    created = []
+    for _ in range(3):
+        t = await repo.create(
+            purpose="conversation", purpose_metadata={}, actor_id="a",
+            tenant_id=tid,
+        )
+        created.append(t)
+        await asyncio.sleep(0.01)  # distinct created_at
+    app = _app(repo)
+    with TestClient(app) as c:
+        r = c.get(
+            "/threads?limit=1&offset=1",
+            headers={"X-Tenant-Id": str(tid)},
+        )
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 1
+    # newest-first: created[2], created[1], created[0]; offset=1 → created[1]
+    assert rows[0]["id"] == str(created[1].id)
+
+
+@pytest.mark.asyncio
+async def test_list_endpoint_422_on_negative_offset():
+    repo = InMemoryThreadRepository()
+    tid = uuid4()
+    app = _app(repo)
+    with TestClient(app) as c:
+        r = c.get(
+            "/threads?offset=-1", headers={"X-Tenant-Id": str(tid)},
+        )
+        assert r.status_code == 422
+        r2 = c.get(
+            "/threads?limit=0", headers={"X-Tenant-Id": str(tid)},
+        )
+        assert r2.status_code == 422
+        r3 = c.get(
+            "/threads?limit=-5", headers={"X-Tenant-Id": str(tid)},
+        )
+        assert r3.status_code == 422
+        # Exceeding cap (limit > 500) also 422.
+        r4 = c.get(
+            "/threads?limit=501", headers={"X-Tenant-Id": str(tid)},
+        )
+        assert r4.status_code == 422

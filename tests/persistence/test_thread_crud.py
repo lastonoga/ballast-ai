@@ -93,6 +93,37 @@ async def test_list_isolated_by_tenant(repo, tenant_id, other_tenant_id):
     assert listed[0].tenant_id == tenant_id
 
 
+# ── F18: offset pagination ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_offset_skips_first_n(repo, tenant_id):
+    created = []
+    for _ in range(5):
+        t = await repo.create(
+            purpose="conversation", purpose_metadata={}, actor_id="a",
+            tenant_id=tenant_id,
+        )
+        created.append(t)
+        # ensure distinct created_at so newest-first order is deterministic
+        await asyncio.sleep(0.01)
+    # Newest-first: created[4], created[3], created[2], created[1], created[0].
+    # limit=2, offset=2 → created[2], created[1].
+    page = await repo.list_(tenant_id=tenant_id, limit=2, offset=2)
+    assert [t.id for t in page] == [created[2].id, created[1].id]
+
+
+@pytest.mark.asyncio
+async def test_list_offset_beyond_total_returns_empty(repo, tenant_id):
+    for _ in range(3):
+        await repo.create(
+            purpose="conversation", purpose_metadata={}, actor_id="a",
+            tenant_id=tenant_id,
+        )
+    page = await repo.list_(tenant_id=tenant_id, limit=10, offset=100)
+    assert page == []
+
+
 @pytest.mark.asyncio
 async def test_rename_sets_title(repo, tenant_id):
     t = await repo.create(
