@@ -5,10 +5,9 @@ Iteration 3 wires CRUD tools into the agent — the agent now takes a
 `search_notes`, `edit_note`, and `delete_note` on the user's behalf.
 
 The agent still streams a `ChatReply` (the prose the assistant says to the
-user). Tool calls happen "underneath" — pydantic-ai dispatches them on the
-backend, the model sees the results, then it produces the final prose
-reply. The frontend sees the same canonical AG-UI event sequence as
-iteration 2.
+user). Tool calls now also surface as canonical AG-UI ``TOOL_CALL_*``
+events thanks to framework F13 (``make_runner`` v2): the frontend renders
+a tool-call card per invocation as the model streams.
 
 We keep `build_agent()` separate from `build_notes_runner()` so tests can
 build the agent without standing up a runner, and the runner can be
@@ -18,19 +17,14 @@ constructed against a fake repo without touching OpenRouter.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai_stateflow.api.streaming import AgentRunner, StreamEvent
-from pydantic_ai_stateflow.api.streaming.router import (
-    _PostMessageBody,
-    extract_text,
-)
+from pydantic_ai_stateflow.api.streaming import AgentRunner, make_runner
 
 if TYPE_CHECKING:
     from notes_app.notes.repository import NoteRepository
@@ -109,60 +103,16 @@ def build_notes_runner(
 ) -> AgentRunner:
     """Wrap `agent` as an `AgentRunner` that injects per-request `NoteToolDeps`.
 
-    Why not just `make_runner(agent, deps=...)`?
-
-    `make_runner` accepts a static `deps` value at *build* time, but our
-    `NoteToolDeps` is per-request (one `tenant_id` per HTTP call). The
-    framework helper would need a `deps_factory: Callable[[...], Any]`
-    knob to construct deps per stream — recorded as a gap in RETRO.md.
-
-    For iteration 3 we take option (b) from the iteration plan: call
-    `agent.run_stream(...)` directly here, mirroring `make_runner`'s diff
-    + emit loop, but constructing fresh deps per call. When the framework
-    grows a `deps_factory` knob we can switch back to `make_runner`.
+    Uses the framework's ``make_runner(deps=factory)`` (F12): we pass a
+    closure that mints a fresh ``NoteToolDeps(repo, tenant_id)`` per HTTP
+    request from the runner-supplied ``tenant_id``. Tool-call SSE events
+    (F13) flow through ``make_runner`` automatically — no app code needed.
     """
     # Local import to keep the agent module importable without sqlmodel
     # (e.g. pure unit tests of ChatReply schema).
     from notes_app.notes.tools import NoteToolDeps
 
-    async def _runner(
-        *,
-        thread_id: UUID,
-        run_id: UUID,
-        message: _PostMessageBody,
-        tenant_id: UUID,
-    ) -> AsyncIterator[StreamEvent]:
-        deps = NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
-        message_id = uuid4()
-        prompt = extract_text(message.parts)
+    def deps_factory(*, tenant_id: UUID, **_kwargs: object) -> NoteToolDeps:
+        return NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
 
-        yield StreamEvent.run_started(thread_id=thread_id, run_id=run_id)
-        yield StreamEvent.text_message_start(message_id=message_id)
-
-        last_emitted = ""
-        try:
-            async with agent.run_stream(prompt, deps=deps) as result:
-                async for snapshot in result.stream_output(debounce_by=0.05):
-                    current = getattr(snapshot, "reply", "") or ""
-                    if not current or current == last_emitted:
-                        continue
-                    if current.startswith(last_emitted):
-                        delta = current[len(last_emitted):]
-                    else:
-                        # Partial-validation revised the prefix; fall back
-                        # to full re-emit (the client treats deltas as
-                        # appends — never emit a negative diff).
-                        delta = current
-                    last_emitted = current
-                    if delta:
-                        yield StreamEvent.text_message_content(
-                            message_id=message_id, delta=delta,
-                        )
-        except Exception as exc:  # noqa: BLE001 — surface + re-raise
-            yield StreamEvent.run_error(message=str(exc))
-            raise
-
-        yield StreamEvent.text_message_end(message_id=message_id)
-        yield StreamEvent.run_finished(thread_id=thread_id, run_id=run_id)
-
-    return _runner
+    return make_runner(agent, text_field="reply", deps=deps_factory)

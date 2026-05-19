@@ -232,12 +232,16 @@ servers that *do* propagate cancellation.
 
 ### Framework gaps to track for next round
 
-- [ ] **F12** — `make_runner(deps=...)` accepts a callable / awaitable
+- [x] **F12** — `make_runner(deps=...)` accepts a callable / awaitable
   deps-factory so per-request deps don't force apps to copy the adapter
-  body. This is the single biggest iteration-3 friction.
-- [ ] **F13** — Canonical `tool_call_*` `StreamEvent` kinds + `AGUIEncoder`
+  body. *Landed in framework Round 2 / Group E.*
+- [x] **F13** — Canonical `tool_call_*` `StreamEvent` kinds + `AGUIEncoder`
   mapping, so frontends can render mid-stream tool activity (and so
   iteration 4's HITLGate has a natural surface to interpose on).
+  *Landed in framework Round 2 / Group E — `make_runner` now drives
+  `agent.iter` and forwards `TOOL_CALL_START` / `TOOL_CALL_ARGS` /
+  `TOOL_CALL_END` per real function-tool call (synthetic `final_result`
+  output-tool calls are suppressed).*
 - [ ] **F14** — Domain-repo scaffold / docs (Protocol conventions,
   tenant scoping, idempotency rules). Cheap; would shave 30 LOC per
   domain in dogfood apps.
@@ -277,3 +281,23 @@ Net effect for consumers: a notes-app-style backend goes from ~80 LOC of
 agent-runner glue to a one-liner. Friction points #1, #2, #3, and #5
 from the iteration-2 list are gone; #4 (assistant reply persistence) and
 #6/#7 (boot log, CORS) remain for Groups C and D.
+
+## Iteration 3 framework round 2 — Group E (F12 + F13) landed
+
+The two iteration-3 friction points (per-request `deps` factory + missing
+tool-call SSE events) are now framework features:
+
+- **F12** — `make_runner(agent, *, text_field, deps=...)` accepts either
+  a static value (legacy) or a callable / coroutine factory invoked with
+  `(thread_id, run_id, message, tenant_id)` per HTTP request.
+- **F13** — `make_runner` switched from `agent.run_stream` to
+  `agent.iter` so it can observe pydantic-ai's per-node events. Text
+  deltas still flow as `TEXT_MESSAGE_CONTENT`; each real function-tool
+  call now also emits `TOOL_CALL_START` → `TOOL_CALL_ARGS` (× N) →
+  `TOOL_CALL_END`. The synthetic `final_result` tool that pydantic-ai
+  uses for structured `output_type=BaseModel` output is suppressed (it's
+  a transport detail — not a tool the frontend should render).
+
+Backend impact: `build_notes_runner` shrank from ~40 LOC of hand-rolled
+`run_stream` + diff loop to a 4-line `deps_factory` closure passed to
+`make_runner(deps=...)`. The notes-app smoke + unit tests pass unchanged.
