@@ -82,18 +82,55 @@ def install_assistant_content_shim() -> None:
     mapper_cls = OpenAIChatModel._MapModelResponseContext  # noqa: SLF001
     original: Callable[..., Any] = mapper_cls._into_message_param  # noqa: SLF001
 
+    import logging  # noqa: PLC0415
+
+    _shim_logger = logging.getLogger("pydantic_ai_stateflow._compat.shim")
+
     @functools.wraps(original)
     def patched(self: Any) -> Any:
         result = original(self)
+        # Temporary diagnostic: log every outgoing assistant turn so we
+        # can see exactly what shape the upstream LLM sees. Strip back
+        # to a single "content normalized" log line once the Alibaba
+        # 400 mystery is resolved.
+        _shim_logger.info(
+            "_into_message_param result=%r",
+            result,
+        )
         if (
             result is not None
             and result.get("content") is None
             and result.get("tool_calls")
         ):
             result["content"] = ""
+            _shim_logger.info(
+                "_into_message_param normalized content:None → '' "
+                "(tool_calls=%d)",
+                len(result["tool_calls"]),
+            )
         return result
 
     mapper_cls._into_message_param = patched  # noqa: SLF001
+
+    # ALSO wrap the model's `_map_messages` to log the final outgoing
+    # message list. Captures user/tool/assistant turns alike — so if a
+    # 400 traces back to a non-assistant content issue we'll see it.
+    original_map_messages = OpenAIChatModel._map_messages  # noqa: SLF001
+
+    @functools.wraps(original_map_messages)
+    async def patched_map_messages(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = await original_map_messages(self, *args, **kwargs)
+        try:
+            import json  # noqa: PLC0415
+            _shim_logger.info(
+                "_map_messages OUTGOING request body:\n%s",
+                json.dumps(list(result), indent=2, default=str),
+            )
+        except Exception:  # noqa: BLE001
+            _shim_logger.info("_map_messages OUTGOING (unprintable): %r", result)
+        return result
+
+    OpenAIChatModel._map_messages = patched_map_messages  # noqa: SLF001
     _INSTALLED = True
 
 
