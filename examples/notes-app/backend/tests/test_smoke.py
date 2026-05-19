@@ -60,6 +60,22 @@ def _parse_sse(body: str) -> list[tuple[str, str]]:
     return out
 
 
+def test_note_repository_is_bound_in_container() -> None:
+    """The notes repo must be reachable via ``app.state.container`` so
+    tools (and any future router) can resolve it without a module-level
+    singleton. This is the load-bearing assertion behind F15.
+    """
+    from notes_app.notes.repository import NoteRepository
+
+    notes_repo = InMemoryNoteRepository()
+    app = build_app(notes_repo=notes_repo, agent_runner=_fake_runner)
+    # The lifespan only runs inside a TestClient context — that's when
+    # ``_bind_domain_repos`` is awaited and the binding lands.
+    with TestClient(app):
+        assert app.state.container.has(NoteRepository)
+        assert app.state.container.get(NoteRepository) is notes_repo
+
+
 def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a fake runner — no network."""
     app = build_app(agent_runner=_fake_runner)

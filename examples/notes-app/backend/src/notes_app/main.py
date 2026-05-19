@@ -2,16 +2,19 @@
 
 Wires:
   - in-memory thread repository (no Postgres yet)
-  - in-memory note repository (shared singleton; tenant-scoped inside)
+  - in-memory note repository bound through ``app.state.container``
+    via an ``on_startup`` hook (per spec 4A.0.7 — no module-level
+    singletons; see ``docs/superpowers/guides/domain-repo-scaffold.md``).
   - threads router (CRUD)
-  - streaming router backed by `build_notes_runner(...)` which injects
-    per-request `NoteToolDeps(repo=note_repo, tenant_id=...)` into the
-    pydantic-ai agent so its CRUD tools can act on the right tenant.
+  - streaming router backed by ``build_notes_runner(...)`` which injects
+    per-request ``NoteToolDeps(repo=container.get(NoteRepository),
+    tenant_id=...)`` into the pydantic-ai agent so its CRUD tools can act
+    on the right tenant.
   - empty provider list — iteration 3 still doesn't need DBOS / Postgres
 
 The app object is lazily built so importing this module never hits
 OpenRouter; the agent is only constructed at first request (or eagerly
-via `build_app`).
+via ``build_app``).
 """
 
 from __future__ import annotations
@@ -41,15 +44,15 @@ from notes_app.notes.repository import InMemoryNoteRepository, NoteRepository
 
 load_dotenv()
 
-# Module-scope singleton — one in-memory store for the dev server process.
-# Tenant scoping happens inside the repo, so multiple tenants can share it.
-note_repo: NoteRepository = InMemoryNoteRepository()
 
-
-def _lazy_runner(repo: NoteRepository) -> AgentRunner:
+def _lazy_runner(app: FastAPI) -> AgentRunner:
     """Defer agent construction until the first streamed request.
 
-    Lets the app boot in environments without `OPENROUTER_API_KEY`
+    Resolves the ``NoteRepository`` from ``app.state.container`` at
+    construction time (which is the first request, *after* the
+    ``on_startup`` hook has run and bound the repo).
+
+    Lets the app boot in environments without ``OPENROUTER_API_KEY``
     (e.g. the threads-only smoke test path).
     """
     _cached: dict[str, AgentRunner] = {}
@@ -62,6 +65,7 @@ def _lazy_runner(repo: NoteRepository) -> AgentRunner:
         tenant_id: UUID,
     ) -> AsyncIterator[StreamEvent]:
         if "runner" not in _cached:
+            repo = app.state.container.get(NoteRepository)
             _cached["runner"] = build_notes_runner(build_agent(), repo)
         async for event in _cached["runner"](
             thread_id=thread_id,
@@ -83,40 +87,54 @@ def build_app(
     """Construct the FastAPI app.
 
     Args:
-      thread_repo: defaults to `InMemoryThreadRepository`.
-      agent_runner: defaults to a lazy OpenRouter-backed `build_notes_runner`.
+      thread_repo: defaults to ``InMemoryThreadRepository``.
+      agent_runner: defaults to a lazy OpenRouter-backed runner that
+        resolves its ``NoteRepository`` from ``app.state.container``.
         Tests pass a fake here to avoid hitting the network.
-      notes_repo: defaults to the module-scope `note_repo` singleton.
-        Tests may pass a fresh `InMemoryNoteRepository` for isolation.
+      notes_repo: the ``NoteRepository`` to bind into the container.
+        Defaults to a fresh ``InMemoryNoteRepository``. Tests may pass
+        their own instance to inspect what the agent wrote.
     """
     repo = thread_repo or InMemoryThreadRepository()
-    notes = notes_repo or note_repo
-    runner = agent_runner or _lazy_runner(notes)
+    notes = notes_repo or InMemoryNoteRepository()
 
     engine = Engine(providers=[])
     threads_router = build_threads_router(thread_repo=repo)
+
+    async def _bind_domain_repos(app: FastAPI) -> None:
+        """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
+        app.state.container.bind(NoteRepository, notes)
+
+    app: FastAPI = engine.fastapi_app(
+        extra_routers=[threads_router],
+        # F8: permissive_dev() covers the assistant-ui Next.js dev shell
+        # (localhost:3000) and the Vite dev port (localhost:3003) so a
+        # real browser frontend can hit this backend without a proxy.
+        # Replace with an explicit ``CORSConfig(allow_origins=[...])`` in
+        # production.
+        cors=CORSConfig.permissive_dev(),
+        on_startup=[_bind_domain_repos],
+    )
+
+    # Streaming router needs a closure over `app` so its runner can
+    # resolve the NoteRepository from the container at first request.
+    runner = agent_runner or _lazy_runner(app)
     streaming_router = build_streaming_router(
         thread_repo=repo,
         agent_runner=runner,
     )
-    app: FastAPI = engine.fastapi_app(
-        extra_routers=[threads_router, streaming_router],
-        # F8: permissive_dev() covers the assistant-ui Next.js dev shell
-        # (localhost:3000) and the Vite dev port (localhost:3003) so a
-        # real browser frontend can hit this backend without a proxy.
-        # Replace with an explicit `CORSConfig(allow_origins=[...])` in
-        # production.
-        cors=CORSConfig.permissive_dev(),
-    )
+    app.include_router(streaming_router)
+
     # Expose the notes repo on app.state so integration tests (and future
-    # admin/debug endpoints) can inspect what the agent wrote.
+    # admin/debug endpoints) can inspect what the agent wrote without
+    # round-tripping through the container.
     app.state.notes_repo = notes
     return app
 
 
-# Module-level ASGI handle for `uvicorn notes_app.main:app`.
-# Built eagerly so uvicorn's lifespan kicks Engine.boot(); the agent itself
-# is still lazy (constructed on first /messages request).
+# Module-level ASGI handle for ``uvicorn notes_app.main:app``.
+# Built eagerly so uvicorn's lifespan kicks ``Engine.boot()``; the agent
+# itself is still lazy (constructed on first /messages request).
 app: FastAPI = build_app()
 
 
