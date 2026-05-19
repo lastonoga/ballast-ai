@@ -109,6 +109,48 @@ def _last_user_text(messages: list[ModelMessage]) -> str:
     return ""
 
 
+def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
+    """Replace ``adapter.messages`` with just the trailing user request.
+
+    ``UIAdapter.run_stream*`` appends ``self.messages`` to the
+    caller-supplied ``message_history`` (``_adapter.py:511-512``):
+
+    .. code-block:: python
+
+        frontend_messages = self.sanitize_messages(self.messages, ...)
+        message_history = [*(message_history or []), *frontend_messages]
+
+    For a server-stateful contract that's the wrong default — the body's
+    client-side history would duplicate everything we already loaded
+    from the repo, and any stale assistant tool-call parts from an
+    aborted prior run would smuggle dangling ``tool_call_id``s into the
+    next LLM request, causing the upstream to 400.
+
+    We trim the adapter's cached messages list to only the LAST
+    ``ModelRequest`` (the new user turn). ``messages`` is a
+    ``cached_property``, which on CPython is stored in ``__dict__`` —
+    setting that key pre-empts the property computation and is honored
+    by every downstream access (including ``sanitize_messages`` and the
+    adapter's own deferred-tool-results extractor, which we still need
+    to fire on the FULL body separately if it's relevant).
+
+    NB: ``deferred_tool_results`` is ALSO a cached_property on the
+    adapter and reads from the original body — not from ``messages`` —
+    so trimming ``messages`` doesn't break HITL approval round-trips.
+    Just confirmed by reading ``VercelAIAdapter.deferred_tool_results``
+    which iterates ``self.run_input.messages`` directly.
+    """
+    from pydantic_ai.messages import ModelRequest  # noqa: PLC0415
+
+    msgs = adapter.messages
+    last_request: ModelRequest | None = None
+    for msg in reversed(msgs):
+        if isinstance(msg, ModelRequest):
+            last_request = msg
+            break
+    adapter.__dict__["messages"] = [last_request] if last_request else []
+
+
 _DEFAULT_HISTORY_LIMIT = 200
 
 
@@ -174,6 +216,18 @@ def build_streaming_router(
         last_message = adapter.messages[-1] if adapter.messages else None
         prompt_text = _last_user_text(adapter.messages)
 
+        # Server-stateful contract: the repo is the source of truth for
+        # conversation history. We trim ``adapter.messages`` down to the
+        # latest user turn (plus any deferred-tool approval responses the
+        # adapter needs to extract from the body) so the upstream
+        # ``UIAdapter.run_stream`` doesn't ALSO append the body's full
+        # client-side history on top of our ``message_history`` — which
+        # would duplicate the current turn AND smuggle stale assistant
+        # tool-call parts from a previously-aborted run back into the
+        # prompt, causing the upstream LLM to 400 on dangling
+        # ``tool_call_id`` references.
+        _trim_adapter_messages_to_last_user_turn(adapter)
+
         if prompt_text:
             await thread_repo.add_message(
                 thread_id,
@@ -185,6 +239,10 @@ def build_streaming_router(
         rows = await thread_repo.history(
             thread_id, tenant_id=tenant_id, limit=history_limit,
         )
+        # We already persisted the current user turn AND the trimmed
+        # ``adapter.messages`` will carry it back into the prompt via the
+        # adapter's frontend_messages merge, so drop it from our
+        # repo-driven history to avoid duplication.
         history = messages_to_model_history(rows, drop_prompt=prompt_text)
 
         resolved_deps = await _resolve_deps(
