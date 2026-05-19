@@ -33,13 +33,17 @@ class PostgresThreadRepository:
         purpose_metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
+        id: UUID | None = None,
     ) -> Thread:
-        row = ThreadRow(
-            tenant_id=tenant_id,
-            purpose=purpose,
-            purpose_metadata=dict(purpose_metadata),
-            actor_id=actor_id,
-        )
+        row_kwargs: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "purpose": purpose,
+            "purpose_metadata": dict(purpose_metadata),
+            "actor_id": actor_id,
+        }
+        if id is not None:
+            row_kwargs["id"] = id
+        row = ThreadRow(**row_kwargs)
         self._session.add(row)
         await self._session.flush()
         await self._session.refresh(row)

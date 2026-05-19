@@ -287,7 +287,13 @@ async def test_streaming_endpoint_persists_user_message_before_streaming() -> No
 
 
 @pytest.mark.asyncio
-async def test_streaming_endpoint_404_when_thread_missing() -> None:
+async def test_streaming_endpoint_lazy_creates_missing_thread() -> None:
+    """Missing thread is created on the fly using the URL's thread_id.
+
+    Fixes the "client holds a stale id after backend restart of an
+    in-memory repo" UX bug — the runner streams normally and the new
+    thread persists with the URL's id under the requesting tenant.
+    """
     repo = InMemoryThreadRepository()
 
     async def runner(**_kw: object) -> AsyncIterator[StreamEvent]:
@@ -298,12 +304,19 @@ async def test_streaming_endpoint_404_when_thread_missing() -> None:
         build_streaming_router(thread_repo=repo, agent_runner=runner),
     )
     body = {"role": "user", "parts": [{"type": "text", "text": "x"}]}
+    tid = uuid4()
+    new_thread_id = uuid4()
     with TestClient(app) as c:
         r = c.post(
-            f"/threads/{uuid4()}/messages", json=body,
-            headers={"X-Tenant-Id": str(uuid4())},
+            f"/threads/{new_thread_id}/messages", json=body,
+            headers={"X-Tenant-Id": str(tid)},
         )
-    assert r.status_code == 404
+    assert r.status_code == 200
+    created = await repo.load(new_thread_id, tenant_id=tid)
+    assert created is not None
+    assert created.id == new_thread_id
+    assert created.tenant_id == tid
+    assert created.purpose == "conversation"
 
 
 @pytest.mark.asyncio
@@ -329,3 +342,53 @@ async def test_streaming_endpoint_404_cross_tenant() -> None:
             headers={"X-Tenant-Id": str(other)},
         )
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_streaming_endpoint_normalizes_ag_ui_run_agent_input_body() -> None:
+    """`@ag-ui/client` HttpAgent sends RunAgentInput, not (role, parts).
+
+    The endpoint normalizes the AG-UI shape (messages array with `content`
+    strings) into our (role, parts) shape by taking the LAST user message.
+    """
+    repo = InMemoryThreadRepository()
+    tid = uuid4()
+    th = await repo.create(
+        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+    )
+    received_text: dict[str, str] = {}
+
+    async def runner(*, message, **_kw):
+        from pydantic_ai_stateflow.api.streaming.router import extract_text
+        received_text["v"] = extract_text(message.parts)
+        yield StreamEvent.run_finished(uuid4(), uuid4())
+
+    app = FastAPI()
+    app.include_router(
+        build_streaming_router(thread_repo=repo, agent_runner=runner),
+    )
+    ag_ui_body = {
+        "threadId": str(th.id),
+        "runId": "ru_xyz",
+        "tools": [],
+        "context": [],
+        "forwardedProps": {},
+        "state": None,
+        "messages": [
+            {"id": "m1", "role": "user", "content": "first"},
+            {"id": "m2", "role": "assistant", "content": ""},
+            {"id": "m3", "role": "user", "content": "latest user msg"},
+        ],
+    }
+    with TestClient(app) as c:
+        r = c.post(
+            f"/threads/{th.id}/messages", json=ag_ui_body,
+            headers={"X-Tenant-Id": str(tid)},
+        )
+    assert r.status_code == 200
+    # Only the LAST user message reaches the runner.
+    assert received_text.get("v") == "latest user msg"
+    # User message persisted with extracted text.
+    msgs = await repo.history(th.id, tenant_id=tid)
+    assert msgs[0].role == "user"
+    assert msgs[0].parts == [{"type": "text", "text": "latest user msg"}]
