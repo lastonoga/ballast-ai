@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -13,6 +16,8 @@ from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
 from pydantic_ai_stateflow.api.streaming.kinds import StreamEventKind
 from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+
+_logger = logging.getLogger("pydantic_ai_stateflow.api.streaming")
 
 
 class StreamEvent(BaseModel):
@@ -204,6 +209,22 @@ class AgentRunner(Protocol):
     ) -> AsyncIterator[StreamEvent]: ...
 
 
+class _StreamSentinel:
+    """Marker base class for queue sentinels (done / failed)."""
+
+
+class _Done(_StreamSentinel):
+    pass
+
+
+class _Failed(_StreamSentinel):
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
+_DONE: _StreamSentinel = _Done()
+
+
 _ENCODERS: dict[str, type] = {"ag-ui": AGUIEncoder, "vercel": VercelEncoder}
 
 _TenantDep = Depends(get_tenant_id)
@@ -252,6 +273,7 @@ def build_streaming_router(
 
     @router.post("/threads/{thread_id}/messages")
     async def post_message(
+        request: Request,
         thread_id: UUID,
         body: _PostMessageBody,
         tenant_id: UUID = _TenantDep,
@@ -274,38 +296,121 @@ def build_streaming_router(
         run_id = uuid4()
 
         async def _gen() -> AsyncIterator[bytes]:
+            # F10: client-disconnect propagation.
+            #
+            # We can't rely solely on Starlette delivering ``CancelledError``
+            # into this generator on the next ``yield`` — verified by
+            # ``tests/api/test_streaming_abort.py``, the
+            # ``httpx.ASGITransport`` path (and Starlette's own SSE
+            # handling) does NOT always raise CancelledError into the
+            # generator just because the consumer closed its connection.
+            # We therefore run an explicit ``request.is_disconnected()``
+            # poll concurrently with the runner; if the client goes away
+            # we cancel the runner-driving task so its
+            # ``async with agent.run_stream(...)`` exits and the upstream
+            # httpx request to the LLM is aborted.
+            #
+            # We still catch ``CancelledError`` defensively so a true
+            # external cancellation is logged and re-raised cleanly. No
+            # partial assistant message is persisted (no
+            # ``TEXT_MESSAGE_END`` was seen).
             accumulated_text = ""
             assistant_message_id: UUID | None = None
-            async for event in agent_runner(
-                thread_id=thread_id,
-                run_id=run_id,
-                message=body,
-                tenant_id=tenant_id,
-            ):
-                if event.kind == StreamEventKind.TEXT_MESSAGE_START.value:
-                    raw_mid = event.data.get("messageId")
-                    assistant_message_id = (
-                        UUID(raw_mid) if isinstance(raw_mid, str) else None
+            queue: asyncio.Queue[StreamEvent | _StreamSentinel] = asyncio.Queue()
+
+            async def _produce() -> None:
+                try:
+                    async for ev in agent_runner(
+                        thread_id=thread_id,
+                        run_id=run_id,
+                        message=body,
+                        tenant_id=tenant_id,
+                    ):
+                        await queue.put(ev)
+                    await queue.put(_DONE)
+                except asyncio.CancelledError:
+                    await queue.put(_DONE)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    await queue.put(_Failed(exc))
+
+            async def _watch_disconnect() -> None:
+                # Poll at 100ms intervals — short enough to abort a long
+                # LLM call promptly, long enough to be negligible CPU.
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    await asyncio.sleep(0.1)
+
+            producer = asyncio.create_task(_produce())
+            watcher = asyncio.create_task(_watch_disconnect())
+            try:
+                while True:
+                    get_task = asyncio.create_task(queue.get())
+                    done, _pending = await asyncio.wait(
+                        {get_task, watcher},
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                    accumulated_text = ""
-                elif event.kind == StreamEventKind.TEXT_MESSAGE_CONTENT.value:
-                    delta = event.data.get("delta", "")
-                    if isinstance(delta, str):
-                        accumulated_text += delta
-                elif event.kind == StreamEventKind.TEXT_MESSAGE_END.value:
-                    if assistant_message_id is not None:
-                        await thread_repo.add_message(
+                    if watcher in done and get_task not in done:
+                        # Client gone — abort producer.
+                        get_task.cancel()
+                        _logger.info(
+                            "client disconnected mid-stream, cancelling run "
+                            "thread_id=%s run_id=%s",
                             thread_id,
-                            role="assistant",
-                            parts=[{"type": "text", "text": accumulated_text}],
-                            tenant_id=tenant_id,
+                            run_id,
                         )
-                    # Reset for any subsequent message in the same run.
-                    assistant_message_id = None
-                    accumulated_text = ""
-                frame = chosen.encode(event)
-                if frame:
-                    yield frame
+                        producer.cancel()
+                        return
+                    item = get_task.result()
+                    if isinstance(item, _StreamSentinel):
+                        if isinstance(item, _Failed):
+                            raise item.exc
+                        return  # _DONE
+                    event = item
+                    if event.kind == StreamEventKind.TEXT_MESSAGE_START.value:
+                        raw_mid = event.data.get("messageId")
+                        assistant_message_id = (
+                            UUID(raw_mid) if isinstance(raw_mid, str) else None
+                        )
+                        accumulated_text = ""
+                    elif event.kind == StreamEventKind.TEXT_MESSAGE_CONTENT.value:
+                        delta = event.data.get("delta", "")
+                        if isinstance(delta, str):
+                            accumulated_text += delta
+                    elif event.kind == StreamEventKind.TEXT_MESSAGE_END.value:
+                        if assistant_message_id is not None:
+                            await thread_repo.add_message(
+                                thread_id,
+                                role="assistant",
+                                parts=[
+                                    {"type": "text", "text": accumulated_text},
+                                ],
+                                tenant_id=tenant_id,
+                            )
+                        assistant_message_id = None
+                        accumulated_text = ""
+                    frame = chosen.encode(event)
+                    if frame:
+                        yield frame
+            except asyncio.CancelledError:
+                _logger.info(
+                    "stream generator cancelled "
+                    "thread_id=%s run_id=%s",
+                    thread_id,
+                    run_id,
+                )
+                producer.cancel()
+                raise
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
+                if not producer.done():
+                    producer.cancel()
+                # Drain cancellations so we don't leave orphan tasks.
+                for t in (producer, watcher):
+                    with contextlib.suppress(BaseException):
+                        await t
 
         return StreamingResponse(_gen(), media_type=chosen.media_type)
 
