@@ -216,6 +216,12 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
       function PerThreadRuntime() {
         const aui = useAui();
         const remoteId = useAuiState((s) => s.threadListItem.remoteId);
+        // Client-side stable id for the thread. Survives the remoteId
+        // round-trip (initialize() flips remoteId from undefined → uuid;
+        // the client id never changes). We use this as `useChat`'s `id`
+        // so the underlying chat instance isn't torn down mid-send when
+        // remoteId resolves.
+        const clientThreadId = useAuiState((s) => s.threadListItem.id);
 
         // `prepareSendMessagesRequest` needs the *current* remoteId; capture
         // it through a ref so the transport instance is stable across renders
@@ -274,7 +280,12 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         );
 
         const chat = useChat<UIMessage>({
-          id: remoteId,
+          // Stable client-side id — does NOT swap to backend remoteId
+          // mid-session, so `useChat`'s internal `AbstractChat` instance
+          // survives the initialize() handshake without dropping the
+          // in-flight stream that triggered initialize() in the first
+          // place.
+          id: clientThreadId,
           transport,
           // Auto-resend the conversation as soon as the user supplies all
           // outstanding approval responses — pydantic-ai's
@@ -284,6 +295,57 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         });
 
         const runtime = useAISDKRuntime(chat);
+
+        // Restore the conversation when a thread mounts with an existing
+        // backend remoteId (page reload, sidebar click on an old thread).
+        // Without this, useChat starts empty even though the backend has
+        // the full history. We fetch the active branch, map to
+        // UIMessage[], and seed useChat once per remoteId — only when
+        // the chat hasn't already filled itself in this session.
+        useEffect(() => {
+          if (!remoteId) return;
+          // Avoid clobbering messages we already streamed in this
+          // session (e.g. after init() flipped remoteId from undefined
+          // → uuid). Restore only on a "cold" mount: zero messages.
+          if (chat.messages.length > 0) return;
+          let cancelled = false;
+          void (async () => {
+            try {
+              const r = await fetch(
+                `${apiUrl}/threads/${remoteId}/messages`,
+                { headers },
+              );
+              if (!r.ok || cancelled) return;
+              const rows = (await r.json()) as Array<{
+                id: string;
+                role: string;
+                parts: Array<{ type: string; text?: string }>;
+              }>;
+              if (cancelled || chat.messages.length > 0) return;
+              const restored: UIMessage[] = rows.map((row) => ({
+                id: row.id,
+                role: row.role as UIMessage["role"],
+                parts: row.parts.map((p) => ({
+                  type: "text" as const,
+                  text: p.text ?? "",
+                  state: "done" as const,
+                })),
+              }));
+              if (restored.length > 0) {
+                chat.setMessages(restored);
+              }
+            } catch {
+              // Best-effort restore — if it fails we just show an
+              // empty conversation; user can still send new messages.
+            }
+          })();
+          return () => {
+            cancelled = true;
+          };
+          // We intentionally key on `remoteId` only — `chat` identity
+          // changes on every render and would re-fetch.
+          // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, [remoteId, apiUrl, headers]);
 
         // Publish this thread's chat helpers to the outer provider via
         // the shared ref. Clear on unmount so a stale helper from a
