@@ -1,11 +1,11 @@
 """OpenRouter-backed pydantic-ai Agent for the notes app.
 
-Iteration 3 wires CRUD tools into the agent — the agent now takes a
+Iteration 3 wires CRUD tools into the agent — the agent takes a
 ``NoteToolDeps`` (a repo + a tenant id) and can ``create_note``,
 ``list_notes``, ``search_notes``, ``edit_note``, and ``delete_note`` on
 the user's behalf. Tool calls surface as canonical AG-UI ``TOOL_CALL_*``
-events thanks to framework F13 (``make_runner`` v2): the frontend
-renders a tool-call card per invocation as the model streams.
+events thanks to ``pydantic_ai.ui.ag_ui.AGUIAdapter``, which the
+framework's ``build_streaming_router`` delegates to for the wire encoding.
 
 Output shape decision (iter 3 round 2):
   We use ``output_type=str`` — NOT a structured ``BaseModel`` envelope.
@@ -13,40 +13,36 @@ Output shape decision (iter 3 round 2):
 
   - ``ToolOutput`` (pydantic-ai's default for ``BaseModel``) forces
     ``tool_choice="required"`` to drive the synthetic ``final_result``
-    tool. OpenRouter's Qwen 3.6 endpoints reject that value (404 on
-    every provider serving ``qwen/qwen3.6-plus``).
+    tool. OpenRouter's Qwen 3.6 endpoints reject that value.
   - ``NativeOutput`` accepts ``response_format: json_schema`` but the
-    model then returns the JSON directly WITHOUT calling real tools —
-    so ``create_note`` never fires and the note is never saved.
-  - ``PromptedOutput`` works but currently streams the raw JSON envelope
-    through ``make_runner``'s text path, polluting the persisted
-    assistant message.
+    model then returns the JSON directly WITHOUT calling real tools.
+  - ``PromptedOutput`` works but pollutes the streamed text with JSON.
 
-  ``output_type=str`` sidesteps all three: tools fire freely
-  (``tool_choice`` stays default ``auto``), the model returns a plain
-  string reply, and the streaming text is exactly that reply.
+  ``output_type=str`` sidesteps all three.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 from pydantic_ai import Agent
-from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.models.openrouter import (
+    OpenRouterModel,
+    OpenRouterModelSettings,
+    OpenRouterReasoning,
+)
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow.api.streaming import AgentRunner, make_runner
 
 if TYPE_CHECKING:
-    from pydantic_ai_stateflow.persistence.thread.repository import (
-        ThreadRepository,
-    )
+    from uuid import UUID
 
     from notes_app.notes.repository import NoteRepository
     from notes_app.notes.tools import NoteToolDeps
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
+DEFAULT_TEMPERATURE = 0.7
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal notes app. "
@@ -66,13 +62,7 @@ def build_agent(
     model_name: str | None = None,
     api_key: str | None = None,
 ) -> Agent[NoteToolDeps, str]:
-    """Build the OpenRouter-backed agent and register the note tools.
-
-    The returned agent has ``deps_type=NoteToolDeps`` — callers supply
-    the repo + tenant_id via ``agent.run_stream(..., deps=...)``.
-    Resolves ``model_name`` from ``OPENROUTER_MODEL`` env (default
-    ``qwen/qwen3.6-plus``) and ``api_key`` from ``OPENROUTER_API_KEY``.
-    """
+    """Build the OpenRouter-backed agent and register the note tools."""
     from notes_app.notes.tools import NoteToolDeps as _Deps
     from notes_app.notes.tools import register_note_tools
 
@@ -80,7 +70,7 @@ def build_agent(
     resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY")
     if not resolved_key:
         raise RuntimeError(
-            "OPENROUTER_API_KEY env var is required to build the agent"
+            "OPENROUTER_API_KEY env var is required to build the agent",
         )
 
     model = OpenRouterModel(
@@ -97,34 +87,78 @@ def build_agent(
     return agent
 
 
-def build_notes_runner(
-    agent: Agent[NoteToolDeps, str],
+def build_notes_deps_factory(
     note_repo: NoteRepository,
-    thread_repo: ThreadRepository,
-) -> AgentRunner:
-    """Wrap ``agent`` as an ``AgentRunner`` that injects per-request deps.
+):
+    """Return a ``deps_factory`` for ``build_streaming_router``.
 
-    Uses ``make_runner(deps=factory, thread_repo=...)``:
-
-    - ``deps`` factory mints a fresh ``NoteToolDeps(repo, tenant_id)`` per
-      HTTP request from the runner-supplied ``tenant_id``. Tool-call SSE
-      events flow through automatically.
-    - ``thread_repo`` lets the adapter reconstruct ``message_history``
-      from the persisted thread before invoking the agent (server-
-      stateful contract — see ``src/pydantic_ai_stateflow/api/streaming/
-      pydantic_ai_adapter.py``). Without this, every turn would be
-      amnesiac.
-
-    ``text_field`` is the identity — agent output IS the reply string.
+    Mints a fresh ``NoteToolDeps`` per HTTP request, bound to the
+    requesting tenant. The factory signature matches the framework
+    contract: ``(thread_id, tenant_id, message)`` keyword args.
     """
     from notes_app.notes.tools import NoteToolDeps
 
-    def deps_factory(*, tenant_id: UUID, **_kwargs: object) -> NoteToolDeps:
+    def factory(*, tenant_id: UUID, **_kwargs: object) -> NoteToolDeps:
         return NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
 
-    return make_runner(
-        agent,
-        text_field=lambda out: out or "",
-        deps=deps_factory,
-        thread_repo=thread_repo,
-    )
+    return factory
+
+
+def _parse_bool_env(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def build_model_settings() -> OpenRouterModelSettings | None:
+    """Read ``OPENROUTER_*`` env vars into ``OpenRouterModelSettings``.
+
+    Recognized env vars:
+
+    - ``OPENROUTER_TEMPERATURE`` (float, default 0.7)
+    - ``OPENROUTER_REASONING_EFFORT`` (low|medium|high) — optional
+    - ``OPENROUTER_REASONING_MAX_TOKENS`` (int) — optional
+    - ``OPENROUTER_REASONING_ENABLED`` (bool) — optional
+
+    Returns ``None`` if no env vars are set (let pydantic-ai pick its
+    own defaults). Returns an ``OpenRouterModelSettings`` instance
+    otherwise. The reasoning sub-config is only attached when at least
+    one ``OPENROUTER_REASONING_*`` env var is set.
+    """
+    settings: OpenRouterModelSettings = OpenRouterModelSettings()
+    populated = False
+
+    temp_raw = os.environ.get("OPENROUTER_TEMPERATURE")
+    if temp_raw is not None:
+        try:
+            settings["temperature"] = float(temp_raw)
+            populated = True
+        except ValueError:
+            pass
+    else:
+        # Always plumb the documented default so behavior is reproducible.
+        settings["temperature"] = DEFAULT_TEMPERATURE
+        populated = True
+
+    reasoning: OpenRouterReasoning = {}
+    effort = os.environ.get("OPENROUTER_REASONING_EFFORT")
+    if effort:
+        # OpenRouterReasoning.effort is a Literal — TypedDict allows any
+        # string assignment but the OpenRouter API will reject unknowns.
+        reasoning["effort"] = effort  # type: ignore[typeddict-item]
+
+    max_tokens_raw = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
+    if max_tokens_raw is not None:
+        with contextlib.suppress(ValueError):
+            reasoning["max_tokens"] = int(max_tokens_raw)
+
+    enabled = _parse_bool_env("OPENROUTER_REASONING_ENABLED")
+    if enabled is not None:
+        reasoning["enabled"] = enabled
+
+    if reasoning:
+        settings["openrouter_reasoning"] = reasoning
+        populated = True
+
+    return settings if populated else None

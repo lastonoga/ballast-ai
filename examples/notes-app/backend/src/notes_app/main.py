@@ -1,4 +1,4 @@
-"""FastAPI entry point for the notes-app backend (iteration 3).
+"""FastAPI entry point for the notes-app backend.
 
 Wires:
   - in-memory thread repository (no Postgres yet)
@@ -6,32 +6,28 @@ Wires:
     via an ``on_startup`` hook (per spec 4A.0.7 — no module-level
     singletons; see ``docs/superpowers/guides/domain-repo-scaffold.md``).
   - threads router (CRUD)
-  - streaming router backed by ``build_notes_runner(...)`` which injects
-    per-request ``NoteToolDeps(repo=container.get(NoteRepository),
-    tenant_id=...)`` into the pydantic-ai agent so its CRUD tools can act
-    on the right tenant.
-  - empty provider list — iteration 3 still doesn't need DBOS / Postgres
+  - streaming router backed by ``build_streaming_router(thread_repo=,
+    agent=, deps_factory=, model_settings=)``. The agent is built lazily
+    on first request to keep the import side-effect-free; the deps
+    factory injects per-request ``NoteToolDeps(repo=container.get(
+    NoteRepository), tenant_id=...)`` into the pydantic-ai agent so its
+    CRUD tools act on the right tenant.
+  - empty provider list — still doesn't need DBOS / Postgres.
 
-The app object is lazily built so importing this module never hits
-OpenRouter; the agent is only constructed at first request (or eagerly
-via ``build_app``).
+The actual AG-UI wire encoding, body parsing, and event taxonomy are
+delegated to ``pydantic_ai.ui.ag_ui.AGUIAdapter`` (see
+``src/pydantic_ai_stateflow/api/streaming/router.py``).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
-from uuid import UUID
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
-from pydantic_ai_stateflow.api.streaming import (
-    AgentRunner,
-    StreamEvent,
-    build_streaming_router,
-)
-from pydantic_ai_stateflow.api.streaming.router import _PostMessageBody
+from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
@@ -39,67 +35,62 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 )
 from pydantic_ai_stateflow.runtime import Engine
 
-from notes_app.agent import build_agent, build_notes_runner
+from notes_app.agent import (
+    build_agent,
+    build_model_settings,
+    build_notes_deps_factory,
+)
 from notes_app.notes.repository import InMemoryNoteRepository, NoteRepository
+
+if TYPE_CHECKING:
+    from pydantic_ai import Agent
 
 load_dotenv()
 
 
-def _lazy_runner(app: FastAPI) -> AgentRunner:
-    """Defer agent construction until the first streamed request.
+class _LazyAgent:
+    """Defer ``build_agent()`` until the first streaming request.
 
-    Resolves the ``NoteRepository`` from ``app.state.container`` at
-    construction time (which is the first request, *after* the
-    ``on_startup`` hook has run and bound the repo).
-
-    Lets the app boot in environments without ``OPENROUTER_API_KEY``
-    (e.g. the threads-only smoke test path).
+    Constructed at app-boot time, it forwards every ``Agent`` attribute
+    access (``run_stream_events``, ``output_type``, etc.) to a real
+    ``Agent`` instance built on first touch. Lets the app boot in
+    environments without ``OPENROUTER_API_KEY`` (e.g. the threads-only
+    smoke tests) and only requires the env var on the first real
+    streaming request.
     """
-    _cached: dict[str, AgentRunner] = {}
 
-    async def _runner(
-        *,
-        thread_id: UUID,
-        run_id: UUID,
-        message: _PostMessageBody,
-        tenant_id: UUID,
-    ) -> AsyncIterator[StreamEvent]:
-        if "runner" not in _cached:
-            repo = app.state.container.get(NoteRepository)
-            thread_repo = app.state.thread_repo
-            _cached["runner"] = build_notes_runner(
-                build_agent(), repo, thread_repo,
-            )
-        async for event in _cached["runner"](
-            thread_id=thread_id,
-            run_id=run_id,
-            message=message,
-            tenant_id=tenant_id,
-        ):
-            yield event
+    def __init__(self) -> None:
+        self._agent: Agent[Any, Any] | None = None
 
-    return _runner
+    def _ensure(self) -> Agent[Any, Any]:
+        if self._agent is None:
+            self._agent = build_agent()
+        return self._agent
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ensure(), name)
 
 
 def build_app(
     *,
     thread_repo: ThreadRepository | None = None,
-    agent_runner: AgentRunner | None = None,
+    agent: Agent[Any, Any] | None = None,
     notes_repo: NoteRepository | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
     Args:
       thread_repo: defaults to ``InMemoryThreadRepository``.
-      agent_runner: defaults to a lazy OpenRouter-backed runner that
-        resolves its ``NoteRepository`` from ``app.state.container``.
-        Tests pass a fake here to avoid hitting the network.
-      notes_repo: the ``NoteRepository`` to bind into the container.
-        Defaults to a fresh ``InMemoryNoteRepository``. Tests may pass
-        their own instance to inspect what the agent wrote.
+      agent: a pre-built pydantic-ai ``Agent``. Defaults to a lazy
+        OpenRouter-backed agent that hits OpenRouter only on first use.
+        Tests pass an in-memory ``TestModel``-backed agent to avoid the
+        network.
+      notes_repo: ``NoteRepository`` bound into the container. Defaults
+        to a fresh ``InMemoryNoteRepository``.
     """
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
+    resolved_agent: Agent[Any, Any] = agent if agent is not None else _LazyAgent()  # type: ignore[assignment]
 
     engine = Engine(providers=[])
     threads_router = build_threads_router(thread_repo=repo)
@@ -111,36 +102,28 @@ def build_app(
     app: FastAPI = engine.fastapi_app(
         extra_routers=[threads_router],
         # F8: permissive_dev() covers the assistant-ui Next.js dev shell
-        # (localhost:3000) and the Vite dev port (localhost:3003) so a
-        # real browser frontend can hit this backend without a proxy.
-        # Replace with an explicit ``CORSConfig(allow_origins=[...])`` in
-        # production.
+        # (localhost:3000) and the Vite dev port (localhost:3003).
         cors=CORSConfig.permissive_dev(),
         on_startup=[_bind_domain_repos],
     )
 
-    # Streaming router needs a closure over `app` so its runner can
-    # resolve the NoteRepository from the container at first request.
-    runner = agent_runner or _lazy_runner(app)
     streaming_router = build_streaming_router(
         thread_repo=repo,
-        agent_runner=runner,
+        agent=resolved_agent,
+        deps_factory=build_notes_deps_factory(notes),
+        model_settings=build_model_settings(),
     )
     app.include_router(streaming_router)
 
-    # Expose the notes repo on app.state so integration tests (and future
-    # admin/debug endpoints) can inspect what the agent wrote without
-    # round-tripping through the container.
+    # Expose for integration tests + future admin endpoints.
     app.state.notes_repo = notes
-    # Expose the thread repo too — the lazy runner factory needs it to
-    # rehydrate message_history per request (server-stateful contract).
     app.state.thread_repo = repo
     return app
 
 
 # Module-level ASGI handle for ``uvicorn notes_app.main:app``.
-# Built eagerly so uvicorn's lifespan kicks ``Engine.boot()``; the agent
-# itself is still lazy (constructed on first /messages request).
+# Engine.boot() runs in lifespan; the agent stays lazy (constructed on
+# the first POST to /threads/{id}/messages).
 app: FastAPI = build_app()
 
 
