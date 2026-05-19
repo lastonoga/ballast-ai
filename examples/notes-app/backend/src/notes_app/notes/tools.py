@@ -22,7 +22,6 @@ from uuid import UUID
 
 from pydantic_ai import Agent, RunContext
 
-from notes_app.agent import ChatReply
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
 
@@ -39,7 +38,7 @@ class NoteToolDeps:
     tenant_id: UUID
 
 
-def register_note_tools(agent: Agent[NoteToolDeps, ChatReply]) -> None:
+def register_note_tools(agent: Agent[NoteToolDeps, str]) -> None:
     """Register the CRUD tools on `agent`. Idempotent within one Agent."""
 
     @agent.tool

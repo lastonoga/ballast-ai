@@ -50,12 +50,11 @@ async def test_create_note_persists_via_repo(
     # agent's registration to make sure register_note_tools wired it.
     from pydantic_ai import Agent
 
-    from notes_app.agent import ChatReply
     from notes_app.notes.tools import register_note_tools
 
     agent = Agent(
         model="test",
-        output_type=ChatReply,
+        output_type=str,
         deps_type=NoteToolDeps,
     )
     register_note_tools(agent)
