@@ -1,6 +1,7 @@
 "use client";
 
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
+import { DeleteNoteApproval } from "@/components/assistant-ui/delete-note-approval";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
 import { DebugToggle } from "@/components/debug-toggle";
 import { RuntimeProvider } from "@/components/runtime-provider";
@@ -9,6 +10,10 @@ import { ThemeToggle } from "@/components/theme-toggle";
 export default function Home() {
   return (
     <RuntimeProvider>
+      {/* `makeAssistantToolUI` self-registers via a side-effect hook; mounting
+          this anywhere inside the runtime provider is enough to take over
+          rendering for the `delete_note` tool call. */}
+      <DeleteNoteApproval />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <AssistantSidebar>
           <div className="flex h-full flex-col">
