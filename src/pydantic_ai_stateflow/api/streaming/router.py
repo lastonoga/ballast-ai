@@ -1,438 +1,218 @@
-from __future__ import annotations
+"""Server-stateful AG-UI streaming endpoint.
 
-import asyncio
-import contextlib
-import logging
-from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, runtime_checkable
-from uuid import UUID, uuid4
+The framework owns the thread + message history (multi-tenant, persisted
+in ``ThreadRepository``). The wire encoding, body parsing, event taxonomy,
+and tool-call/text streaming are delegated to ``pydantic_ai.ui.ag_ui.
+AGUIAdapter`` — we don't reimplement any of that.
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+Endpoint contract::
 
-from pydantic_ai_stateflow.api.deps import get_tenant_id
-from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
-from pydantic_ai_stateflow.api.streaming.kinds import StreamEventKind
-from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-
-_logger = logging.getLogger("pydantic_ai_stateflow.api.streaming")
-
-
-class StreamEvent(BaseModel):
-    """Protocol-neutral streaming event emitted by the agent runner.
-
-    ``kind`` is a wire string (typically a :class:`StreamEventKind` value).
-    ``data`` holds the per-kind payload using AG-UI camelCase field names
-    (``threadId``, ``runId``, ``messageId``, ``toolCallId`` …) so encoders can
-    serialize without re-mapping.
-    """
-
-    kind: str
-    data: dict[str, Any] = Field(default_factory=dict)
-
-    @classmethod
-    def run_started(cls, thread_id: UUID, run_id: UUID) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.RUN_STARTED.value,
-            data={"threadId": str(thread_id), "runId": str(run_id)},
-        )
-
-    @classmethod
-    def run_finished(cls, thread_id: UUID, run_id: UUID) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.RUN_FINISHED.value,
-            data={"threadId": str(thread_id), "runId": str(run_id)},
-        )
-
-    @classmethod
-    def run_error(cls, message: str, code: str | None = None) -> StreamEvent:
-        data: dict[str, Any] = {"message": message}
-        if code is not None:
-            data["code"] = code
-        return cls(kind=StreamEventKind.RUN_ERROR.value, data=data)
-
-    @classmethod
-    def text_message_start(
-        cls, message_id: UUID, role: str = "assistant",
-    ) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.TEXT_MESSAGE_START.value,
-            data={"messageId": str(message_id), "role": role},
-        )
-
-    @classmethod
-    def text_message_content(cls, message_id: UUID, delta: str) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.TEXT_MESSAGE_CONTENT.value,
-            data={"messageId": str(message_id), "delta": delta},
-        )
-
-    @classmethod
-    def text_message_end(cls, message_id: UUID) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.TEXT_MESSAGE_END.value,
-            data={"messageId": str(message_id)},
-        )
-
-    @classmethod
-    def tool_call_start(
-        cls,
-        tool_call_id: UUID | str,
-        tool_call_name: str,
-        parent_message_id: UUID,
-    ) -> StreamEvent:
-        """Mark the start of a tool call.
-
-        ``tool_call_id`` accepts either a ``UUID`` (when the caller mints
-        its own) or a ``str`` (so provider-native ids like OpenAI's
-        ``"call_abc123"`` flow through unchanged — pydantic-ai surfaces
-        these as plain strings on ``ToolCallPart.tool_call_id``).
-        """
-        return cls(
-            kind=StreamEventKind.TOOL_CALL_START.value,
-            data={
-                "toolCallId": str(tool_call_id),
-                "toolCallName": tool_call_name,
-                "parentMessageId": str(parent_message_id),
-            },
-        )
-
-    @classmethod
-    def tool_call_args(
-        cls, tool_call_id: UUID | str, delta: str,
-    ) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.TOOL_CALL_ARGS.value,
-            data={"toolCallId": str(tool_call_id), "delta": delta},
-        )
-
-    @classmethod
-    def tool_call_end(cls, tool_call_id: UUID | str) -> StreamEvent:
-        return cls(
-            kind=StreamEventKind.TOOL_CALL_END.value,
-            data={"toolCallId": str(tool_call_id)},
-        )
-
-
-class StreamEncoder(Protocol):
-    media_type: str
-
-    def encode(self, event: StreamEvent) -> bytes: ...
-
-
-# ---------------------------------------------------------------------------
-# Typed MessagePart union (F3)
-# ---------------------------------------------------------------------------
-
-
-class _TextPart(BaseModel):
-    """Plain text part. Mirrors assistant-ui's `TextMessagePart` shape."""
-
-    type: Literal["text"]
-    text: str
-
-
-class _ToolResultPart(BaseModel):
-    """Result of a previously-emitted tool call, sent back by the client."""
-
-    type: Literal["tool-result"]
-    tool_call_id: str
-    result: Any
-
-
-class _FilePart(BaseModel):
-    """Inline file (image, audio, …) attached to the message."""
-
-    type: Literal["file"]
-    data: str
-    """Base64-encoded file contents."""
-    mime_type: str
-    filename: str | None = None
-
-
-MessagePart = Annotated[
-    _TextPart | _ToolResultPart | _FilePart,
-    Field(discriminator="type"),
-]
-"""Discriminated union of allowed parts on `_PostMessageBody.parts`.
-
-Variants follow assistant-ui's `MessagePart` shapes — keep the ``type``
-literals in sync with the frontend (see
-``examples/notes-app/frontend/RETRO.md``).
+    POST {prefix}/threads/{thread_id}/messages
+        Accept: text/event-stream
+        Body  : AG-UI RunAgentInput JSON (parsed by AGUIAdapter)
+        404   : thread not found (no lazy-create)
+        200   : streaming AG-UI events
 """
 
+from __future__ import annotations
 
-def extract_text(parts: list[Any]) -> str:
-    """Concatenate all text parts in order. Non-text parts are skipped.
+import inspect
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, TypeVar
+from uuid import UUID
 
-    Accepts both validated `MessagePart` instances and raw dicts (so it
-    works on `_PostMessageBody.parts` and on serialized repo rows).
-    """
-    chunks: list[str] = []
-    for p in parts:
-        if isinstance(p, _TextPart):
-            chunks.append(p.text)
-        elif isinstance(p, dict) and p.get("type") == "text":
-            text = p.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-    return "".join(chunks)
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-
-class _PostMessageBody(BaseModel):
-    """Request body for ``POST /threads/{id}/messages``.
-
-    Wire shape is the native ``{role, parts}`` — we are **server-stateful**
-    (per spec): the client sends ONLY the new user turn and the backend
-    reconstructs ``message_history`` from its own ``ThreadRepository``
-    before invoking the agent. AG-UI's ``RunAgentInput`` (full client-
-    held history) is NOT accepted here; frontends using ``@ag-ui/client``
-    must override ``HttpAgent.requestInit`` to ship ``{role, parts}``
-    instead (see ``examples/notes-app/frontend/src/lib/thread-aware-
-    http-agent.ts``).
-    """
-
-    role: str = "user"
-    parts: list[MessagePart] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# AgentRunner Protocol (F4)
-# ---------------------------------------------------------------------------
-
+from pydantic_ai_stateflow.api.deps import get_tenant_id
+from pydantic_ai_stateflow.api.streaming.history import (
+    extract_text,
+    messages_to_model_history,
+)
+from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 if TYPE_CHECKING:
-    # Forward ref purely for the Protocol signature; runtime resolution not
-    # needed since Protocol bodies aren't introspected for kwargs.
-    pass
+    from pydantic_ai import Agent
+    from pydantic_ai.agent import AgentRunResult
+    from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.settings import ModelSettings
+    from starlette.responses import Response
 
 
-@runtime_checkable
-class AgentRunner(Protocol):
-    """Adapter that turns a chat message into a stream of AG-UI events.
+DepsT = TypeVar("DepsT")
+OutT = TypeVar("OutT")
 
-    ``thread_id``, ``run_id``, and ``tenant_id`` come from the framework;
-    ``message`` is the parsed :class:`_PostMessageBody`. Implementations
-    should yield canonical
-    ``StreamEvent.run_started`` → ``text_message_*`` → ``StreamEvent.run_finished``
-    sequences (see :class:`StreamEventKind`).
-    """
+DepsFactory = Callable[..., Any] | Callable[..., Awaitable[Any]]
+"""Callable that mints per-request agent deps.
 
-    def __call__(
-        self,
-        *,
-        thread_id: UUID,
-        run_id: UUID,
-        message: _PostMessageBody,
-        tenant_id: UUID,
-    ) -> AsyncIterator[StreamEvent]: ...
-
-
-class _StreamSentinel:
-    """Marker base class for queue sentinels (done / failed)."""
-
-
-class _Done(_StreamSentinel):
-    pass
-
-
-class _Failed(_StreamSentinel):
-    def __init__(self, exc: BaseException) -> None:
-        self.exc = exc
-
-
-_DONE: _StreamSentinel = _Done()
-
-
-_ENCODERS: dict[str, type] = {"ag-ui": AGUIEncoder, "vercel": VercelEncoder}
+Receives keyword arguments ``thread_id: UUID``, ``tenant_id: UUID``, and
+``message: ModelMessage`` (the just-arrived user turn). May be sync or
+async. Anything that isn't a callable is passed through unchanged.
+"""
 
 _TenantDep = Depends(get_tenant_id)
-_ProtocolQuery = Query(default="ag-ui")
+
+
+async def _resolve_deps(
+    deps_factory: Any,
+    *,
+    thread_id: UUID,
+    tenant_id: UUID,
+    message: ModelMessage | None,
+) -> Any:
+    """Invoke ``deps_factory`` per-request, or pass it through if not callable."""
+    if deps_factory is None:
+        return None
+    if callable(deps_factory):
+        result = deps_factory(
+            thread_id=thread_id, tenant_id=tenant_id, message=message,
+        )
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    return deps_factory
+
+
+def _last_user_text(messages: list[ModelMessage]) -> str:
+    """Pull the trailing user-prompt text from the parsed AG-UI messages.
+
+    Walks the list in reverse looking for a ``ModelRequest`` carrying a
+    ``UserPromptPart``. Concatenates string parts (matches our
+    ``extract_text`` convention). Returns ``""`` if no user turn found.
+    """
+    from pydantic_ai.messages import (  # noqa: PLC0415
+        ModelRequest,
+        UserPromptPart,
+    )
+
+    for msg in reversed(messages):
+        if not isinstance(msg, ModelRequest):
+            continue
+        text_chunks: list[str] = []
+        for part in msg.parts:
+            if isinstance(part, UserPromptPart):
+                content = part.content
+                if isinstance(content, str):
+                    text_chunks.append(content)
+                else:
+                    # Multimodal: keep string items, drop binaries.
+                    for item in content:
+                        if isinstance(item, str):
+                            text_chunks.append(item)
+        if text_chunks:
+            return "".join(text_chunks)
+    return ""
+
+
+_DEFAULT_HISTORY_LIMIT = 200
 
 
 def build_streaming_router(
     *,
     thread_repo: ThreadRepository,
-    agent_runner: AgentRunner,
-    encoder: StreamEncoder | None = None,
+    agent: Agent[Any, Any],
+    deps_factory: DepsFactory | None = None,
+    model_settings: ModelSettings | None = None,
     prefix: str = "",
+    history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> APIRouter:
-    """Mount `POST {prefix}/threads/{id}/messages` as an SSE stream.
+    """Mount ``POST {prefix}/threads/{id}/messages`` as an AG-UI stream.
 
-    `agent_runner` is an :class:`AgentRunner` returning an async iterator of
-    `StreamEvent`s. Provide a fake in tests; production wires it to
-    :func:`pydantic_ai_stateflow.api.streaming.make_runner`. The user
-    message is persisted BEFORE the stream starts so a client crash
-    mid-stream still leaves the thread consistent.
+    Server-stateful contract: the thread MUST already exist (404 otherwise
+    — no lazy-create). The just-arrived user turn is persisted via
+    ``thread_repo.add_message`` BEFORE the model runs, so a client crash
+    mid-stream still leaves the thread consistent. After the agent
+    completes the assistant reply is persisted via an ``on_complete``
+    callback wired into ``AGUIAdapter.dispatch_request``.
 
-    A fresh ``run_id`` is generated per POST and passed to the runner so
-    its emitted ``RUN_STARTED`` / ``RUN_FINISHED`` events stay correlated.
+    ``message_history`` is reconstructed from ``thread_repo.history(...)``
+    (excluding the just-persisted current user turn — pydantic-ai re-derives
+    that one from the AG-UI body messages).
 
-    **Assistant reply persistence (F7).** The router observes the event
-    stream and auto-persists the assistant message on each
-    ``TEXT_MESSAGE_END``. The runner does NOT need to call
-    ``repo.add_message`` for the assistant turn. Specifically:
-
-    - ``TEXT_MESSAGE_START`` resets a per-message accumulator
-      (multiple messages per run are supported).
-    - ``TEXT_MESSAGE_CONTENT`` appends the ``delta``.
-    - ``TEXT_MESSAGE_END`` flushes the accumulator as a single
-      assistant message via ``thread_repo.add_message``.
-    - If the stream errors out (``RUN_ERROR``) before
-      ``TEXT_MESSAGE_END``, the partial assistant text is NOT persisted
-      (the user message is already persisted before the stream starts).
-    - Tool-only runs (no text events) persist nothing extra.
-
-    If `encoder` is supplied it overrides the per-request `?protocol=` query
-    param; otherwise the encoder is chosen from `_ENCODERS` by protocol.
-    Encoders may return ``b""`` for events they intentionally drop (e.g.
-    Vercel has no analog for ``RUN_STARTED``); empty frames are skipped.
+    Args:
+      thread_repo: source of truth for thread + message persistence.
+      agent: pydantic-ai ``Agent`` to run on each request.
+      deps_factory: callable invoked per request with
+        ``thread_id``, ``tenant_id``, ``message`` kwargs to mint fresh
+        deps for the agent. If ``None`` and the agent declares
+        ``deps_type``, that's the caller's problem (pydantic-ai will
+        raise). Non-callable values pass through unchanged.
+      model_settings: forwarded to the agent on every run. Use this to
+        thread ``temperature``, OpenRouter reasoning config, etc.
+      prefix: optional router prefix.
+      history_limit: cap on the number of rows hydrated from the repo
+        per request (default 200).
     """
+    from pydantic_ai.ui.ag_ui import AGUIAdapter  # noqa: PLC0415
+
     router = APIRouter(prefix=prefix)
 
     @router.post("/threads/{thread_id}/messages")
     async def post_message(
         request: Request,
         thread_id: UUID,
-        body: _PostMessageBody,
         tenant_id: UUID = _TenantDep,
-        protocol: str = _ProtocolQuery,
-    ) -> StreamingResponse:
-        if protocol not in _ENCODERS:
-            raise HTTPException(
-                status_code=400, detail=f"unknown protocol: {protocol}",
-            )
-        chosen: StreamEncoder = encoder or _ENCODERS[protocol]()
+    ) -> Response:
         thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
-        await thread_repo.add_message(
-            thread_id,
-            role=body.role,
-            parts=[p.model_dump() for p in body.parts],
-            tenant_id=tenant_id,
+
+        adapter = await AGUIAdapter.from_request(request, agent=agent)
+
+        last_message = adapter.messages[-1] if adapter.messages else None
+        prompt_text = _last_user_text(adapter.messages)
+
+        if prompt_text:
+            await thread_repo.add_message(
+                thread_id,
+                role="user",
+                parts=[{"type": "text", "text": prompt_text}],
+                tenant_id=tenant_id,
+            )
+
+        rows = await thread_repo.history(
+            thread_id, tenant_id=tenant_id, limit=history_limit,
         )
-        run_id = uuid4()
+        history = messages_to_model_history(rows, drop_prompt=prompt_text)
 
-        async def _gen() -> AsyncIterator[bytes]:
-            # F10: client-disconnect propagation.
-            #
-            # We can't rely solely on Starlette delivering ``CancelledError``
-            # into this generator on the next ``yield`` — verified by
-            # ``tests/api/test_streaming_abort.py``, the
-            # ``httpx.ASGITransport`` path (and Starlette's own SSE
-            # handling) does NOT always raise CancelledError into the
-            # generator just because the consumer closed its connection.
-            # We therefore run an explicit ``request.is_disconnected()``
-            # poll concurrently with the runner; if the client goes away
-            # we cancel the runner-driving task so its
-            # ``async with agent.run_stream(...)`` exits and the upstream
-            # httpx request to the LLM is aborted.
-            #
-            # We still catch ``CancelledError`` defensively so a true
-            # external cancellation is logged and re-raised cleanly. No
-            # partial assistant message is persisted (no
-            # ``TEXT_MESSAGE_END`` was seen).
-            accumulated_text = ""
-            assistant_message_id: UUID | None = None
-            queue: asyncio.Queue[StreamEvent | _StreamSentinel] = asyncio.Queue()
+        resolved_deps = await _resolve_deps(
+            deps_factory,
+            thread_id=thread_id,
+            tenant_id=tenant_id,
+            message=last_message,
+        )
 
-            async def _produce() -> None:
-                try:
-                    async for ev in agent_runner(
-                        thread_id=thread_id,
-                        run_id=run_id,
-                        message=body,
-                        tenant_id=tenant_id,
-                    ):
-                        await queue.put(ev)
-                    await queue.put(_DONE)
-                except asyncio.CancelledError:
-                    await queue.put(_DONE)
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    await queue.put(_Failed(exc))
+        async def on_complete(result: AgentRunResult[Any]) -> None:
+            """Persist the assistant reply on successful completion."""
+            output = result.output
+            text = output if isinstance(output, str) else str(output)
+            if not text:
+                return
+            await thread_repo.add_message(
+                thread_id,
+                role="assistant",
+                parts=[{"type": "text", "text": text}],
+                tenant_id=tenant_id,
+            )
 
-            async def _watch_disconnect() -> None:
-                # Poll at 100ms intervals — short enough to abort a long
-                # LLM call promptly, long enough to be negligible CPU.
-                while True:
-                    if await request.is_disconnected():
-                        return
-                    await asyncio.sleep(0.1)
-
-            producer = asyncio.create_task(_produce())
-            watcher = asyncio.create_task(_watch_disconnect())
-            try:
-                while True:
-                    get_task = asyncio.create_task(queue.get())
-                    done, _pending = await asyncio.wait(
-                        {get_task, watcher},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if watcher in done and get_task not in done:
-                        # Client gone — abort producer.
-                        get_task.cancel()
-                        _logger.info(
-                            "client disconnected mid-stream, cancelling run "
-                            "thread_id=%s run_id=%s",
-                            thread_id,
-                            run_id,
-                        )
-                        producer.cancel()
-                        return
-                    item = get_task.result()
-                    if isinstance(item, _StreamSentinel):
-                        if isinstance(item, _Failed):
-                            raise item.exc
-                        return  # _DONE
-                    event = item
-                    if event.kind == StreamEventKind.TEXT_MESSAGE_START.value:
-                        raw_mid = event.data.get("messageId")
-                        assistant_message_id = (
-                            UUID(raw_mid) if isinstance(raw_mid, str) else None
-                        )
-                        accumulated_text = ""
-                    elif event.kind == StreamEventKind.TEXT_MESSAGE_CONTENT.value:
-                        delta = event.data.get("delta", "")
-                        if isinstance(delta, str):
-                            accumulated_text += delta
-                    elif event.kind == StreamEventKind.TEXT_MESSAGE_END.value:
-                        if assistant_message_id is not None:
-                            await thread_repo.add_message(
-                                thread_id,
-                                role="assistant",
-                                parts=[
-                                    {"type": "text", "text": accumulated_text},
-                                ],
-                                tenant_id=tenant_id,
-                            )
-                        assistant_message_id = None
-                        accumulated_text = ""
-                    frame = chosen.encode(event)
-                    if frame:
-                        yield frame
-            except asyncio.CancelledError:
-                _logger.info(
-                    "stream generator cancelled "
-                    "thread_id=%s run_id=%s",
-                    thread_id,
-                    run_id,
-                )
-                producer.cancel()
-                raise
-            finally:
-                if not watcher.done():
-                    watcher.cancel()
-                if not producer.done():
-                    producer.cancel()
-                # Drain cancellations so we don't leave orphan tasks.
-                for t in (producer, watcher):
-                    with contextlib.suppress(BaseException):
-                        await t
-
-        return StreamingResponse(_gen(), media_type=chosen.media_type)
+        # We already built the adapter (to peek at `messages` for the
+        # user-message-persist step). Drive the stream off it directly
+        # rather than re-entering ``dispatch_request`` (which would call
+        # ``from_request`` a second time and re-parse the same body).
+        return adapter.streaming_response(
+            adapter.run_stream(
+                message_history=history,
+                deps=resolved_deps,
+                model_settings=model_settings,
+                on_complete=on_complete,
+            ),
+        )
 
     return router
+
+
+__all__ = [
+    "DepsFactory",
+    "build_streaming_router",
+    "extract_text",
+    "messages_to_model_history",
+]

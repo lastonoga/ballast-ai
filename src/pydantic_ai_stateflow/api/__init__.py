@@ -11,25 +11,25 @@ from pydantic_ai_stateflow.api.deps import (
 )
 from pydantic_ai_stateflow.api.health import build_health_router
 from pydantic_ai_stateflow.api.streaming import (
-    AgentRunner,
-    MessagePart,
+    DepsFactory,
+    build_streaming_router,
     extract_text,
-    make_runner,
+    messages_to_model_history,
 )
 from pydantic_ai_stateflow.api.threads import build_threads_router
 
 __all__ = [
     "A2AAgentAdapter",
     "AgentCard",
-    "AgentRunner",
     "CORSConfig",
-    "MessagePart",
+    "DepsFactory",
     "build_a2a_router",
     "build_health_router",
+    "build_streaming_router",
     "build_threads_router",
     "extract_text",
     "get_container",
     "get_engine",
     "get_tenant_id",
-    "make_runner",
+    "messages_to_model_history",
 ]

@@ -41,33 +41,31 @@ Sub-project #6 (HITL channels):
 Sub-project #7 (API + Observability + Evals):
     build_a2a_router, build_health_router, build_streaming_router,
     build_threads_router, get_container, get_engine, get_tenant_id,
-    A2AAgentAdapter, AgentCard, AGUIEncoder, StreamEvent, StreamEventKind,
-    VercelEncoder,
+    A2AAgentAdapter, AgentCard, DepsFactory, extract_text,
+    messages_to_model_history,
     Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
     ScoreResult, Scorer, ObservabilityProvider, has_logfire, traced.
+
+    Note: AG-UI wire encoding, body parsing, and the event taxonomy are
+    delegated to ``pydantic_ai.ui.ag_ui.AGUIAdapter`` — the framework no
+    longer ships its own ``AGUIEncoder`` / ``VercelEncoder`` /
+    ``StreamEvent`` / ``StreamEventKind`` / ``AgentRunner`` / ``make_runner``.
 """
 
 from pydantic_ai_stateflow.api import (
     A2AAgentAdapter,
     AgentCard,
-    AgentRunner,
     CORSConfig,
-    MessagePart,
+    DepsFactory,
     build_a2a_router,
     build_health_router,
+    build_streaming_router,
     build_threads_router,
     extract_text,
     get_container,
     get_engine,
     get_tenant_id,
-    make_runner,
-)
-from pydantic_ai_stateflow.api.streaming import (
-    AGUIEncoder,
-    StreamEvent,
-    StreamEventKind,
-    VercelEncoder,
-    build_streaming_router,
+    messages_to_model_history,
 )
 from pydantic_ai_stateflow.capabilities import (
     BudgetExhausted,
@@ -178,12 +176,10 @@ from pydantic_ai_stateflow.runtime import (
 
 __all__ = [
     "A2AAgentAdapter",
-    "AGUIEncoder",
     "AbortOnLoop",
     "AcceptedResult",
     "AccessDecision",
     "AgentCard",
-    "AgentRunner",
     "AllowAll",
     "ApplyTransaction",
     "ApprovalStage",
@@ -201,6 +197,7 @@ __all__ = [
     "DefaultContainer",
     "DefaultHelperSessionRunner",
     "DenyAll",
+    "DepsFactory",
     "Det",
     "DropOnReject",
     "Embedder",
@@ -234,7 +231,6 @@ __all__ = [
     "InMemoryHITLChannel",
     "LoopRecoveryPolicy",
     "MapReduce",
-    "MessagePart",
     "ModifiedResponse",
     "MutationPipeline",
     "MutationRejected",
@@ -264,12 +260,9 @@ __all__ = [
     "ServiceProvider",
     "Stage",
     "StateflowCapability",
-    "StreamEvent",
-    "StreamEventKind",
     "TimeoutResponse",
     "TypedLoopGuard",
     "UIChannel",
-    "VercelEncoder",
     "Voter",
     "WebhookChannel",
     "WebhookConfig",
@@ -286,6 +279,6 @@ __all__ = [
     "get_tenant_id",
     "has_logfire",
     "make_helper_agent_with_approval_tools",
-    "make_runner",
+    "messages_to_model_history",
     "traced",
 ]
