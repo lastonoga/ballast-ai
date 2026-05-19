@@ -1,10 +1,25 @@
-# notes-app backend (iteration 2)
+# notes-app backend (iteration 3)
 
 FastAPI backend wired via `Engine.fastapi_app()`, backed by a single
-pydantic-ai agent that hits OpenRouter (Qwen, structured JSON output).
+pydantic-ai agent that hits OpenRouter (Qwen, structured JSON output),
+with CRUD tools over an in-memory notes domain.
 
-No domain logic yet — the agent just chats and returns `{reply: str}`.
-Iteration 3 adds the notes domain + tools.
+The agent can now:
+
+- **`create_note(title, body) -> Note`** — saves a new note for the
+  current tenant; returns the saved `Note` (with `id`) so the model can
+  chain follow-ups.
+- **`list_notes(limit=20) -> list[Note]`** — newest-first.
+- **`search_notes(query, limit=20) -> list[Note]`** — case-insensitive
+  substring on title+body, newest-first.
+- **`edit_note(note_id, title=None, body=None) -> Note`** — partial
+  update; only the provided fields change. Raises if the note doesn't
+  belong to the current tenant.
+- **`delete_note(note_id) -> str`** — idempotent.
+
+Iteration 4 adds HITLGate to gate the write tools behind explicit user
+approval. Iteration 4+ also swaps `InMemoryNoteRepository` for a
+Postgres/DBOS-backed one (see `notes/repository.py` TODO).
 
 ## Run
 
@@ -15,8 +30,21 @@ cp .env.example .env  # then fill OPENROUTER_API_KEY
 uv run uvicorn notes_app.main:app --reload
 ```
 
-The framework's `Engine.fastapi_app()` registers a `/healthz` endpoint, the
-threads router, and the streaming router.
+## Architecture
+
+```
+notes_app/
+├── agent.py             # Agent[NoteToolDeps, ChatReply] + build_notes_runner
+├── main.py              # FastAPI wiring; module-scope InMemoryNoteRepository
+└── notes/
+    ├── domain.py        # NoteRow (SQLModel) + Note (immutable projection)
+    ├── repository.py    # NoteRepository Protocol + InMemoryNoteRepository
+    └── tools.py         # NoteToolDeps + register_note_tools(agent)
+```
+
+`NoteToolDeps(repo, tenant_id)` is the per-request dependency the agent
+tools see via `ctx.deps`. The runner in `main.py` builds a fresh one per
+HTTP request (one tenant per `X-Tenant-Id` header).
 
 ## Endpoints
 
@@ -34,47 +62,42 @@ curl -s -X POST http://127.0.0.1:8000/threads \
 
 Response: full `Thread` JSON. Save its `id`.
 
-### Get a thread
-
-```bash
-curl -s http://127.0.0.1:8000/threads/$THREAD_ID \
-  -H "X-Tenant-Id: $TENANT"
-```
-
-### Post a message + stream the reply (AG-UI SSE)
+### Ask the agent to create a note
 
 ```bash
 curl -N -X POST http://127.0.0.1:8000/threads/$THREAD_ID/messages \
   -H "X-Tenant-Id: $TENANT" \
   -H "Content-Type: application/json" \
-  -d '{"role":"user","parts":[{"type":"text","text":"hi, what can you do?"}]}'
+  -d '{
+        "role":"user",
+        "parts":[{
+          "type":"text",
+          "text":"Create a note titled \"Grocery list\" with body \"milk, eggs, bread\"."
+        }]
+      }'
 ```
 
-The response is an `text/event-stream` body that emits:
+The response is an `text/event-stream`; you'll see
+`RUN_STARTED → TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT × N → TEXT_MESSAGE_END → RUN_FINISHED`,
+and behind the scenes the in-memory notes store has a new row for `$TENANT`.
 
-```
-event: text_delta
-data: {"text":"Hi"}
+Other natural-language prompts you can try:
 
-event: text_delta
-data: {"text":"! I can"}
-
-...
-
-event: done
-data: {"reply":"Hi! I can help you with..."}
-```
+- "Show me my notes."
+- "Search my notes for milk."
+- "Update the grocery note to also include yogurt."
+- "Delete the grocery note."
 
 ## Test
 
 ```bash
-uv run pytest          # in-memory; skips OpenRouter test if no key
-uv run mypy notes_app
+uv run pytest          # in-memory; skips OpenRouter tests if no key
+uv run mypy src
 uv run ruff check .
 ```
 
 ## See also
 
-- `RETRO.md` — what worked, friction points, and framework gaps surfaced in
-  this iteration.
+- `RETRO.md` — what worked, friction points, and framework gaps surfaced
+  in this iteration.
 - `../README.md` — iteration plan for the whole notes-app reference.

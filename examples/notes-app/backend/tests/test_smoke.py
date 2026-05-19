@@ -24,6 +24,7 @@ from pydantic_ai_stateflow.api.streaming import StreamEvent
 from pydantic_ai_stateflow.api.streaming.router import _PostMessageBody
 
 from notes_app.main import build_app
+from notes_app.notes.repository import InMemoryNoteRepository
 
 
 async def _fake_runner(
@@ -136,3 +137,59 @@ def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
         kinds = [k for k, _ in events]
         assert kinds, "expected at least one SSE event"
         assert kinds[-1] in {"RUN_FINISHED", "RUN_ERROR"}, f"got {kinds}"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENROUTER_API_KEY"),
+    reason="no OPENROUTER_API_KEY — skipping live notes-tool smoke",
+)
+def test_live_create_note_tool_call() -> None:  # pragma: no cover — network
+    """Ask the LLM to create a note; assert the in-memory repo has it.
+
+    Also surfaces any tool-call-related events on the stream — we don't
+    pin specific kinds here since the framework's surface for tool events
+    may still evolve, but the repo side-effect is the authoritative check.
+    """
+    notes_repo = InMemoryNoteRepository()
+    app = build_app(notes_repo=notes_repo)
+    tenant_id = uuid4()
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/threads",
+            headers={"X-Tenant-Id": str(tenant_id)},
+            json={"purpose": "chat", "actor_id": "alice"},
+        )
+        assert r.status_code == 201
+        thread_id = r.json()["id"]
+
+        r = client.post(
+            f"/threads/{thread_id}/messages",
+            headers={"X-Tenant-Id": str(tenant_id)},
+            json={
+                "role": "user",
+                "parts": [{
+                    "type": "text",
+                    "text": (
+                        "Please create a note titled 'Grocery list' "
+                        "with body 'milk, eggs, bread'."
+                    ),
+                }],
+            },
+        )
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        kinds = [k for k, _ in events]
+        assert kinds[-1] in {"RUN_FINISHED", "RUN_ERROR"}, f"got {kinds}"
+
+        # Run the async repo check on a fresh event loop (TestClient is sync).
+        import asyncio
+
+        notes = asyncio.get_event_loop().run_until_complete(
+            notes_repo.list_(tenant_id=tenant_id),
+        )
+        assert notes, f"expected at least one note saved; got events={kinds}"
+        assert any(
+            "grocery" in n.title.lower() or "grocery" in n.body.lower()
+            for n in notes
+        ), f"no grocery note in {[n.title for n in notes]}"

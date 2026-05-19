@@ -1,12 +1,13 @@
-"""FastAPI entry point for the notes-app backend (iteration 2 / 2.1).
+"""FastAPI entry point for the notes-app backend (iteration 3).
 
 Wires:
   - in-memory thread repository (no Postgres yet)
+  - in-memory note repository (shared singleton; tenant-scoped inside)
   - threads router (CRUD)
-  - streaming router (AG-UI SSE) backed by the framework's `make_runner`
-    adapter on top of an OpenRouter-backed pydantic-ai Agent
-  - empty provider list — iteration 2 doesn't need DBOS / persistence
-    providers
+  - streaming router backed by `build_notes_runner(...)` which injects
+    per-request `NoteToolDeps(repo=note_repo, tenant_id=...)` into the
+    pydantic-ai agent so its CRUD tools can act on the right tenant.
+  - empty provider list — iteration 3 still doesn't need DBOS / Postgres
 
 The app object is lazily built so importing this module never hits
 OpenRouter; the agent is only constructed at first request (or eagerly
@@ -26,7 +27,6 @@ from pydantic_ai_stateflow.api.streaming import (
     AgentRunner,
     StreamEvent,
     build_streaming_router,
-    make_runner,
 )
 from pydantic_ai_stateflow.api.streaming.router import _PostMessageBody
 from pydantic_ai_stateflow.api.threads import build_threads_router
@@ -36,12 +36,17 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 )
 from pydantic_ai_stateflow.runtime import Engine
 
-from notes_app.agent import build_agent
+from notes_app.agent import build_agent, build_notes_runner
+from notes_app.notes.repository import InMemoryNoteRepository, NoteRepository
 
 load_dotenv()
 
+# Module-scope singleton — one in-memory store for the dev server process.
+# Tenant scoping happens inside the repo, so multiple tenants can share it.
+note_repo: NoteRepository = InMemoryNoteRepository()
 
-def _lazy_runner() -> AgentRunner:
+
+def _lazy_runner(repo: NoteRepository) -> AgentRunner:
     """Defer agent construction until the first streamed request.
 
     Lets the app boot in environments without `OPENROUTER_API_KEY`
@@ -57,7 +62,7 @@ def _lazy_runner() -> AgentRunner:
         tenant_id: UUID,
     ) -> AsyncIterator[StreamEvent]:
         if "runner" not in _cached:
-            _cached["runner"] = make_runner(build_agent(), text_field="reply")
+            _cached["runner"] = build_notes_runner(build_agent(), repo)
         async for event in _cached["runner"](
             thread_id=thread_id,
             run_id=run_id,
@@ -73,16 +78,20 @@ def build_app(
     *,
     thread_repo: ThreadRepository | None = None,
     agent_runner: AgentRunner | None = None,
+    notes_repo: NoteRepository | None = None,
 ) -> FastAPI:
     """Construct the FastAPI app.
 
     Args:
       thread_repo: defaults to `InMemoryThreadRepository`.
-      agent_runner: defaults to a lazy OpenRouter-backed `make_runner`.
+      agent_runner: defaults to a lazy OpenRouter-backed `build_notes_runner`.
         Tests pass a fake here to avoid hitting the network.
+      notes_repo: defaults to the module-scope `note_repo` singleton.
+        Tests may pass a fresh `InMemoryNoteRepository` for isolation.
     """
     repo = thread_repo or InMemoryThreadRepository()
-    runner = agent_runner or _lazy_runner()
+    notes = notes_repo or note_repo
+    runner = agent_runner or _lazy_runner(notes)
 
     engine = Engine(providers=[])
     threads_router = build_threads_router(thread_repo=repo)
@@ -99,6 +108,9 @@ def build_app(
         # production.
         cors=CORSConfig.permissive_dev(),
     )
+    # Expose the notes repo on app.state so integration tests (and future
+    # admin/debug endpoints) can inspect what the agent wrote.
+    app.state.notes_repo = notes
     return app
 
 

@@ -169,6 +169,93 @@ request via pydantic-ai's httpx client. The defensive
 `try/except CancelledError` block remains as a belt-and-braces guard for
 servers that *do* propagate cancellation.
 
+## Iteration 3 — backend (notes domain + agent tools)
+
+### What worked smoothly
+
+- **`@agent.tool` on a method-style coroutine is a one-line ergonomic.**
+  The five CRUD tools were ~12 lines each, and the docstring-as-LLM-prompt
+  contract is exactly the right shape for "model uses tool" wiring.
+- **`Agent[NoteToolDeps, ChatReply]` with `deps_type=NoteToolDeps` is the
+  right boundary.** Per-request deps via `agent.run_stream(prompt, deps=...)`
+  let us inject `(repo, tenant_id)` cleanly without globals.
+- **Splitting `Note` (immutable BaseModel) from `NoteRow` (SQLModel)** keeps
+  the agent-visible payload small and the future Postgres path open.
+  Iteration 4+ can grow the row schema (audit cols, indexes) without
+  leaking into the LLM's tool catalog.
+- **Tools returning the saved `Note`** (not just `"ok"`) gives the model
+  the `id` to chain follow-ups in the same turn. Worth the 4 extra bytes
+  on the wire.
+- **Tenant scoping inside the repo** (rather than at the tool layer) means
+  cross-tenant bugs are impossible at the call site. `update` raises
+  `KeyError` on wrong-tenant; `delete` is idempotent silent no-op (matches
+  HTTP DELETE semantics — and keeps the model from learning about other
+  tenants' notes via error messages).
+
+### Friction points (framework ergonomics gaps surfaced this round)
+
+1. **`make_runner(agent, deps=...)` only accepts a static `deps` value.**
+   Every multi-tenant app will need per-request deps (`tenant_id` from
+   `X-Tenant-Id`, repo from app state). Right now we have to hand-roll the
+   `run_stream → stream_output → diff → emit` loop in `build_notes_runner`
+   to inject fresh `NoteToolDeps` per call, duplicating ~30 lines of the
+   framework adapter.
+
+   **Proposed framework fix (F12):** `make_runner(agent, *, text_field,
+   deps: Any | Callable[..., Any] | Callable[..., Awaitable[Any]] = None)`
+   where if `deps` is callable it's invoked with the runner's kwargs
+   (`thread_id, run_id, message, tenant_id`) per stream. Backwards-compat:
+   non-callable `deps` keeps current behavior.
+
+2. **Tool-call events aren't (yet) surfaced as canonical `StreamEvent`
+   kinds.** The frontend can see the assistant's text reply, but it has no
+   way to render "the model is calling `create_note(...)`" mid-stream.
+   `pydantic-ai`'s iterator does expose tool-call begin/end nodes; we'd
+   want `StreamEvent.tool_call_start / tool_call_args / tool_call_end /
+   tool_result` kinds and a matching `AGUIEncoder` mapping. (Tracked as F13
+   for iteration 4 / HITLGate where this becomes load-bearing.)
+
+3. **No place in the framework for "domain repo + UoW" outside of the
+   built-in thread/persistence subpackages.** Apps that grow a domain
+   (notes, tickets, etc.) re-invent `Protocol + InMemoryImpl + TODO
+   Postgres impl` for every domain. A documented "domain template"
+   (Protocol shape, tenant-scoping conventions, idempotency rules) or even
+   a `pydantic_ai_stateflow.persistence.scaffolds.repository` mini-helper
+   would shorten the iteration-N onboarding.
+
+4. **Module-scope app state for the notes repo feels off.** `build_app()`
+   takes a `notes_repo=` injection, but the module-level `app = build_app()`
+   reuses a process singleton. A real app would want a request-scoped or
+   workflow-scoped factory. The framework's `Engine` could grow a
+   `Container`-style DI hook (`engine.provide(NoteRepository,
+   factory=...)`) so `build_app()` stops being a manual wiring graph.
+
+### Framework gaps to track for next round
+
+- [ ] **F12** — `make_runner(deps=...)` accepts a callable / awaitable
+  deps-factory so per-request deps don't force apps to copy the adapter
+  body. This is the single biggest iteration-3 friction.
+- [ ] **F13** — Canonical `tool_call_*` `StreamEvent` kinds + `AGUIEncoder`
+  mapping, so frontends can render mid-stream tool activity (and so
+  iteration 4's HITLGate has a natural surface to interpose on).
+- [ ] **F14** — Domain-repo scaffold / docs (Protocol conventions,
+  tenant scoping, idempotency rules). Cheap; would shave 30 LOC per
+  domain in dogfood apps.
+- [ ] **F15** — `Engine` DI container hook for app-defined resources
+  (repos, clients) so module-scope singletons stop creeping into
+  `main.py`.
+
+### What we tested
+
+- **Direct unit tests** of `InMemoryNoteRepository` via the registered
+  tools — create persists, search is case-insensitive across title+body,
+  update raises `KeyError` for wrong-tenant, delete is idempotent, list is
+  tenant-scoped. All run without `OPENROUTER_API_KEY`.
+- **Live OpenRouter smoke** asks the model to "Create a note titled
+  'Grocery list' with body 'milk, eggs, bread'." and asserts the in-memory
+  repo has a matching row after `RUN_FINISHED`. Skipped automatically when
+  no key is configured.
+
 ## Iteration 2.1 update — framework Groups A + B landed
 
 Group A (canonical AG-UI event kinds) and Group B (the `make_runner`
