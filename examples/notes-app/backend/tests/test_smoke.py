@@ -1,13 +1,13 @@
-"""Smoke test for the iteration-2 backend.
+"""Smoke test for the iteration-2 backend (post 2.1 framework migration).
 
 We exercise the full surface via FastAPI's `TestClient`:
 
   1. `POST /threads` → 201
   2. `GET  /threads/{id}` → 200
-  3. `POST /threads/{id}/messages` → SSE: at least one `event: text_delta`
-     line plus a terminal `event: done`.
+  3. `POST /threads/{id}/messages` → SSE with canonical AG-UI events:
+     `RUN_STARTED → TEXT_MESSAGE_CONTENT × N → RUN_FINISHED`.
 
-The streaming test uses a deterministic fake agent_runner so we don't hit
+The streaming test uses a deterministic fake `AgentRunner` so we don't hit
 OpenRouter in CI. A second test exercises the real OpenRouter path but is
 skipped when `OPENROUTER_API_KEY` is absent.
 """
@@ -16,23 +16,31 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic_ai_stateflow.api.streaming import StreamEvent
+from pydantic_ai_stateflow.api.streaming.router import _PostMessageBody
 
 from notes_app.main import build_app
 
 
 async def _fake_runner(
-    *, thread_id: UUID, message: Any, tenant_id: UUID,
+    *,
+    thread_id: UUID,
+    run_id: UUID,
+    message: _PostMessageBody,
+    tenant_id: UUID,
 ) -> AsyncIterator[StreamEvent]:
-    del thread_id, message, tenant_id
-    yield StreamEvent(kind="text_delta", data={"text": "Hello"})
-    yield StreamEvent(kind="text_delta", data={"text": ", world!"})
-    yield StreamEvent(kind="done", data={"reply": "Hello, world!"})
+    del message, tenant_id
+    msg_id = uuid4()
+    yield StreamEvent.run_started(thread_id=thread_id, run_id=run_id)
+    yield StreamEvent.text_message_start(message_id=msg_id)
+    yield StreamEvent.text_message_content(message_id=msg_id, delta="Hello")
+    yield StreamEvent.text_message_content(message_id=msg_id, delta=", world!")
+    yield StreamEvent.text_message_end(message_id=msg_id)
+    yield StreamEvent.run_finished(thread_id=thread_id, run_id=run_id)
 
 
 def _parse_sse(body: str) -> list[tuple[str, str]]:
@@ -88,8 +96,13 @@ def test_threads_crud_and_streaming_fake() -> None:
 
         events = _parse_sse(r.text)
         kinds = [k for k, _ in events]
-        assert "text_delta" in kinds, f"missing text_delta in {kinds}"
-        assert kinds[-1] == "done", f"last event must be done; got {kinds}"
+        assert "RUN_STARTED" in kinds, f"missing RUN_STARTED in {kinds}"
+        assert "TEXT_MESSAGE_CONTENT" in kinds, (
+            f"missing TEXT_MESSAGE_CONTENT in {kinds}"
+        )
+        assert kinds[-1] == "RUN_FINISHED", (
+            f"last event must be RUN_FINISHED; got {kinds}"
+        )
 
 
 @pytest.mark.skipif(
@@ -122,4 +135,4 @@ def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
         events = _parse_sse(r.text)
         kinds = [k for k, _ in events]
         assert kinds, "expected at least one SSE event"
-        assert kinds[-1] in {"done", "error"}, f"got {kinds}"
+        assert kinds[-1] in {"RUN_FINISHED", "RUN_ERROR"}, f"got {kinds}"

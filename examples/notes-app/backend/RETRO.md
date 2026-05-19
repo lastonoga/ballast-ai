@@ -109,15 +109,44 @@ here and either patch the frontend mapping or extend `AGUIEncoder`.
 
 ## Framework gaps for iteration 3
 
-- [ ] `pydantic_ai_stateflow.adapters.pydantic_ai.make_runner(agent, ...)`
-      that owns the run-stream + diff + emit loop.
-- [ ] Typed `MessagePart` union for `_PostMessageBody.parts`, plus
-      `extract_text(parts)` helper.
-- [ ] `AgentRunner` as a typed `Protocol` (not `Callable[..., ...]`).
+- [x] ~~`pydantic_ai_stateflow.adapters.pydantic_ai.make_runner(agent, ...)`
+      that owns the run-stream + diff + emit loop.~~ Landed as
+      `pydantic_ai_stateflow.api.streaming.make_runner` in iteration 2.1.
+- [x] ~~Typed `MessagePart` union for `_PostMessageBody.parts`, plus
+      `extract_text(parts)` helper.~~ Landed in iteration 2.1.
+- [x] ~~`AgentRunner` as a typed `Protocol` (not `Callable[..., ...]`).~~
+      Landed as a `@runtime_checkable` Protocol in iteration 2.1; carries
+      `run_id` alongside `thread_id` / `message` / `tenant_id`.
 - [ ] Auto-persist the assistant reply on `done`, or document the
       runner's contractual responsibility to call `repo.add_message`.
-- [ ] `StreamEventKind` constants / enum + table of which kinds each
+      (Tracked as Group C / F7.)
+- [x] ~~`StreamEventKind` constants / enum + table of which kinds each
       encoder (`AGUIEncoder`, `VercelEncoder`) emits, with
-      assistant-ui compatibility notes.
-- [ ] `Engine.fastapi_app(cors=..., lifespan_hooks=...)`.
-- [ ] One structured `INFO` log line on `Engine.boot()`.
+      assistant-ui compatibility notes.~~ Landed as part of Group A
+      (canonical AG-UI events), expanded by `make_runner` in 2.1.
+- [ ] `Engine.fastapi_app(cors=..., lifespan_hooks=...)`. (Tracked as
+      Group D / F8.)
+- [ ] One structured `INFO` log line on `Engine.boot()`. (Tracked as
+      Group D.)
+
+## Iteration 2.1 update — framework Groups A + B landed
+
+Group A (canonical AG-UI event kinds) and Group B (the `make_runner`
+adapter + typed `MessagePart` + `AgentRunner` Protocol) are now in. The
+notes-app backend reflects this:
+
+- `notes_app/agent.py` no longer hand-rolls a runner — it just exposes
+  `build_agent()`. The wire-level translation lives in the framework's
+  `make_runner` adapter.
+- `notes_app/main.py` calls `make_runner(build_agent(), text_field="reply")`
+  inside a lazy wrapper (so the app still boots without
+  `OPENROUTER_API_KEY`).
+- `tests/test_smoke.py` asserts the canonical event kinds —
+  `RUN_STARTED` / `TEXT_MESSAGE_CONTENT` / `RUN_FINISHED` — instead of the
+  old `text_delta` / `done`. The `_fake_runner` signature now includes
+  the framework-supplied `run_id` kwarg.
+
+Net effect for consumers: a notes-app-style backend goes from ~80 LOC of
+agent-runner glue to a one-liner. Friction points #1, #2, #3, and #5
+from the iteration-2 list are gone; #4 (assistant reply persistence) and
+#6/#7 (boot log, CORS) remain for Groups C and D.
