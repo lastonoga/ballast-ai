@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import asc, select, update
+from sqlalchemy import asc, desc, select, update
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
@@ -76,6 +77,7 @@ class PostgresThreadRepository:
             raise ThreadClosedError(
                 f"Thread {thread_id} is closed; cannot add message"
             )
+        # ARCHIVED threads remain appendable; only CLOSED is terminal.
 
         msg_row = MessageRow(
             tenant_id=tenant_id,
@@ -122,3 +124,75 @@ class PostgresThreadRepository:
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         return [Message.from_row(r) for r in rows]
+
+    async def list_(
+        self,
+        *,
+        tenant_id: UUID,
+        include_archived: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Thread]:
+        stmt = select(ThreadRow).where(col(ThreadRow.tenant_id) == tenant_id)
+        if not include_archived:
+            stmt = stmt.where(col(ThreadRow.status) != ThreadStatus.ARCHIVED.value)
+        stmt = stmt.order_by(desc(col(ThreadRow.created_at))).limit(limit).offset(offset)
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        return [Thread.from_row(r) for r in rows]
+
+    async def rename(
+        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
+    ) -> Thread:
+        stmt = (
+            update(ThreadRow)
+            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
+            .values(title=title)
+        )
+        result = await self._session.execute(stmt)
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        loaded = await self.load(thread_id, tenant_id=tenant_id)
+        assert loaded is not None
+        return loaded
+
+    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        stmt = (
+            update(ThreadRow)
+            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
+            .values(status=ThreadStatus.ARCHIVED.value)
+        )
+        result = await self._session.execute(stmt)
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        loaded = await self.load(thread_id, tenant_id=tenant_id)
+        assert loaded is not None
+        return loaded
+
+    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        stmt = (
+            update(ThreadRow)
+            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
+            .values(status=ThreadStatus.OPEN.value)
+        )
+        result = await self._session.execute(stmt)
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        loaded = await self.load(thread_id, tenant_id=tenant_id)
+        assert loaded is not None
+        return loaded
+
+    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None:
+        # Manually delete child messages first (no DB-level CASCADE configured).
+        # Idempotent: unknown thread / wrong tenant → no-op.
+        msg_stmt = sa_delete(MessageRow).where(
+            col(MessageRow.thread_id) == thread_id,
+            col(MessageRow.tenant_id) == tenant_id,
+        )
+        await self._session.execute(msg_stmt)
+        thread_stmt = sa_delete(ThreadRow).where(
+            col(ThreadRow.id) == thread_id,
+            col(ThreadRow.tenant_id) == tenant_id,
+        )
+        await self._session.execute(thread_stmt)
+        await self._session.flush()

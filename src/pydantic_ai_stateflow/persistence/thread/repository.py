@@ -17,10 +17,11 @@ class ThreadRepository(Protocol):
 
     All methods require `tenant_id` — multi-tenant first-class per spec 1.12.
 
-    Threads have a lifecycle: created OPEN, may be CLOSED. Adding messages
-    to a CLOSED thread raises `ThreadClosedError`. Closing is the terminal
-    state (no re-open). Reason for closing is application-specific (HITL
-    resolved, onboarding done, etc.) — the repo just provides the primitive.
+    Threads have a lifecycle: created OPEN, may be ARCHIVED (still readable +
+    appendable), may be CLOSED (terminal — no further messages). Adding
+    messages to a CLOSED thread raises `ThreadClosedError`; ARCHIVED threads
+    accept messages. ``delete`` is a hard delete (idempotent, cascades to
+    messages).
     """
 
     async def create(
@@ -34,6 +35,20 @@ class ThreadRepository(Protocol):
         self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
     ) -> list[Message]: ...
     async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
+    async def list_(
+        self,
+        *,
+        tenant_id: UUID,
+        include_archived: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Thread]: ...
+    async def rename(
+        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
+    ) -> Thread: ...
+    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
+    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
+    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None: ...
 
 
 class InMemoryThreadRepository:
@@ -54,6 +69,7 @@ class InMemoryThreadRepository:
             workflow_id=None,
             actor_id=actor_id,
             status=ThreadStatus.OPEN,
+            title=None,
             created_at=datetime.now(tz=UTC),
             closed_at=None,
         )
@@ -104,3 +120,50 @@ class InMemoryThreadRepository:
         })
         self._threads[thread_id] = closed
         return closed
+
+    async def list_(
+        self,
+        *,
+        tenant_id: UUID,
+        include_archived: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Thread]:
+        threads = [t for t in self._threads.values() if t.tenant_id == tenant_id]
+        if not include_archived:
+            threads = [t for t in threads if t.status != ThreadStatus.ARCHIVED]
+        threads.sort(key=lambda t: t.created_at, reverse=True)
+        return threads[offset : offset + limit]
+
+    async def rename(
+        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
+    ) -> Thread:
+        thread = self._threads.get(thread_id)
+        if thread is None or thread.tenant_id != tenant_id:
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        updated = thread.model_copy(update={"title": title})
+        self._threads[thread_id] = updated
+        return updated
+
+    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        thread = self._threads.get(thread_id)
+        if thread is None or thread.tenant_id != tenant_id:
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        updated = thread.model_copy(update={"status": ThreadStatus.ARCHIVED})
+        self._threads[thread_id] = updated
+        return updated
+
+    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+        thread = self._threads.get(thread_id)
+        if thread is None or thread.tenant_id != tenant_id:
+            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        updated = thread.model_copy(update={"status": ThreadStatus.OPEN})
+        self._threads[thread_id] = updated
+        return updated
+
+    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None:
+        thread = self._threads.get(thread_id)
+        if thread is None or thread.tenant_id != tenant_id:
+            return  # idempotent: deleting an unknown thread is a no-op
+        self._threads.pop(thread_id, None)
+        self._messages.pop(thread_id, None)

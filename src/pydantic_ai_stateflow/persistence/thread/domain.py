@@ -30,16 +30,20 @@ class ThreadPurpose(StrEnum):
 
 
 class ThreadStatus(StrEnum):
-    """CLOSED — finite lifecycle (OPEN → CLOSED, terminal).
+    """Thread lifecycle states.
 
-    Once a thread is `CLOSED`, no further messages can be appended
-    (``add_message`` raises ``ThreadClosedError``). Closing reason is
-    application-specific (HITL resolved, onboarding done, conversation
-    archived, etc.) — the framework provides the primitive, callers
-    decide when to call ``repo.close(...)``.
+    - OPEN: default. Messages may be appended.
+    - ARCHIVED: hidden from the default list view but still readable and
+      appendable (assistant-ui's "archived" pane). Apps may unarchive.
+    - CLOSED: terminal. No further messages can be appended
+      (``add_message`` raises ``ThreadClosedError``). Closing reason is
+      application-specific (HITL resolved, onboarding done, etc.) — the
+      framework provides the primitive, callers decide when to call
+      ``repo.close(...)``.
     """
 
     OPEN = "open"
+    ARCHIVED = "archived"
     CLOSED = "closed"
 
 
@@ -52,6 +56,7 @@ class Thread(BaseModel):
     workflow_id: UUID | None
     actor_id: str
     status: ThreadStatus
+    title: str | None = None
     created_at: datetime
     closed_at: datetime | None
 
@@ -70,6 +75,7 @@ class Thread(BaseModel):
             workflow_id=row.workflow_id,
             actor_id=row.actor_id,
             status=ThreadStatus(row.status),
+            title=row.title,
             created_at=row.created_at,
             closed_at=row.closed_at,
         )
