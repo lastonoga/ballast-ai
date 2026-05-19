@@ -3,9 +3,12 @@
 Iteration 3 wires CRUD tools into the agent — the agent takes a
 ``NoteToolDeps`` (a repo + a tenant id) and can ``create_note``,
 ``list_notes``, ``search_notes``, ``edit_note``, and ``delete_note`` on
-the user's behalf. Tool calls surface as canonical AG-UI ``TOOL_CALL_*``
-events thanks to ``pydantic_ai.ui.ag_ui.AGUIAdapter``, which the
+the user's behalf. Tool calls surface as Vercel AI SDK v6 ``tool-*``
+chunks thanks to ``pydantic_ai.ui.vercel_ai.VercelAIAdapter``, which the
 framework's ``build_streaming_router`` delegates to for the wire encoding.
+``delete_note`` is declared ``requires_approval=True`` so it surfaces as
+an ``approval-requested`` part the frontend can render as an approve/
+cancel card.
 
 Output shape decision (iter 3 round 2):
   We use ``output_type=str`` — NOT a structured ``BaseModel`` envelope.

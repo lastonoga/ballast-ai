@@ -14,8 +14,9 @@ Wires:
     CRUD tools act on the right tenant.
   - empty provider list — still doesn't need DBOS / Postgres.
 
-The actual AG-UI wire encoding, body parsing, and event taxonomy are
-delegated to ``pydantic_ai.ui.ag_ui.AGUIAdapter`` (see
+The actual Vercel AI SDK wire encoding, body parsing, event taxonomy,
+and tool-approval round-trip are delegated to
+``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` (see
 ``src/pydantic_ai_stateflow/api/streaming/router.py``).
 """
 

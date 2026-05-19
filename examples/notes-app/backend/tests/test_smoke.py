@@ -40,8 +40,8 @@ def _fake_agent(
 
     ``with_tools=False`` (default) skips tool registration so ``TestModel``
     just emits a plain text reply (it would otherwise auto-call every
-    registered tool, which buries ``RUN_FINISHED`` behind a fanout of
-    tool-call events the basic smoke check doesn't need).
+    registered tool, which buries the lifecycle ``finish`` chunk behind a
+    fanout of tool-call events the basic smoke check doesn't need).
     """
     del notes_repo  # repo is bound via the deps factory in build_app
     agent: Agent[NoteToolDeps, str] = Agent(
@@ -55,25 +55,34 @@ def _fake_agent(
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
+    """Build a Vercel AI ``SubmitMessage`` body.
+
+    Name kept for diff churn; format is Vercel AI SDK v6.
+    """
     return {
-        "threadId": thread_id,
-        "runId": str(uuid4()),
+        "trigger": "submit-message",
+        "id": thread_id,
         "messages": [
-            {"id": str(uuid4()), "role": "user", "content": user_text},
+            {
+                "id": str(uuid4()),
+                "role": "user",
+                "parts": [
+                    {"type": "text", "text": user_text, "state": "done"},
+                ],
+            },
         ],
-        "tools": [],
-        "context": [],
-        "state": {},
-        "forwardedProps": {},
     }
 
 
 def _parse_sse_types(body: str) -> list[str]:
-    """Parse AG-UI SSE ``data: {"type": "..."}`` frames into type tokens."""
+    """Parse Vercel AI SSE ``data: {"type": "..."}`` frames into type tokens."""
     types: list[str] = []
     for line in body.splitlines():
         if line.startswith("data:"):
-            payload = json.loads(line[len("data:"):].strip())
+            raw = line[len("data:"):].strip()
+            if raw == "[DONE]":
+                continue
+            payload = json.loads(raw)
             if isinstance(payload, dict) and "type" in payload:
                 types.append(payload["type"])
     return types
@@ -117,7 +126,7 @@ def test_threads_crud_and_streaming_fake() -> None:
         assert r.status_code == 200, r.text
         assert r.json()["id"] == thread_id
 
-        # 3) Stream — native AG-UI ``RunAgentInput`` body
+        # 3) Stream — native Vercel AI ``SubmitMessage`` body
         r = client.post(
             f"/threads/{thread_id}/messages",
             headers={
@@ -130,8 +139,8 @@ def test_threads_crud_and_streaming_fake() -> None:
         assert r.headers["content-type"].startswith("text/event-stream")
 
         kinds = _parse_sse_types(r.text)
-        assert "RUN_STARTED" in kinds, kinds
-        assert "RUN_FINISHED" in kinds, kinds
+        assert "start" in kinds, kinds
+        assert "finish" in kinds, kinds
 
 
 @pytest.mark.skipif(
@@ -163,7 +172,7 @@ def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
         assert r.status_code == 200
         kinds = _parse_sse_types(r.text)
         assert kinds, "expected at least one SSE event"
-        assert "RUN_FINISHED" in kinds or "RUN_ERROR" in kinds, kinds
+        assert "finish" in kinds or "error" in kinds, kinds
 
 
 @pytest.mark.skipif(
@@ -199,7 +208,7 @@ def test_live_create_note_tool_call() -> None:  # pragma: no cover — network
         )
         assert r.status_code == 200
         kinds = _parse_sse_types(r.text)
-        assert "RUN_FINISHED" in kinds or "RUN_ERROR" in kinds, kinds
+        assert "finish" in kinds or "error" in kinds, kinds
 
         import asyncio
 

@@ -124,7 +124,7 @@ def register_note_tools(agent: Agent[NoteToolDeps, str]) -> None:
             tenant_id=ctx.deps.tenant_id,
         )
 
-    @agent.tool
+    @agent.tool(requires_approval=True)
     async def delete_note(
         ctx: RunContext[NoteToolDeps],
         note_id: Annotated[
@@ -134,11 +134,18 @@ def register_note_tools(agent: Agent[NoteToolDeps, str]) -> None:
             )),
         ],
     ) -> str:
-        """Delete the note with the given id. Idempotent — safe to call twice.
+        """Delete the note with the given id.
 
-        `note_id` is constrained at the schema level (via Selector) to
-        the set of notes that currently exist for this user. Returns a
-        short confirmation.
+        REQUIRES USER APPROVAL — destructive, irreversible. The model
+        proposes the call; pydantic-ai pauses the run and emits a
+        deferred ``approval-requested`` part. The frontend renders an
+        approve/cancel card; once the user clicks, the response round-
+        trips back through ``VercelAIAdapter.deferred_tool_results`` and
+        this body executes (or denial is fed back to the model).
+
+        ``note_id`` is constrained at the schema level (via Selector) to
+        the set of notes that currently exist for this user. Idempotent —
+        safe to call twice. Returns a short confirmation.
         """
         nid = note_id.id if isinstance(note_id, Ref) else note_id
         await ctx.deps.repo.delete(nid, tenant_id=ctx.deps.tenant_id)
