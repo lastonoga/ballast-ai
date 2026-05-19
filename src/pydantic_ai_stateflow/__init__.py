@@ -41,7 +41,8 @@ Sub-project #6 (HITL channels):
 Sub-project #7 (API + Observability + Evals):
     build_a2a_router, build_health_router, build_streaming_router,
     build_threads_router, get_container, get_engine, get_tenant_id,
-    A2AAgentAdapter, AgentCard, AGUIEncoder, StreamEvent, VercelEncoder,
+    A2AAgentAdapter, AgentCard, AGUIEncoder, StreamEvent, StreamEventKind,
+    VercelEncoder,
     Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
     ScoreResult, Scorer, ObservabilityProvider, has_logfire, traced.
 """
@@ -59,6 +60,7 @@ from pydantic_ai_stateflow.api import (
 from pydantic_ai_stateflow.api.streaming import (
     AGUIEncoder,
     StreamEvent,
+    StreamEventKind,
     VercelEncoder,
     build_streaming_router,
 )
@@ -255,6 +257,7 @@ __all__ = [
     "Stage",
     "StateflowCapability",
     "StreamEvent",
+    "StreamEventKind",
     "TimeoutResponse",
     "TypedLoopGuard",
     "UIChannel",
