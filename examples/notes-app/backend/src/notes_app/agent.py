@@ -31,7 +31,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests
-from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from notes_app.notes.tools import NoteToolDeps
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
+DEFAULT_TEMPERATURE = 0.7
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal notes app. "
@@ -114,3 +115,21 @@ def build_notes_deps_factory(
         return NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
 
     return factory
+
+
+def build_model_settings() -> OpenRouterModelSettings:
+    """Hardcoded OpenRouter model settings for the notes-app demo.
+
+    Returns a ``temperature``-only ``OpenRouterModelSettings`` — no env-
+    var indirection. Apps that want runtime-configurable temperature/
+    reasoning/provider routing should plumb their own knobs.
+
+    The Alibaba-upstream ``content: null`` rejection (see
+    ``KNOWN_BUGS.md`` B9) is fixed at the **framework** layer, not
+    here — see
+    ``pydantic_ai_stateflow.api.streaming.router.build_streaming_router``
+    which wraps the agent's model to normalize tool-call-only assistant
+    turns to ``content: ""``. So this example doesn't need to route
+    around any upstream.
+    """
+    return OpenRouterModelSettings(temperature=DEFAULT_TEMPERATURE)

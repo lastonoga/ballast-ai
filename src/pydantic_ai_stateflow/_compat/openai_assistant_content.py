@@ -1,0 +1,100 @@
+"""Normalize OpenAI assistant ``content: null`` → ``""`` for tool-call turns.
+
+## Why
+
+The OpenAI Chat Completions spec allows
+``{role: "assistant", content: null, tool_calls: [...]}`` — when the
+assistant's turn IS the tool call and carries no surrounding text.
+pydantic-ai's ``OpenAIChatModel._MapModelResponseContext.\
+_into_message_param`` faithfully emits ``content=None`` in that case
+(see ``models/openai.py:1311``).
+
+OpenAI, Anthropic-via-OpenRouter, DeepInfra, and most upstreams accept
+this. Alibaba's Qwen endpoint validates strictly and rejects the
+request with::
+
+    <400> InternalError.Algo.InvalidParameter:
+        The content field is a required field.
+
+surfacing as a generic provider 400 from OpenRouter. The same shape
+trips a handful of other strict endpoints.
+
+## What the shim does
+
+Wraps ``_into_message_param`` to replace ``content=None`` with
+``content=""`` **only** when ``tool_calls`` is also set. Tool-call-
+only messages keep their semantic meaning (assistant making a tool
+call with no surrounding text); strict-mode upstreams accept ``""``.
+All other cases (text content, no tool calls, empty response) pass
+through unchanged.
+
+## Why a monkey-patch and not a subclass
+
+``_MapModelResponseContext`` is a nested ``@dataclass`` on
+``OpenAIChatModel``, instantiated implicitly by the model when building
+requests. Subclassing would require apps to swap their ``Model`` class —
+defeats the "framework solves it for everyone" goal. A targeted patch
+is the minimum surface needed.
+
+## When to remove
+
+When pydantic-ai upstream either:
+
+1. Adds a model-profile flag like
+   ``openai_compat_allow_null_assistant_content: bool`` and routes
+   through it, or
+2. Defaults to ``content=""`` for tool-call-only assistant turns
+   (matches Alibaba/strict endpoints, still valid OpenAI spec).
+
+Either way, delete this file and the import in ``_compat/__init__.py``.
+"""
+
+from __future__ import annotations
+
+import functools
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+_INSTALLED = False
+
+
+def install_assistant_content_shim() -> None:
+    """Patch OpenAIChatModel's assistant-message mapper. Idempotent.
+
+    Imports pydantic-ai lazily so this module stays import-time-safe
+    even if ``pydantic_ai.models.openai`` isn't available (e.g.,
+    tests of unrelated subsystems run in slim envs).
+    """
+    global _INSTALLED  # noqa: PLW0603
+    if _INSTALLED:
+        return
+
+    try:
+        from pydantic_ai.models.openai import OpenAIChatModel  # noqa: PLC0415
+    except ImportError:
+        # pydantic-ai installed slim without openai extras — nothing to patch.
+        _INSTALLED = True
+        return
+
+    mapper_cls = OpenAIChatModel._MapModelResponseContext  # noqa: SLF001
+    original: Callable[..., Any] = mapper_cls._into_message_param  # noqa: SLF001
+
+    @functools.wraps(original)
+    def patched(self: Any) -> Any:
+        result = original(self)
+        if (
+            result is not None
+            and result.get("content") is None
+            and result.get("tool_calls")
+        ):
+            result["content"] = ""
+        return result
+
+    mapper_cls._into_message_param = patched  # noqa: SLF001
+    _INSTALLED = True
+
+
+__all__ = ["install_assistant_content_shim"]

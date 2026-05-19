@@ -141,11 +141,17 @@ upstream — Vercel's adapter handles approvals out of the box.
   schema allows `content: null` when `tool_calls` is present; Alibaba's
   Qwen endpoint requires `content` as a string. Other upstreams for
   the same model accept it.
-- **Status**: open. We previously had an `OPENROUTER_PROVIDER_IGNORE`
-  env knob to route around it, but the workaround is being removed —
-  the right fix is upstream (Alibaba endpoint compliance with OpenAI
-  spec, or a pydantic-ai shim that fills `content: ""` for tool-call-
-  only assistant turns).
+- **Status**: fixed at framework level. See
+  `src/pydantic_ai_stateflow/_compat/openai_assistant_content.py` —
+  an import-time monkey-patch on
+  `OpenAIChatModel._MapModelResponseContext._into_message_param`
+  rewrites `content: None` → `content: ""` whenever `tool_calls` is
+  set on the same assistant turn. Other providers continue to accept
+  the request (the empty string is a valid OpenAI content value).
+- **Upstream fix candidate**: add a model-profile flag like
+  `openai_compat_allow_null_assistant_content` to pydantic-ai, or
+  default to `content: ""` for tool-call-only assistant turns. Either
+  would let us delete the shim.
 
 ### B10. Live browser smoke not driven for iter 4 round 1
 

@@ -53,6 +53,12 @@ Sub-project #7 (API + Observability + Evals):
     ``StreamEvent`` / ``StreamEventKind`` / ``AgentRunner`` / ``make_runner``.
 """
 
+# Side-effect import: applies upstream pydantic-ai compatibility shims
+# (e.g. normalize OpenAI assistant ``content: null`` → ``""`` for tool-
+# call turns so Alibaba/strict Qwen endpoints accept the request). See
+# ``_compat/`` for the full rationale.
+from pydantic_ai_stateflow import _compat as _compat  # noqa: F401
+
 from pydantic_ai_stateflow.api import (
     A2AAgentAdapter,
     AgentCard,
