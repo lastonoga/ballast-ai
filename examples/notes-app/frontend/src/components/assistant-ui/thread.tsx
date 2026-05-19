@@ -77,6 +77,10 @@ export const Thread: FC = () => {
             </ThreadPrimitive.Messages>
           </div>
 
+          <AuiIf condition={(s) => s.thread.isRunning}>
+            <ThinkingIndicator />
+          </AuiIf>
+
           <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mt-auto flex flex-col gap-4 overflow-visible rounded-t-(--composer-radius) bg-background pb-4 md:pb-6">
             <ThreadScrollToBottom />
             <Composer />
@@ -174,6 +178,31 @@ const Composer: FC = () => {
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
+  );
+};
+
+/**
+ * Visible "thinking" indicator shown while ``s.thread.isRunning`` is true.
+ * Covers the gap between user submit and first ``TEXT_MESSAGE_CONTENT``
+ * event (multi-second on reasoning-enabled models), and continues to
+ * pulse while text streams in — assistant-ui ships no built-in
+ * thread-level loader, only per-message running status.
+ */
+const ThinkingIndicator: FC = () => {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-label="Assistant is thinking"
+      className="mb-6 flex items-center gap-2 text-sm text-muted-foreground"
+    >
+      <span className="inline-flex items-center gap-1">
+        <span className="size-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-current" />
+      </span>
+      <span>Thinking…</span>
+    </div>
   );
 };
 
