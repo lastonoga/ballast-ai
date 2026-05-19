@@ -46,8 +46,9 @@ Sub-project #7 (API + Observability + Evals):
     Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
     ScoreResult, Scorer, ObservabilityProvider, has_logfire, traced.
 
-    Note: AG-UI wire encoding, body parsing, and the event taxonomy are
-    delegated to ``pydantic_ai.ui.ag_ui.AGUIAdapter`` — the framework no
+    Note: wire encoding, body parsing, event taxonomy, and the tool-
+    approval round-trip are delegated to
+    ``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` — the framework no
     longer ships its own ``AGUIEncoder`` / ``VercelEncoder`` /
     ``StreamEvent`` / ``StreamEventKind`` / ``AgentRunner`` / ``make_runner``.
 """

@@ -1,5 +1,5 @@
-"""Tests for the server-stateful AG-UI streaming endpoint built on
-``pydantic_ai.ui.ag_ui.AGUIAdapter``.
+"""Tests for the server-stateful Vercel-AI streaming endpoint built on
+``pydantic_ai.ui.vercel_ai.VercelAIAdapter``.
 
 The framework owns:
   - thread + message persistence (404 on missing thread, no lazy-create)
@@ -9,7 +9,7 @@ The framework owns:
   - ``deps_factory`` invocation per request
 
 The wire format, body parsing, and event taxonomy are delegated to
-``AGUIAdapter`` — we DON'T re-test those.
+``VercelAIAdapter`` — we DON'T re-test those.
 """
 
 from __future__ import annotations
@@ -39,21 +39,22 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 
 
 def _ag_ui_body(*, thread_id: UUID, user_text: str) -> dict[str, Any]:
-    """Build a minimal AG-UI ``RunAgentInput`` body."""
+    """Build a minimal Vercel-AI ``SubmitMessage`` body.
+
+    Name kept for diff churn; format is Vercel AI SDK v6.
+    """
     return {
-        "threadId": str(thread_id),
-        "runId": str(uuid4()),
+        "trigger": "submit-message",
+        "id": str(thread_id),
         "messages": [
             {
                 "id": str(uuid4()),
                 "role": "user",
-                "content": user_text,
+                "parts": [
+                    {"type": "text", "text": user_text, "state": "done"},
+                ],
             },
         ],
-        "tools": [],
-        "context": [],
-        "state": {},
-        "forwardedProps": {},
     }
 
 
@@ -234,7 +235,7 @@ async def test_message_history_reconstructed_from_repo() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_emits_canonical_ag_ui_events() -> None:
+async def test_stream_emits_canonical_vercel_ai_events() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
@@ -259,15 +260,21 @@ async def test_stream_emits_canonical_ag_ui_events() -> None:
         )
         body = r.text
 
-    # Parse SSE: lines like `data: {"type": "RUN_STARTED", ...}`.
+    # Vercel AI SDK SSE: lines like `data: {"type":"start",...}`.
     types_seen: list[str] = []
     for line in body.splitlines():
         if line.startswith("data:"):
-            payload = json.loads(line[len("data:"):].strip())
+            raw = line[len("data:"):].strip()
+            if raw == "[DONE]":
+                continue
+            payload = json.loads(raw)
             if isinstance(payload, dict) and "type" in payload:
                 types_seen.append(payload["type"])
-    assert "RUN_STARTED" in types_seen
-    assert "RUN_FINISHED" in types_seen
+    # A successful Vercel AI stream brackets the response with `start`
+    # and `finish` chunks (lifecycle events). Don't pin specific text-*
+    # event names — they depend on TestModel internals.
+    assert "start" in types_seen
+    assert "finish" in types_seen
 
 
 @pytest.mark.asyncio

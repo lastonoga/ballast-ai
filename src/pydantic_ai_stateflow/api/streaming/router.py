@@ -1,17 +1,23 @@
-"""Server-stateful AG-UI streaming endpoint.
+"""Server-stateful Vercel-AI streaming endpoint.
 
 The framework owns the thread + message history (multi-tenant, persisted
 in ``ThreadRepository``). The wire encoding, body parsing, event taxonomy,
-and tool-call/text streaming are delegated to ``pydantic_ai.ui.ag_ui.
-AGUIAdapter`` — we don't reimplement any of that.
+tool-call/text streaming, and tool-approval round-trip are delegated to
+``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` — we don't reimplement any of
+that.
+
+Vercel AI SDK v6 is targeted (``sdk_version=6``) so that
+``@agent.tool(requires_approval=True)`` produces ``approval-requested`` UI
+parts on the wire and incoming approval responses are extracted by
+``VercelAIAdapter.deferred_tool_results``.
 
 Endpoint contract::
 
     POST {prefix}/threads/{thread_id}/messages
         Accept: text/event-stream
-        Body  : AG-UI RunAgentInput JSON (parsed by AGUIAdapter)
+        Body  : Vercel AI ``RequestData`` JSON (parsed by VercelAIAdapter)
         404   : thread not found (no lazy-create)
-        200   : streaming AG-UI events
+        200   : streaming Vercel AI events
 """
 
 from __future__ import annotations
@@ -73,7 +79,7 @@ async def _resolve_deps(
 
 
 def _last_user_text(messages: list[ModelMessage]) -> str:
-    """Pull the trailing user-prompt text from the parsed AG-UI messages.
+    """Pull the trailing user-prompt text from the parsed UI messages.
 
     Walks the list in reverse looking for a ``ModelRequest`` carrying a
     ``UserPromptPart``. Concatenates string parts (matches our
@@ -115,18 +121,23 @@ def build_streaming_router(
     prefix: str = "",
     history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> APIRouter:
-    """Mount ``POST {prefix}/threads/{id}/messages`` as an AG-UI stream.
+    """Mount ``POST {prefix}/threads/{id}/messages`` as a Vercel-AI stream.
 
     Server-stateful contract: the thread MUST already exist (404 otherwise
     — no lazy-create). The just-arrived user turn is persisted via
     ``thread_repo.add_message`` BEFORE the model runs, so a client crash
     mid-stream still leaves the thread consistent. After the agent
     completes the assistant reply is persisted via an ``on_complete``
-    callback wired into ``AGUIAdapter.dispatch_request``.
+    callback wired into ``VercelAIAdapter.run_stream``.
+
+    Tool-approval responses (Vercel AI SDK v6 ``approval-responded`` parts)
+    are extracted by ``VercelAIAdapter.deferred_tool_results`` and threaded
+    into ``run_stream`` so ``@agent.tool(requires_approval=True)`` tools
+    resume after the user clicks Approve/Cancel.
 
     ``message_history`` is reconstructed from ``thread_repo.history(...)``
     (excluding the just-persisted current user turn — pydantic-ai re-derives
-    that one from the AG-UI body messages).
+    that one from the incoming body messages).
 
     Args:
       thread_repo: source of truth for thread + message persistence.
@@ -142,7 +153,7 @@ def build_streaming_router(
       history_limit: cap on the number of rows hydrated from the repo
         per request (default 200).
     """
-    from pydantic_ai.ui.ag_ui import AGUIAdapter  # noqa: PLC0415
+    from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
     router = APIRouter(prefix=prefix)
 
@@ -156,7 +167,9 @@ def build_streaming_router(
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
 
-        adapter = await AGUIAdapter.from_request(request, agent=agent)
+        adapter = await VercelAIAdapter.from_request(
+            request, agent=agent, sdk_version=6,
+        )
 
         last_message = adapter.messages[-1] if adapter.messages else None
         prompt_text = _last_user_text(adapter.messages)
@@ -198,6 +211,11 @@ def build_streaming_router(
         # user-message-persist step). Drive the stream off it directly
         # rather than re-entering ``dispatch_request`` (which would call
         # ``from_request`` a second time and re-parse the same body).
+        # Tool-approval responses are auto-extracted from the incoming
+        # body by ``adapter.deferred_tool_results`` (called internally
+        # by ``run_stream`` when ``deferred_tool_results`` is omitted)
+        # and threaded back into the agent run so paused
+        # ``requires_approval=True`` tools resume.
         return adapter.streaming_response(
             adapter.run_stream(
                 message_history=history,
