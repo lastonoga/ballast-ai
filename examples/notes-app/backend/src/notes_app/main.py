@@ -38,7 +38,6 @@ from pydantic_ai_stateflow.runtime import Engine
 
 from notes_app.agent import (
     build_agent,
-    build_model_settings,
     build_notes_deps_factory,
 )
 from notes_app.notes.repository import InMemoryNoteRepository, NoteRepository
@@ -112,7 +111,6 @@ def build_app(
         thread_repo=repo,
         agent=resolved_agent,
         deps_factory=build_notes_deps_factory(notes),
-        model_settings=build_model_settings(),
     )
     app.include_router(streaming_router)
 

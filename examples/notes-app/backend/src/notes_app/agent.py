@@ -26,17 +26,12 @@ Output shape decision (iter 3 round 2):
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests
-from pydantic_ai.models.openrouter import (
-    OpenRouterModel,
-    OpenRouterModelSettings,
-    OpenRouterReasoning,
-)
+from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 if TYPE_CHECKING:
@@ -46,7 +41,6 @@ if TYPE_CHECKING:
     from notes_app.notes.tools import NoteToolDeps
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
-DEFAULT_TEMPERATURE = 0.7
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal notes app. "
@@ -120,114 +114,3 @@ def build_notes_deps_factory(
         return NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
 
     return factory
-
-
-def _parse_bool_env(name: str) -> bool | None:
-    raw = os.environ.get(name)
-    if raw is None:
-        return None
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-_logger = logging.getLogger("notes_app.agent")
-
-
-def build_model_settings() -> OpenRouterModelSettings | None:
-    """Read ``OPENROUTER_*`` env vars into ``OpenRouterModelSettings``.
-
-    Recognized env vars:
-
-    - ``OPENROUTER_TEMPERATURE`` (float, default 0.7)
-    - ``OPENROUTER_REASONING_EFFORT`` (minimal|low|medium|high|xhigh) — optional
-    - ``OPENROUTER_REASONING_MAX_TOKENS`` (int) — optional, mutually exclusive with effort
-    - ``OPENROUTER_REASONING_ENABLED`` (bool) — optional
-
-    OpenRouter rejects requests carrying BOTH ``reasoning.effort`` and
-    ``reasoning.max_tokens`` (400 "Only one of … can be specified").
-    This function enforces the constraint by preferring ``effort`` and
-    dropping ``max_tokens`` with a logged warning when both are set —
-    matches OpenRouter's docs (effort is the higher-level knob).
-
-    Returns ``None`` only if NO env var was set; otherwise always
-    populates ``temperature`` (defaulting to ``DEFAULT_TEMPERATURE``)
-    plus any reasoning fields that were configured. Logs the final
-    settings at INFO so misconfiguration is easy to spot at boot.
-    """
-    settings: OpenRouterModelSettings = OpenRouterModelSettings()
-    populated = False
-
-    temp_raw = os.environ.get("OPENROUTER_TEMPERATURE")
-    if temp_raw is not None:
-        try:
-            settings["temperature"] = float(temp_raw)
-            populated = True
-        except ValueError:
-            _logger.warning(
-                "OPENROUTER_TEMPERATURE=%r is not a valid float — ignored",
-                temp_raw,
-            )
-    else:
-        # Always plumb the documented default so behavior is reproducible.
-        settings["temperature"] = DEFAULT_TEMPERATURE
-        populated = True
-
-    reasoning: OpenRouterReasoning = {}
-    effort = os.environ.get("OPENROUTER_REASONING_EFFORT")
-    max_tokens_raw = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
-
-    if effort and max_tokens_raw:
-        _logger.warning(
-            "OpenRouter rejects requests carrying both reasoning.effort "
-            "and reasoning.max_tokens — keeping effort=%r, dropping "
-            "max_tokens=%r. Unset one in .env to silence this warning.",
-            effort, max_tokens_raw,
-        )
-        max_tokens_raw = None  # effort wins
-
-    if effort:
-        # OpenRouterReasoning.effort is a Literal — TypedDict allows any
-        # string assignment but the OpenRouter API will reject unknowns.
-        reasoning["effort"] = effort  # type: ignore[typeddict-item]
-    elif max_tokens_raw is not None:
-        try:
-            reasoning["max_tokens"] = int(max_tokens_raw)
-        except ValueError:
-            _logger.warning(
-                "OPENROUTER_REASONING_MAX_TOKENS=%r is not a valid int — ignored",
-                max_tokens_raw,
-            )
-
-    enabled = _parse_bool_env("OPENROUTER_REASONING_ENABLED")
-    if enabled is not None:
-        reasoning["enabled"] = enabled
-
-    if reasoning:
-        settings["openrouter_reasoning"] = reasoning
-        populated = True
-
-    # Provider routing: skip upstreams that mishandle tool-call continuations.
-    # Notably, Qwen on Alibaba's endpoint rejects assistant messages with
-    # ``content: null`` + ``tool_calls=[...]`` (which pydantic-ai produces
-    # per OpenAI spec on the second LLM hop after a tool call), surfacing as
-    # ``<400> InternalError.Algo.InvalidParameter: The content field is a
-    # required field.`` Set ``OPENROUTER_PROVIDER_IGNORE=alibaba`` (comma-
-    # separated for multiple) to route around it.
-    ignore_raw = os.environ.get("OPENROUTER_PROVIDER_IGNORE")
-    only_raw = os.environ.get("OPENROUTER_PROVIDER_ONLY")
-    provider_cfg: dict[str, list[str]] = {}
-    if ignore_raw:
-        provider_cfg["ignore"] = [
-            s.strip() for s in ignore_raw.split(",") if s.strip()
-        ]
-    if only_raw:
-        provider_cfg["only"] = [
-            s.strip() for s in only_raw.split(",") if s.strip()
-        ]
-    if provider_cfg:
-        # OpenRouterProviderConfig is a TypedDict; assignment is fine.
-        settings["openrouter_provider"] = provider_cfg  # type: ignore[typeddict-item]
-        populated = True
-
-    if populated:
-        _logger.info("OpenRouter model_settings: %s", dict(settings))
-    return settings if populated else None

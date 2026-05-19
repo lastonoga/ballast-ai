@@ -141,14 +141,11 @@ upstream — Vercel's adapter handles approvals out of the box.
   schema allows `content: null` when `tool_calls` is present; Alibaba's
   Qwen endpoint requires `content` as a string. Other upstreams for
   the same model accept it.
-- **Workaround**: route around the Alibaba upstream via OpenRouter
-  provider routing. We expose this as an env var on the example:
-  `OPENROUTER_PROVIDER_IGNORE=alibaba` (or `OPENROUTER_PROVIDER_ONLY=...`
-  for a positive allowlist). `build_model_settings()` plumbs it into
-  `openrouter_provider`.
-- **Upstream**: Alibaba endpoint compliance with OpenAI spec, or a
-  pydantic-ai shim that fills `content: ""` for tool-call-only
-  assistant turns when the model is known to be Qwen-on-Alibaba.
+- **Status**: open. We previously had an `OPENROUTER_PROVIDER_IGNORE`
+  env knob to route around it, but the workaround is being removed —
+  the right fix is upstream (Alibaba endpoint compliance with OpenAI
+  spec, or a pydantic-ai shim that fills `content: ""` for tool-call-
+  only assistant turns).
 
 ### B10. Live browser smoke not driven for iter 4 round 1
 
