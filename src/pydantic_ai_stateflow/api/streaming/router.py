@@ -79,10 +79,17 @@ class StreamEvent(BaseModel):
     @classmethod
     def tool_call_start(
         cls,
-        tool_call_id: UUID,
+        tool_call_id: UUID | str,
         tool_call_name: str,
         parent_message_id: UUID,
     ) -> StreamEvent:
+        """Mark the start of a tool call.
+
+        ``tool_call_id`` accepts either a ``UUID`` (when the caller mints
+        its own) or a ``str`` (so provider-native ids like OpenAI's
+        ``"call_abc123"`` flow through unchanged — pydantic-ai surfaces
+        these as plain strings on ``ToolCallPart.tool_call_id``).
+        """
         return cls(
             kind=StreamEventKind.TOOL_CALL_START.value,
             data={
@@ -93,14 +100,16 @@ class StreamEvent(BaseModel):
         )
 
     @classmethod
-    def tool_call_args(cls, tool_call_id: UUID, delta: str) -> StreamEvent:
+    def tool_call_args(
+        cls, tool_call_id: UUID | str, delta: str,
+    ) -> StreamEvent:
         return cls(
             kind=StreamEventKind.TOOL_CALL_ARGS.value,
             data={"toolCallId": str(tool_call_id), "delta": delta},
         )
 
     @classmethod
-    def tool_call_end(cls, tool_call_id: UUID) -> StreamEvent:
+    def tool_call_end(cls, tool_call_id: UUID | str) -> StreamEvent:
         return cls(
             kind=StreamEventKind.TOOL_CALL_END.value,
             data={"toolCallId": str(tool_call_id)},

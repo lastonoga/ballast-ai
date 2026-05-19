@@ -100,6 +100,26 @@ def test_stream_event_tool_call_end_constructor() -> None:
     assert ev.data == {"toolCallId": str(tcid)}
 
 
+def test_stream_event_tool_call_constructors_accept_str_tool_call_id() -> None:
+    """pydantic-ai surfaces provider-native ids as plain strings (e.g.
+    OpenAI's ``"call_abc123"``). The constructors must pass these
+    through unchanged so the wire field equals the upstream id verbatim.
+    """
+    pmid = uuid4()
+    start = StreamEvent.tool_call_start(
+        tool_call_id="call_abc123",
+        tool_call_name="search",
+        parent_message_id=pmid,
+    )
+    args = StreamEvent.tool_call_args(
+        tool_call_id="call_abc123", delta='{"q":"x"}',
+    )
+    end = StreamEvent.tool_call_end(tool_call_id="call_abc123")
+    assert start.data["toolCallId"] == "call_abc123"
+    assert args.data["toolCallId"] == "call_abc123"
+    assert end.data["toolCallId"] == "call_abc123"
+
+
 def test_ag_ui_encoder_emits_run_started_frame() -> None:
     tid, rid = uuid4(), uuid4()
     frame = AGUIEncoder().encode(StreamEvent.run_started(tid, rid))
