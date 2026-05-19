@@ -23,8 +23,9 @@ Output shape decision (iter 3 round 2):
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
@@ -89,7 +90,7 @@ def build_agent(
 
 def build_notes_deps_factory(
     note_repo: NoteRepository,
-):
+) -> Callable[..., NoteToolDeps]:
     """Return a ``deps_factory`` for ``build_streaming_router``.
 
     Mints a fresh ``NoteToolDeps`` per HTTP request, bound to the
@@ -111,20 +112,29 @@ def _parse_bool_env(name: str) -> bool | None:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+_logger = logging.getLogger("notes_app.agent")
+
+
 def build_model_settings() -> OpenRouterModelSettings | None:
     """Read ``OPENROUTER_*`` env vars into ``OpenRouterModelSettings``.
 
     Recognized env vars:
 
     - ``OPENROUTER_TEMPERATURE`` (float, default 0.7)
-    - ``OPENROUTER_REASONING_EFFORT`` (low|medium|high) — optional
-    - ``OPENROUTER_REASONING_MAX_TOKENS`` (int) — optional
+    - ``OPENROUTER_REASONING_EFFORT`` (minimal|low|medium|high|xhigh) — optional
+    - ``OPENROUTER_REASONING_MAX_TOKENS`` (int) — optional, mutually exclusive with effort
     - ``OPENROUTER_REASONING_ENABLED`` (bool) — optional
 
-    Returns ``None`` if no env vars are set (let pydantic-ai pick its
-    own defaults). Returns an ``OpenRouterModelSettings`` instance
-    otherwise. The reasoning sub-config is only attached when at least
-    one ``OPENROUTER_REASONING_*`` env var is set.
+    OpenRouter rejects requests carrying BOTH ``reasoning.effort`` and
+    ``reasoning.max_tokens`` (400 "Only one of … can be specified").
+    This function enforces the constraint by preferring ``effort`` and
+    dropping ``max_tokens`` with a logged warning when both are set —
+    matches OpenRouter's docs (effort is the higher-level knob).
+
+    Returns ``None`` only if NO env var was set; otherwise always
+    populates ``temperature`` (defaulting to ``DEFAULT_TEMPERATURE``)
+    plus any reasoning fields that were configured. Logs the final
+    settings at INFO so misconfiguration is easy to spot at boot.
     """
     settings: OpenRouterModelSettings = OpenRouterModelSettings()
     populated = False
@@ -135,7 +145,10 @@ def build_model_settings() -> OpenRouterModelSettings | None:
             settings["temperature"] = float(temp_raw)
             populated = True
         except ValueError:
-            pass
+            _logger.warning(
+                "OPENROUTER_TEMPERATURE=%r is not a valid float — ignored",
+                temp_raw,
+            )
     else:
         # Always plumb the documented default so behavior is reproducible.
         settings["temperature"] = DEFAULT_TEMPERATURE
@@ -143,15 +156,29 @@ def build_model_settings() -> OpenRouterModelSettings | None:
 
     reasoning: OpenRouterReasoning = {}
     effort = os.environ.get("OPENROUTER_REASONING_EFFORT")
+    max_tokens_raw = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
+
+    if effort and max_tokens_raw:
+        _logger.warning(
+            "OpenRouter rejects requests carrying both reasoning.effort "
+            "and reasoning.max_tokens — keeping effort=%r, dropping "
+            "max_tokens=%r. Unset one in .env to silence this warning.",
+            effort, max_tokens_raw,
+        )
+        max_tokens_raw = None  # effort wins
+
     if effort:
         # OpenRouterReasoning.effort is a Literal — TypedDict allows any
         # string assignment but the OpenRouter API will reject unknowns.
         reasoning["effort"] = effort  # type: ignore[typeddict-item]
-
-    max_tokens_raw = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
-    if max_tokens_raw is not None:
-        with contextlib.suppress(ValueError):
+    elif max_tokens_raw is not None:
+        try:
             reasoning["max_tokens"] = int(max_tokens_raw)
+        except ValueError:
+            _logger.warning(
+                "OPENROUTER_REASONING_MAX_TOKENS=%r is not a valid int — ignored",
+                max_tokens_raw,
+            )
 
     enabled = _parse_bool_env("OPENROUTER_REASONING_ENABLED")
     if enabled is not None:
@@ -161,4 +188,6 @@ def build_model_settings() -> OpenRouterModelSettings | None:
         settings["openrouter_reasoning"] = reasoning
         populated = True
 
+    if populated:
+        _logger.info("OpenRouter model_settings: %s", dict(settings))
     return settings if populated else None
