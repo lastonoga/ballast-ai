@@ -44,6 +44,13 @@ class MessageRow(SQLModel, table=True):
     tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
     thread_id: UUID = Field(foreign_key="threads.id", index=True)
     role: str  # "system" / "user" / "assistant" / "tool"
+    # Self-FK to the message this one replies to. NULL only for the very
+    # first user turn of a thread. Siblings (same parent_id) are branches —
+    # produced by ``trigger='regenerate-message'`` or user-message edits.
+    # See ``Message`` domain class for the tree-walking contract.
+    parent_id: UUID | None = Field(
+        default=None, foreign_key="messages.id", index=True, nullable=True,
+    )
     parts: list[dict[str, Any]] = Field(
         default_factory=list,
         sa_column=Column(JSONB, nullable=False, server_default="[]"),

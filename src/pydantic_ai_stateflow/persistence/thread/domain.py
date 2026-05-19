@@ -82,12 +82,31 @@ class Thread(BaseModel):
 
 
 class Message(BaseModel):
+    """One message in a thread. Threads are conversation TREES, not lists.
+
+    ``parent_id`` is the id of the message this one replies to:
+
+    - first user turn of a thread:           ``parent_id = None``
+    - assistant reply to a user turn:        ``parent_id = <that user's id>``
+    - follow-up user turn after assistant:   ``parent_id = <that assistant's id>``
+
+    Multiple children of the same parent are *branches* — created by
+    regenerating an assistant reply (``trigger='regenerate-message'``) or
+    by editing a user turn. The "active" branch surfaced in
+    ``ThreadRepository.history(...)`` is the one whose path picks
+    ``max(created_at)`` at every fork (i.e. the most recently created
+    sibling wins). UI branch-pickers can show all siblings, but cross-
+    reload state of which sibling the user clicked is not persisted —
+    that's an explicit MVP scope decision (see iter 4 round 2 plan).
+    """
+
     model_config = ConfigDict(frozen=True)
     id: UUID
     tenant_id: UUID
     thread_id: UUID
     role: str
     parts: list[dict[str, Any]]
+    parent_id: UUID | None = None
     created_at: datetime
 
     @classmethod
@@ -98,5 +117,6 @@ class Message(BaseModel):
             thread_id=row.thread_id,
             role=row.role,
             parts=row.parts,
+            parent_id=row.parent_id,
             created_at=row.created_at,
         )

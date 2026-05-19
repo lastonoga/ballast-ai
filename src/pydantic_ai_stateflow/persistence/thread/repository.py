@@ -11,6 +11,52 @@ class ThreadClosedError(Exception):
     """Raised when trying to add a message to a closed thread."""
 
 
+def _walk_active_branch(
+    msgs: list[Message], *, limit: int = 100,
+) -> list[Message]:
+    """Walk the message tree from each root, picking max(created_at) at every fork.
+
+    Used by both ``InMemoryThreadRepository.history`` and
+    ``PostgresThreadRepository.history`` after their respective fetch:
+    same tree-walking semantics regardless of storage. Pure function over
+    a list of ``Message`` rows; doesn't care which thread they belong to
+    (callers pre-filter to one thread).
+
+    Returns at most ``limit`` messages along the active path. Falls back
+    to oldest-first order if multiple sibling roots share the latest
+    ``created_at`` (stable tie-break for reproducible tests).
+
+    Robust to legacy linear data: if NO message has ``parent_id`` set,
+    the function still returns rows sorted by ``created_at`` ascending —
+    treating each as a sibling root and chaining them by "newest wins"
+    would collapse the thread to one message, so we detect the all-
+    NULL-parents shape and fall back to the legacy order.
+    """
+    if not msgs:
+        return []
+
+    # Legacy linear-data fallback: no tree at all → return as-is sorted.
+    if all(m.parent_id is None for m in msgs):
+        return sorted(msgs, key=lambda m: m.created_at)[:limit]
+
+    children_by_parent: dict[UUID | None, list[Message]] = {}
+    for m in msgs:
+        children_by_parent.setdefault(m.parent_id, []).append(m)
+
+    path: list[Message] = []
+    current_parent: UUID | None = None
+    while True:
+        candidates = children_by_parent.get(current_parent, [])
+        if not candidates:
+            break
+        chosen = max(candidates, key=lambda m: m.created_at)
+        path.append(chosen)
+        if len(path) >= limit:
+            break
+        current_parent = chosen.id
+    return path
+
+
 @runtime_checkable
 class ThreadRepository(Protocol):
     """Port for thread + message persistence.
@@ -34,11 +80,51 @@ class ThreadRepository(Protocol):
     ) -> Thread: ...
     async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None: ...
     async def add_message(
-        self, thread_id: UUID, *, role: str, parts: list[dict[str, Any]], tenant_id: UUID
-    ) -> Message: ...
+        self,
+        thread_id: UUID,
+        *,
+        role: str,
+        parts: list[dict[str, Any]],
+        tenant_id: UUID,
+        parent_id: UUID | None = None,
+    ) -> Message:
+        """Append a message to the thread tree.
+
+        ``parent_id`` is the id of the message this one replies to.
+        Pass ``None`` only for a thread's very first user turn.
+        Implementations don't validate that ``parent_id`` lives in the
+        same thread/tenant — callers are responsible. (Callers usually
+        derive it from a prior ``history()`` call, so the invariant holds
+        by construction.)
+        """
+        ...
     async def history(
         self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
-    ) -> list[Message]: ...
+    ) -> list[Message]:
+        """Return the **active branch** of the thread.
+
+        Walks the message tree from the root (``parent_id IS NULL``)
+        forward, picking ``max(created_at)`` at every fork. The returned
+        list is the linear conversation slice the agent should see —
+        previously regenerated branches are silently skipped (still
+        present in storage, available via ``siblings``).
+
+        Returns ``[]`` for unknown threads, foreign tenants, or empty
+        threads.
+        """
+        ...
+    async def siblings(
+        self, message_id: UUID, *, tenant_id: UUID,
+    ) -> list[Message]:
+        """Return all messages that share ``parent_id`` with ``message_id``.
+
+        Includes the queried message itself. Sorted by ``created_at`` asc
+        (oldest first). Used by the threads router to enrich each
+        message's response with branch-picker metadata.
+
+        Returns ``[]`` for unknown ids or foreign tenants.
+        """
+        ...
     async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
     async def list_(
         self,
@@ -94,7 +180,13 @@ class InMemoryThreadRepository:
         return thread
 
     async def add_message(
-        self, thread_id: UUID, *, role: str, parts: list[dict[str, Any]], tenant_id: UUID
+        self,
+        thread_id: UUID,
+        *,
+        role: str,
+        parts: list[dict[str, Any]],
+        tenant_id: UUID,
+        parent_id: UUID | None = None,
     ) -> Message:
         thread = self._threads.get(thread_id)
         if thread is None or thread.tenant_id != tenant_id:
@@ -107,6 +199,7 @@ class InMemoryThreadRepository:
             thread_id=thread_id,
             role=role,
             parts=list(parts),
+            parent_id=parent_id,
             created_at=datetime.now(tz=UTC),
         )
         self._messages[thread_id].append(msg)
@@ -118,7 +211,25 @@ class InMemoryThreadRepository:
         thread = self._threads.get(thread_id)
         if thread is None or thread.tenant_id != tenant_id:
             return []
-        return self._messages[thread_id][:limit]
+        all_msgs = self._messages[thread_id]
+        return _walk_active_branch(all_msgs, limit=limit)
+
+    async def siblings(
+        self, message_id: UUID, *, tenant_id: UUID,
+    ) -> list[Message]:
+        # Search across all tenant-owned threads; the in-memory store
+        # doesn't index messages by id so we scan. Fine for tests.
+        for tid, msgs in self._messages.items():
+            thread = self._threads.get(tid)
+            if thread is None or thread.tenant_id != tenant_id:
+                continue
+            target = next((m for m in msgs if m.id == message_id), None)
+            if target is None:
+                continue
+            sibs = [m for m in msgs if m.parent_id == target.parent_id]
+            sibs.sort(key=lambda m: m.created_at)
+            return sibs
+        return []
 
     async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
         thread = self._threads.get(thread_id)

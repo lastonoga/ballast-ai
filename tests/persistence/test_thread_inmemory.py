@@ -173,3 +173,88 @@ async def test_purpose_accepts_custom_app_string(repo, tenant_id):
     loaded = await repo.load(thread.id, tenant_id=tenant_id)
     assert loaded is not None
     assert loaded.purpose == "hitl:strategy_review"
+
+
+@pytest.mark.asyncio
+async def test_history_walks_active_branch_picking_newest_sibling(
+    repo, tenant_id,
+):
+    """Regenerated branches are siblings; history returns the newest path.
+
+    Tree shape:
+
+        u1 ─ a1 ─ u2 ─ a2_old
+                    └─ a2_new   ← newer ⇒ active
+
+    Active branch: [u1, a1, u2, a2_new]. ``a2_old`` is preserved in
+    storage (accessible via ``siblings``) but skipped on the linear
+    history walk.
+    """
+    import asyncio
+
+    thread = await repo.create(
+        purpose=ThreadPurpose.CONVERSATION.value,
+        purpose_metadata={}, actor_id="a", tenant_id=tenant_id,
+    )
+
+    u1 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "hi"}],
+        tenant_id=tenant_id, parent_id=None,
+    )
+    a1 = await repo.add_message(
+        thread.id, role="assistant", parts=[{"type": "text", "text": "hello"}],
+        tenant_id=tenant_id, parent_id=u1.id,
+    )
+    u2 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "again"}],
+        tenant_id=tenant_id, parent_id=a1.id,
+    )
+    a2_old = await repo.add_message(
+        thread.id, role="assistant", parts=[{"type": "text", "text": "v1"}],
+        tenant_id=tenant_id, parent_id=u2.id,
+    )
+    # Ensure created_at ordering is unambiguous (in-memory now() is
+    # monotonic but tight loops can collide on coarse clocks).
+    await asyncio.sleep(0.001)
+    a2_new = await repo.add_message(
+        thread.id, role="assistant", parts=[{"type": "text", "text": "v2"}],
+        tenant_id=tenant_id, parent_id=u2.id,
+    )
+
+    branch = await repo.history(thread.id, tenant_id=tenant_id)
+    assert [m.id for m in branch] == [u1.id, a1.id, u2.id, a2_new.id]
+    assert a2_old.id not in {m.id for m in branch}
+
+    # Siblings query surfaces both children of u2.
+    sibs = await repo.siblings(a2_new.id, tenant_id=tenant_id)
+    assert {s.id for s in sibs} == {a2_old.id, a2_new.id}
+
+
+@pytest.mark.asyncio
+async def test_history_falls_back_to_linear_for_legacy_null_parents(
+    repo, tenant_id,
+):
+    """Pre-branching threads (all parent_id=NULL) still render in order.
+
+    The 0003 migration leaves legacy rows with NULL parent_id; the walker
+    detects the all-NULL case and falls back to created_at ordering so
+    old conversations don't collapse to a single message.
+    """
+    thread = await repo.create(
+        purpose=ThreadPurpose.CONVERSATION.value,
+        purpose_metadata={}, actor_id="a", tenant_id=tenant_id,
+    )
+    m1 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "1"}],
+        tenant_id=tenant_id,
+    )
+    m2 = await repo.add_message(
+        thread.id, role="assistant", parts=[{"type": "text", "text": "2"}],
+        tenant_id=tenant_id,
+    )
+    m3 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "3"}],
+        tenant_id=tenant_id,
+    )
+    history = await repo.history(thread.id, tenant_id=tenant_id)
+    assert [m.id for m in history] == [m1.id, m2.id, m3.id]

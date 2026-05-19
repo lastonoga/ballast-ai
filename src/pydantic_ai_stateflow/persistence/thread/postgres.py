@@ -13,7 +13,10 @@ from sqlmodel import col
 
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadClosedError
+from pydantic_ai_stateflow.persistence.thread.repository import (
+    ThreadClosedError,
+    _walk_active_branch,
+)
 
 
 class PostgresThreadRepository:
@@ -63,6 +66,7 @@ class PostgresThreadRepository:
         role: str,
         parts: list[dict[str, Any]],
         tenant_id: UUID,
+        parent_id: UUID | None = None,
     ) -> Message:
         # Verify thread exists for this tenant AND is open.
         stmt = select(ThreadRow).where(
@@ -84,6 +88,7 @@ class PostgresThreadRepository:
             thread_id=thread_id,
             role=role,
             parts=list(parts),
+            parent_id=parent_id,
         )
         self._session.add(msg_row)
         await self._session.flush()
@@ -112,6 +117,12 @@ class PostgresThreadRepository:
         tenant_id: UUID,
         limit: int = 100,
     ) -> list[Message]:
+        # Fetch ALL messages for the thread (no SQL-level limit) so the
+        # tree walker can pick the active branch correctly. ``limit`` is
+        # applied after walking. For threads with thousands of branches
+        # this becomes wasteful; an iter-5 optimization is to push the
+        # walk into a recursive CTE or to keep a denormalized
+        # ``thread.active_path`` column.
         stmt = (
             select(MessageRow)
             .where(
@@ -119,8 +130,47 @@ class PostgresThreadRepository:
                 col(MessageRow.tenant_id) == tenant_id,
             )
             .order_by(asc(col(MessageRow.created_at)))
-            .limit(limit)
         )
+        result = await self._session.execute(stmt)
+        rows = result.scalars().all()
+        msgs = [Message.from_row(r) for r in rows]
+        return _walk_active_branch(msgs, limit=limit)
+
+    async def siblings(
+        self, message_id: UUID, *, tenant_id: UUID,
+    ) -> list[Message]:
+        target_stmt = select(MessageRow).where(
+            col(MessageRow.id) == message_id,
+            col(MessageRow.tenant_id) == tenant_id,
+        )
+        target_result = await self._session.execute(target_stmt)
+        target = target_result.scalar_one_or_none()
+        if target is None:
+            return []
+
+        # Find rows that share parent_id (including the target itself).
+        # NULL == NULL semantics: SQL treats NULL as not-equal even to
+        # itself, so split the query on whether parent_id is NULL.
+        if target.parent_id is None:
+            stmt = (
+                select(MessageRow)
+                .where(
+                    col(MessageRow.thread_id) == target.thread_id,
+                    col(MessageRow.tenant_id) == tenant_id,
+                    col(MessageRow.parent_id).is_(None),
+                )
+                .order_by(asc(col(MessageRow.created_at)))
+            )
+        else:
+            stmt = (
+                select(MessageRow)
+                .where(
+                    col(MessageRow.thread_id) == target.thread_id,
+                    col(MessageRow.tenant_id) == tenant_id,
+                    col(MessageRow.parent_id) == target.parent_id,
+                )
+                .order_by(asc(col(MessageRow.created_at)))
+            )
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         return [Message.from_row(r) for r in rows]
