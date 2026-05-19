@@ -195,8 +195,19 @@ def build_streaming_router(
         )
 
         async def on_complete(result: AgentRunResult[Any]) -> None:
-            """Persist the assistant reply on successful completion."""
+            """Persist the assistant reply on successful completion.
+
+            Skips persistence when ``result.output`` is a
+            ``DeferredToolRequests`` — that's a paused run waiting on
+            human approval, not a final assistant turn. The next request
+            (with approval responses attached) will produce the real
+            text reply and we'll persist that.
+            """
+            from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+
             output = result.output
+            if isinstance(output, DeferredToolRequests):
+                return
             text = output if isinstance(output, str) else str(output)
             if not text:
                 return

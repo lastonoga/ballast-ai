@@ -31,7 +31,7 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.openrouter import (
     OpenRouterModel,
     OpenRouterModelSettings,
@@ -65,7 +65,7 @@ def build_agent(
     *,
     model_name: str | None = None,
     api_key: str | None = None,
-) -> Agent[NoteToolDeps, str]:
+) -> Agent[NoteToolDeps, str | DeferredToolRequests]:
     """Build the OpenRouter-backed agent and register the note tools."""
     from notes_app.notes.tools import NoteToolDeps as _Deps
     from notes_app.notes.tools import register_note_tools
@@ -83,9 +83,17 @@ def build_agent(
     )
     from pydantic_ai_stateflow.grounded import register_grounded_tools
 
-    agent: Agent[_Deps, str] = Agent(
+    # `output_type=[str, DeferredToolRequests]` opts into pydantic-ai's
+    # deferred-tools branch: when the model calls a tool marked
+    # ``requires_approval=True`` (e.g. ``delete_note``) the agent pauses
+    # and yields a ``DeferredToolRequests`` instead of looping forever
+    # over an unresolved tool call. ``VercelAIAdapter`` knows how to
+    # serialize the deferred call as a ``tool-approval-request`` chunk
+    # and to thread approval responses back through
+    # ``deferred_tool_results`` on the next round-trip.
+    agent: Agent[_Deps, str | DeferredToolRequests] = Agent(
         model=model,
-        output_type=str,
+        output_type=[str, DeferredToolRequests],
         deps_type=_Deps,
         system_prompt=SYSTEM_PROMPT,
     )
