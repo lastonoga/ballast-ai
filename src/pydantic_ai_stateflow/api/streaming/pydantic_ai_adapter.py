@@ -38,9 +38,15 @@ from pydantic_ai_stateflow.api.streaming.router import (
     _PostMessageBody,
     extract_text,
 )
+from pydantic_ai_stateflow.persistence.thread.repository import (
+    ThreadRepository,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelMessage
+
+    from pydantic_ai_stateflow.persistence.thread.domain import Message
 
 
 OutT = TypeVar("OutT")
@@ -128,11 +134,78 @@ def _tool_args_to_str(args: Any) -> str:
     return _tool_args_delta_to_str(args)
 
 
+def _messages_to_model_history(
+    rows: list[Message],
+    *,
+    drop_prompt: str | None = None,
+) -> list[ModelMessage]:
+    """Convert persisted ``Message`` rows → pydantic-ai ``ModelMessage`` list.
+
+    Conversion rules (verified against pydantic-ai 1.97.0):
+
+    - ``role == "user"`` → ``ModelRequest(parts=[UserPromptPart(content)])``
+    - ``role == "assistant"`` → ``ModelResponse(parts=[TextPart(content)])``
+      (single text part; tool-call replay is out of scope for iter-3 —
+      the model re-derives any tool history from the resulting reply text)
+    - empty text → row dropped (no point seeding empty turns)
+
+    ``drop_prompt`` deduplicates the just-persisted current user turn.
+    The router persists the user message BEFORE calling the runner, so
+    repo history at runner time includes that turn. pydantic-ai's
+    ``agent.iter(prompt, ...)`` will also synthesize a ``ModelRequest``
+    for ``prompt`` — so we strip the trailing user row if its text
+    matches the prompt verbatim. Robust to mid-history user turns
+    (we only inspect the LAST row).
+
+    Timestamps are preserved from ``Message.created_at`` so observability
+    traces show real wall-clock ordering rather than synthetic "now".
+    """
+    from pydantic_ai.messages import (  # noqa: PLC0415
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        UserPromptPart,
+    )
+
+    pruned = list(rows)
+    if drop_prompt is not None and pruned:
+        last = pruned[-1]
+        if last.role == "user" and extract_text(last.parts) == drop_prompt:
+            pruned = pruned[:-1]
+
+    out: list[ModelMessage] = []
+    for row in pruned:
+        text = extract_text(row.parts)
+        if not text:
+            continue
+        if row.role == "user":
+            out.append(
+                ModelRequest(
+                    parts=[UserPromptPart(content=text, timestamp=row.created_at)],
+                    timestamp=row.created_at,
+                ),
+            )
+        elif row.role == "assistant":
+            out.append(
+                ModelResponse(
+                    parts=[TextPart(content=text)],
+                    timestamp=row.created_at,
+                ),
+            )
+        # silently skip other roles (system/tool) — iter-3 scope
+    return out
+
+
+_DEFAULT_HISTORY_LIMIT = 200
+
+
 def make_runner(  # noqa: C901 — single fused state machine, splitting hurts readability
     agent: Agent[Any, OutT],
     *,
     text_field: str | Callable[[OutT], str] = "reply",
     deps: Any = None,
+    thread_repo: ThreadRepository | None = None,
+    history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> AgentRunner:
     """Wrap a pydantic-ai ``Agent`` as an :class:`AgentRunner`.
 
@@ -169,6 +242,16 @@ def make_runner(  # noqa: C901 — single fused state machine, splitting hurts r
           keyword args ``thread_id``, ``run_id``, ``message``, ``tenant_id``
           to mint fresh per-request deps (e.g. a ``NoteToolDeps(repo=...,
           tenant_id=...)``).
+
+      thread_repo: optional ``ThreadRepository``. When supplied, the
+        runner fetches ``history(thread_id, tenant_id, limit=history_limit)``
+        and passes the converted ``list[ModelMessage]`` as
+        ``message_history=`` to ``agent.iter``. The just-persisted
+        current-turn user row (the router persists BEFORE invoking the
+        runner) is filtered out so pydantic-ai doesn't see the prompt
+        twice. Omit to keep the legacy stateless behavior.
+      history_limit: cap on the number of rows fetched from the repo
+        (default 200). Tune this for long-running conversations.
 
     Tool-call events:
       The adapter observes ``agent.iter``'s per-node events. For each
@@ -243,8 +326,26 @@ def make_runner(  # noqa: C901 — single fused state machine, splitting hurts r
             ToolCallPartDelta,
         )
 
+        history: list[ModelMessage] = []
+        if thread_repo is not None:
+            rows = await thread_repo.history(
+                thread_id, tenant_id=tenant_id, limit=history_limit,
+            )
+            history = _messages_to_model_history(rows, drop_prompt=prompt)
+
         try:
-            async with agent.iter(prompt, deps=resolved_deps) as agent_run:
+            # Only pass ``message_history=`` when we actually have rows —
+            # keeps the call signature minimal so legacy fakes (and any
+            # ``Agent``-shaped callable that doesn't accept the kwarg)
+            # still work when ``thread_repo`` is omitted.
+            agent_run_cm = (
+                agent.iter(
+                    prompt, deps=resolved_deps, message_history=history,
+                )
+                if history
+                else agent.iter(prompt, deps=resolved_deps)
+            )
+            async with agent_run_cm as agent_run:
                 async for node in agent_run:
                     if Agent.is_model_request_node(node):
                         # Buffer of (tool_call_id, name, args_buffer)
