@@ -21,6 +21,7 @@ from uuid import UUID
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import (
     AgentRunner,
     StreamEvent,
@@ -91,6 +92,12 @@ def build_app(
     )
     app: FastAPI = engine.fastapi_app(
         extra_routers=[threads_router, streaming_router],
+        # F8: permissive_dev() covers the assistant-ui Next.js dev shell
+        # (localhost:3000) and the Vite dev port (localhost:3003) so a
+        # real browser frontend can hit this backend without a proxy.
+        # Replace with an explicit `CORSConfig(allow_origins=[...])` in
+        # production.
+        cors=CORSConfig.permissive_dev(),
     )
     return app
 

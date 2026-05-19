@@ -129,6 +129,46 @@ here and either patch the frontend mapping or extend `AGUIEncoder`.
 - [ ] One structured `INFO` log line on `Engine.boot()`. (Tracked as
       Group D.)
 
+## Iteration 2.2 update — framework Groups A–D landed (fix round complete)
+
+All four groups of the dogfood-driven framework fix round are now in:
+
+| Group | Commit | Scope |
+| ----- | ------ | ----- |
+| A | `3c71504` | Canonical AG-UI events + `StreamEventKind` enum |
+| B | `01875fd` + `0219412` | `make_runner` adapter, typed `MessagePart`, `AgentRunner` Protocol |
+| C | `00e8040` + `c735e71` | `Thread.title`/`ARCHIVED`, full thread CRUD, auto-persist assistant reply |
+| D | (this commit pair) | `CORSConfig` + lifespan hooks on `Engine.fastapi_app`, verified client-disconnect propagation |
+
+Gap items, final state:
+
+- ~~F1 — pydantic-ai → `StreamEvent` adapter.~~ Landed (B).
+- ~~F2 — typed `MessagePart` union + `extract_text`.~~ Landed (B).
+- ~~F3 — `AgentRunner` Protocol.~~ Landed (B).
+- ~~F4 — assistant reply auto-persistence on `text_message_end`.~~ Landed (C).
+- ~~F5 — `StreamEventKind` enum + encoder coverage table.~~ Landed (A).
+- ~~F6 — boot log line.~~ Landed (C/D auxiliary).
+- ~~F7 — full thread CRUD (list / PATCH / archive / delete).~~ Landed (C).
+- ~~F8 — `cors=` + lifespan hooks on `Engine.fastapi_app()`.~~ Landed (D).
+- ~~F9 — typed `MessagePart` union exported.~~ Landed (B).
+- ~~F10 — verified client-disconnect propagation on streaming endpoint.~~ Landed (D).
+- ~~F11 — assistant reply persistence contract documented.~~ Landed (C).
+
+### F10 abort-propagation finding (recorded for posterity)
+
+Initial hope: a Starlette `StreamingResponse` will receive
+`CancelledError` into its async generator on the next `yield` when the
+client disconnects, and that cancellation will naturally tear down the
+underlying agent runner + httpx request. **This is not reliably the case
+under `httpx.ASGITransport` (and is server-implementation-dependent in
+production too).** We therefore added an explicit
+`request.is_disconnected()` poll loop in `_gen()` that runs concurrently
+with the agent runner; when the client goes away we cancel the producer
+task, which exits `agent.run_stream(...)` and aborts the upstream LLM
+request via pydantic-ai's httpx client. The defensive
+`try/except CancelledError` block remains as a belt-and-braces guard for
+servers that *do* propagate cancellation.
+
 ## Iteration 2.1 update — framework Groups A + B landed
 
 Group A (canonical AG-UI event kinds) and Group B (the `make_runner`
