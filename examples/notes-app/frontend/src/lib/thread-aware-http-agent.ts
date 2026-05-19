@@ -1,31 +1,19 @@
 /**
  * Thread-aware variant of AG-UI's `HttpAgent`.
  *
- * Two adaptations on top of the stock `HttpAgent`:
+ * Single adaptation on top of the stock `HttpAgent`:
  *
- * 1. **Per-thread URL.** `HttpAgent` posts to a single fixed `url`. Our
- *    backend exposes a per-thread streaming endpoint
- *    (`POST /threads/{threadId}/messages?protocol=ag-ui`), so the URL is
- *    recomputed on every `run()` from `input.threadId`.
+ * **Per-thread URL.** `HttpAgent` posts to a single fixed `url`. Our
+ * backend exposes a per-thread streaming endpoint
+ * (`POST /threads/{threadId}/messages`), so the URL is recomputed on
+ * every `run()` from `input.threadId`.
  *
- * 2. **Server-stateful body shape.** Stock `HttpAgent.requestInit` JSON-
- *    serializes the full `RunAgentInput` (`{threadId, runId, messages: [...
- *    full client-held history ...], tools, context, ...}`) — the AG-UI
- *    spec assumes a client-stateful server that reruns the agent against
- *    the whole conversation each turn.
- *
- *    Our backend is **server-stateful**: the `Thread` + `Message` rows are
- *    the source of truth, and the backend reconstructs `message_history`
- *    from its own `ThreadRepository` before invoking the pydantic-ai
- *    agent. So we ship ONLY the new user turn in the native
- *    `{role, parts}` shape — everything else (prior turns, tool defs,
- *    context, forwarded props) the backend already has or doesn't need.
- *
- *    We override the protected `requestInit(input)` hook — `@ag-ui/client`
- *    explicitly documents this as the override point: "Returns the fetch
- *    config for the http request. Override this to customize the request."
- *    Everything else (SSE parsing, observable plumbing, abort wiring) is
- *    reused from the base class.
+ * The wire body is the stock AG-UI `RunAgentInput` JSON — our backend
+ * delegates body parsing to `pydantic_ai.ui.ag_ui.AGUIAdapter`, which
+ * speaks the canonical AG-UI shape natively. We don't override
+ * `requestInit` anymore (server-stateful history is reconstructed from
+ * the backend's `ThreadRepository`; the agent simply re-reads it on
+ * every request).
  *
  * Usage:
  *
@@ -47,7 +35,7 @@ export interface ThreadAwareHttpAgentConfig extends Omit<HttpAgentConfig, "url">
   apiUrl: string;
   /**
    * Optional override for the per-thread URL builder. Defaults to
-   * `${apiUrl}/threads/${threadId}/messages?protocol=ag-ui`.
+   * `${apiUrl}/threads/${threadId}/messages`.
    */
   buildUrl?: (apiUrl: string, threadId: string) => string;
 }
@@ -59,13 +47,13 @@ export class ThreadAwareHttpAgent extends HttpAgent {
   constructor(config: ThreadAwareHttpAgentConfig) {
     const { apiUrl, buildUrl, ...rest } = config;
     // The `url` passed to super() is a placeholder; `run()` rewrites
-    // `this.url` per-call from the incoming `input.threadId`. We keep the
+    // `this.url` per-call from the incoming `input.threadId`. Keep the
     // placeholder readable so any error logs surface the template form.
-    super({ ...rest, url: `${apiUrl}/threads/{threadId}/messages?protocol=ag-ui` });
+    super({ ...rest, url: `${apiUrl}/threads/{threadId}/messages` });
     this.apiUrl = apiUrl;
     this.buildUrl =
       buildUrl ??
-      ((api, id) => `${api}/threads/${id}/messages?protocol=ag-ui`);
+      ((api, id) => `${api}/threads/${id}/messages`);
   }
 
   // The base class reads `this.url` synchronously inside its `run()` body
@@ -74,40 +62,5 @@ export class ThreadAwareHttpAgent extends HttpAgent {
   override run(input: RunAgentInput) {
     this.url = this.buildUrl(this.apiUrl, input.threadId);
     return super.run(input);
-  }
-
-  /**
-   * Replace the stock `JSON.stringify(input)` body with our native
-   * `{role, parts}` shape carrying ONLY the new user turn. The backend
-   * reconstructs `message_history` from its own `ThreadRepository`
-   * (server-stateful contract); the rest of `RunAgentInput` (prior
-   * `messages`, `tools`, `context`, `state`, `forwardedProps`) is
-   * intentionally dropped on the wire.
-   *
-   * Headers / method / signal are kept identical to the base impl so
-   * abort, content-type, and auth-header semantics are preserved.
-   */
-  protected override requestInit(input: RunAgentInput): RequestInit {
-    const lastUserMsg = [...input.messages]
-      .reverse()
-      .find((m) => m.role === "user");
-    const text =
-      lastUserMsg && typeof lastUserMsg.content === "string"
-        ? lastUserMsg.content
-        : "";
-    const body = JSON.stringify({
-      role: "user",
-      parts: [{ type: "text", text }],
-    });
-    return {
-      method: "POST",
-      headers: {
-        ...this.headers,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body,
-      signal: this.abortController.signal,
-    };
   }
 }
