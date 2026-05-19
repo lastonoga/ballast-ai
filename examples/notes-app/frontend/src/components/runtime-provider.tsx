@@ -89,58 +89,94 @@ export const useChatApprovalHelpers = (): ChatApprovalHelpers => {
 };
 
 /**
- * Build a per-thread transport that rewrites `api` to the backend's
- * `POST /threads/{remoteId}/messages` URL on every send. We extend
- * `AssistantChatTransport` (not `DefaultChatTransport`) so the
- * assistant-ui-specific extras (model context, callSettings, tools)
- * still get folded into the body upstream.
+ * Per-thread transport that lazily ensures the backend thread exists
+ * before sending.
+ *
+ * Two responsibilities:
+ *
+ * 1. Rewrites the `api` URL to `POST /threads/{remoteId}/messages` on
+ *    every send (Vercel's `DefaultChatTransport` is single-URL).
+ * 2. **Lazily** awaits `aui.threadListItem().initialize()` BEFORE the
+ *    first send to a draft thread. Without this, the first POST would
+ *    race the initialize call and land on a phantom client id → 404.
+ *
+ * The prior fix (iter 3) eagerly called `initialize()` on mount when
+ * `status === "new"`. That bled into every page reload: assistant-ui
+ * defaults the active thread to a fresh "new" draft until the user
+ * picks one from the sidebar, so each reload POSTed an empty thread to
+ * the backend. The lazy approach defers the POST to the exact moment
+ * the user actually sends a message.
  */
+class ThreadAwareTransport extends AssistantChatTransport<UIMessage> {
+  private readonly ensureRemoteId: () => Promise<string>;
+
+  constructor(
+    options: ConstructorParameters<typeof AssistantChatTransport<UIMessage>>[0],
+    ensureRemoteId: () => Promise<string>,
+  ) {
+    super(options);
+    this.ensureRemoteId = ensureRemoteId;
+  }
+
+  override async sendMessages(
+    opts: Parameters<AssistantChatTransport<UIMessage>["sendMessages"]>[0],
+  ): ReturnType<AssistantChatTransport<UIMessage>["sendMessages"]> {
+    await this.ensureRemoteId();
+    return super.sendMessages(opts);
+  }
+}
+
 function buildTransport(
   apiUrl: string,
   headers: Record<string, string>,
   getRemoteId: () => string | undefined,
+  ensureRemoteId: () => Promise<string>,
 ): ChatTransport<UIMessage> {
-  return new AssistantChatTransport<UIMessage>({
-    // `api` is required by the base type but our `prepareSendMessagesRequest`
-    // overrides it on every send. Keep the template visible for error logs.
-    api: `${apiUrl}/threads/{threadId}/messages`,
-    headers,
-    prepareSendMessagesRequest: ({
-      body,
-      headers: h,
-      id,
-      messages,
-      trigger,
-      messageId,
-    }) => {
-      const remoteId = getRemoteId();
-      // The runtime guarantees a remoteId exists before sending (the
-      // per-thread `initialize()` resolves it). Bail loud if it doesn't.
-      if (!remoteId) {
-        throw new Error(
-          "[runtime-provider] missing thread remoteId at send time",
-        );
-      }
-      // When `prepareSendMessagesRequest` returns a `body`, the SDK uses it
-      // verbatim (see HttpChatTransport.sendMessages in `ai/dist/index.mjs`)
-      // — the default merge of `{id, messages, trigger, messageId, ...body}`
-      // is bypassed. Reconstruct the full v6 envelope so the backend's
-      // `SubmitMessage | RegenerateMessage` discriminator (`trigger`) is
-      // present; otherwise the request body is `{tools: {}}` and pydantic
-      // rejects with `union_tag_not_found`.
-      return {
-        api: `${apiUrl}/threads/${remoteId}/messages`,
-        body: {
-          ...(body ?? {}),
-          id,
-          messages,
-          trigger,
-          messageId,
-        },
+  return new ThreadAwareTransport(
+    {
+      // `api` is required by the base type but our `prepareSendMessagesRequest`
+      // overrides it on every send. Keep the template visible for error logs.
+      api: `${apiUrl}/threads/{threadId}/messages`,
+      headers,
+      prepareSendMessagesRequest: ({
+        body,
         headers: h,
-      };
+        id,
+        messages,
+        trigger,
+        messageId,
+      }) => {
+        const remoteId = getRemoteId();
+        // sendMessages awaited ensureRemoteId() before calling us; if
+        // the ref still isn't populated, something is wrong with the
+        // initialize flow — fail loud.
+        if (!remoteId) {
+          throw new Error(
+            "[runtime-provider] missing thread remoteId at send time",
+          );
+        }
+        // When `prepareSendMessagesRequest` returns a `body`, the SDK uses it
+        // verbatim (see HttpChatTransport.sendMessages in `ai/dist/index.mjs`)
+        // — the default merge of `{id, messages, trigger, messageId, ...body}`
+        // is bypassed. Reconstruct the full v6 envelope so the backend's
+        // `SubmitMessage | RegenerateMessage` discriminator (`trigger`) is
+        // present; otherwise the request body is `{tools: {}}` and pydantic
+        // rejects with `union_tag_not_found`.
+        return {
+          api: `${apiUrl}/threads/${remoteId}/messages`,
+          body: {
+            ...(body ?? {}),
+            id,
+            messages,
+            trigger,
+            messageId,
+          },
+          headers: h,
+        };
+      },
     },
-  });
+    ensureRemoteId,
+  );
 }
 
 export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
@@ -180,7 +216,6 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
       function PerThreadRuntime() {
         const aui = useAui();
         const remoteId = useAuiState((s) => s.threadListItem.remoteId);
-        const threadListItemState = useAuiState((s) => s.threadListItem);
 
         // `prepareSendMessagesRequest` needs the *current* remoteId; capture
         // it through a ref so the transport instance is stable across renders
@@ -189,6 +224,39 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         useEffect(() => {
           remoteIdRef.current = remoteId;
         }, [remoteId]);
+
+        // Lazy initialize: called by the transport just before its first
+        // `sendMessages`. Idempotent on the assistant-ui side (the runtime's
+        // RemoteThreadListHookInstanceManager caches the in-flight init
+        // promise). If `initialize()` returns a remoteId, we also write
+        // it to the ref synchronously so `prepareSendMessagesRequest` —
+        // which fires immediately after — sees the new value without
+        // waiting for the React state-→useEffect-→ref cycle.
+        const ensureRemoteIdRef = useRef<() => Promise<string>>(
+          async () => {
+            throw new Error("[runtime-provider] ensureRemoteId not ready");
+          },
+        );
+        useEffect(() => {
+          ensureRemoteIdRef.current = async (): Promise<string> => {
+            if (remoteIdRef.current) return remoteIdRef.current;
+            const result = (await aui.threadListItem().initialize()) as
+              | { remoteId?: string }
+              | undefined
+              | void;
+            const newId = result && "remoteId" in result
+              ? result.remoteId
+              : undefined;
+            if (newId) {
+              remoteIdRef.current = newId;
+              return newId;
+            }
+            if (remoteIdRef.current) return remoteIdRef.current;
+            throw new Error(
+              "[runtime-provider] initialize() resolved without a remoteId",
+            );
+          };
+        }, [aui]);
 
         // The transport must be stable across renders — `useChat` keys
         // its internal `AbstractChat` instance off the transport identity.
@@ -200,6 +268,7 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               apiUrl,
               headers,
               () => remoteIdRef.current,
+              () => ensureRemoteIdRef.current(),
             ),
           [],
         );
@@ -215,18 +284,6 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         });
 
         const runtime = useAISDKRuntime(chat);
-
-        // Eagerly fire `initialize()` for brand-new threads. Same fix as
-        // iter 3: `RemoteThreadListHookInstanceManager`'s built-in
-        // `unstable_on("initialize")` only fires once `messages.length > 0`,
-        // so a brand-new thread's first POST would land on a phantom client
-        // id the backend has never seen (→ 404). `initialize()` is
-        // idempotent via the manager's internal promise cache.
-        useEffect(() => {
-          if (threadListItemState.status === "new") {
-            void aui.threadListItem().initialize();
-          }
-        }, [aui, threadListItemState.status]);
 
         // Publish this thread's chat helpers to the outer provider via
         // the shared ref. Clear on unmount so a stale helper from a
