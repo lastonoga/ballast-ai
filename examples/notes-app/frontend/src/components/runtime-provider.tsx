@@ -105,7 +105,14 @@ function buildTransport(
     // overrides it on every send. Keep the template visible for error logs.
     api: `${apiUrl}/threads/{threadId}/messages`,
     headers,
-    prepareSendMessagesRequest: ({ body, headers: h }) => {
+    prepareSendMessagesRequest: ({
+      body,
+      headers: h,
+      id,
+      messages,
+      trigger,
+      messageId,
+    }) => {
       const remoteId = getRemoteId();
       // The runtime guarantees a remoteId exists before sending (the
       // per-thread `initialize()` resolves it). Bail loud if it doesn't.
@@ -114,9 +121,22 @@ function buildTransport(
           "[runtime-provider] missing thread remoteId at send time",
         );
       }
+      // When `prepareSendMessagesRequest` returns a `body`, the SDK uses it
+      // verbatim (see HttpChatTransport.sendMessages in `ai/dist/index.mjs`)
+      // — the default merge of `{id, messages, trigger, messageId, ...body}`
+      // is bypassed. Reconstruct the full v6 envelope so the backend's
+      // `SubmitMessage | RegenerateMessage` discriminator (`trigger`) is
+      // present; otherwise the request body is `{tools: {}}` and pydantic
+      // rejects with `union_tag_not_found`.
       return {
         api: `${apiUrl}/threads/${remoteId}/messages`,
-        body: body ?? {},
+        body: {
+          ...(body ?? {}),
+          id,
+          messages,
+          trigger,
+          messageId,
+        },
         headers: h,
       };
     },
