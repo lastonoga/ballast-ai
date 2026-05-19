@@ -234,18 +234,30 @@ def build_streaming_router(
         prompt_text = _last_user_text(adapter.messages)
         trigger = getattr(adapter.run_input, "trigger", "submit-message")
         is_regenerate = trigger == "regenerate-message"
+        # ``deferred_tool_results`` is non-None when the body carries
+        # approval responses for a paused ``requires_approval=True`` tool
+        # call — VercelAIAdapter extracts them from
+        # ``run_input.messages`` and returns a ``DeferredToolResults``
+        # which pydantic-ai then matches against in-flight tool calls.
+        deferred_results = adapter.deferred_tool_results
 
         # Server-stateful contract: the repo is the source of truth for
         # conversation history. We trim ``adapter.messages`` down to the
-        # latest user turn (plus any deferred-tool approval responses the
-        # adapter needs to extract from the body) so the upstream
-        # ``UIAdapter.run_stream`` doesn't ALSO append the body's full
-        # client-side history on top of our ``message_history`` — which
-        # would duplicate the current turn AND smuggle stale assistant
-        # tool-call parts from a previously-aborted run back into the
-        # prompt, causing the upstream LLM to 400 on dangling
-        # ``tool_call_id`` references.
-        _trim_adapter_messages_to_last_user_turn(adapter)
+        # latest user turn so the upstream ``UIAdapter.run_stream``
+        # doesn't ALSO append the body's full client-side history on top
+        # of our ``message_history`` — which would duplicate the current
+        # turn AND smuggle stale assistant tool-call parts from a
+        # previously-aborted run back into the prompt.
+        #
+        # EXCEPTION: when ``deferred_tool_results`` is present, the
+        # assistant turn that issued the now-being-approved/denied tool
+        # call MUST remain in ``adapter.messages`` so pydantic-ai can
+        # match the result to the original call. Trimming it would
+        # leave the deferred results orphaned — surfacing as
+        # "Tool call results were provided, but the message history
+        # does not contain any unprocessed tool calls."
+        if deferred_results is None:
+            _trim_adapter_messages_to_last_user_turn(adapter)
 
         # Determine parent_id for the new turn so the message tree stays
         # connected. Two flows:
