@@ -14,7 +14,7 @@ class ThreadClosedError(Exception):
 def _walk_active_branch(
     msgs: list[Message], *, limit: int = 100,
 ) -> list[Message]:
-    """Walk the message tree from each root, picking max(created_at) at every fork.
+    """Walk the message tree picking ``max(created_at)`` at every fork.
 
     Used by both ``InMemoryThreadRepository.history`` and
     ``PostgresThreadRepository.history`` after their respective fetch:
@@ -22,26 +22,32 @@ def _walk_active_branch(
     a list of ``Message`` rows; doesn't care which thread they belong to
     (callers pre-filter to one thread).
 
-    Returns at most ``limit`` messages along the active path. Falls back
-    to oldest-first order if multiple sibling roots share the latest
-    ``created_at`` (stable tie-break for reproducible tests).
+    **Mixed legacy/branched data handling.** Pre-branching data has
+    every row with ``parent_id IS NULL``; new data has explicit
+    ``parent_id`` links. To make both shapes (and any combination) walk
+    cleanly we **virtually link** every NULL-parent row to the
+    previous-by-``created_at`` row before walking. So:
 
-    Robust to legacy linear data: if NO message has ``parent_id`` set,
-    the function still returns rows sorted by ``created_at`` ascending —
-    treating each as a sibling root and chaining them by "newest wins"
-    would collapse the thread to one message, so we detect the all-
-    NULL-parents shape and fall back to the legacy order.
+    - all-NULL legacy thread → behaves like a linear list.
+    - all-linked new thread → strict tree walk.
+    - mixed (legacy prefix + new branches) → legacy chain is implicit,
+      explicit ``parent_id``s on newer rows override.
+
+    Returns at most ``limit`` messages along the active path.
     """
     if not msgs:
         return []
 
-    # Legacy linear-data fallback: no tree at all → return as-is sorted.
-    if all(m.parent_id is None for m in msgs):
-        return sorted(msgs, key=lambda m: m.created_at)[:limit]
+    linear = sorted(msgs, key=lambda m: m.created_at)
+    virt_parent: dict[UUID, UUID | None] = {}
+    prev: UUID | None = None
+    for m in linear:
+        virt_parent[m.id] = m.parent_id if m.parent_id is not None else prev
+        prev = m.id
 
     children_by_parent: dict[UUID | None, list[Message]] = {}
     for m in msgs:
-        children_by_parent.setdefault(m.parent_id, []).append(m)
+        children_by_parent.setdefault(virt_parent[m.id], []).append(m)
 
     path: list[Message] = []
     current_parent: UUID | None = None

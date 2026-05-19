@@ -375,3 +375,78 @@ async def test_model_settings_flow_through() -> None:
     observed = seen_settings[0]
     assert observed is not None
     assert observed.get("temperature") == 0.42
+
+
+@pytest.mark.asyncio
+async def test_regenerate_message_creates_sibling_assistant() -> None:
+    """``trigger=regenerate-message`` doesn't add a new user turn; the
+    new assistant reply becomes a sibling of the previous one (same
+    ``parent_id``), so both versions are preserved in storage."""
+    repo = InMemoryThreadRepository()
+    tenant_id = uuid4()
+    thread = await repo.create(
+        purpose="conversation",
+        purpose_metadata={},
+        actor_id="a",
+        tenant_id=tenant_id,
+    )
+    # Seed a linear convo: user → asst_v1.
+    user_msg = await repo.add_message(
+        thread.id, role="user",
+        parts=[{"type": "text", "text": "hi"}],
+        tenant_id=tenant_id, parent_id=None,
+    )
+    asst_v1 = await repo.add_message(
+        thread.id, role="assistant",
+        parts=[{"type": "text", "text": "v1"}],
+        tenant_id=tenant_id, parent_id=user_msg.id,
+    )
+
+    agent: Agent[None, str] = Agent(
+        TestModel(custom_output_text="v2"), output_type=str,
+    )
+    app = _build_app(repo, agent)
+
+    body: dict[str, Any] = {
+        "trigger": "regenerate-message",
+        "id": str(thread.id),
+        "messageId": str(asst_v1.id),
+        "messages": [
+            {
+                "id": str(user_msg.id), "role": "user",
+                "parts": [{"type": "text", "text": "hi", "state": "done"}],
+            },
+            {
+                "id": str(asst_v1.id), "role": "assistant",
+                "parts": [{"type": "text", "text": "v1", "state": "done"}],
+            },
+        ],
+    }
+    async with _client(app) as c:
+        r = await c.post(
+            f"/threads/{thread.id}/messages",
+            json=body,
+            headers={
+                "X-Tenant-Id": str(tenant_id),
+                "Accept": "text/event-stream",
+            },
+        )
+        assert r.status_code == 200, r.text
+        _ = r.text
+
+    # No new user turn — still one user msg in the repo.
+    siblings_of_user = await repo.siblings(
+        user_msg.id, tenant_id=tenant_id,
+    )
+    assert [s.id for s in siblings_of_user] == [user_msg.id]
+
+    # Two assistant siblings under the same user msg, active = newest.
+    asst_siblings = await repo.siblings(
+        asst_v1.id, tenant_id=tenant_id,
+    )
+    assert len(asst_siblings) == 2
+    assert {s.parent_id for s in asst_siblings} == {user_msg.id}
+
+    branch = await repo.history(thread.id, tenant_id=tenant_id)
+    assert [m.role for m in branch] == ["user", "assistant"]
+    assert branch[-1].id != asst_v1.id  # newer sibling wins

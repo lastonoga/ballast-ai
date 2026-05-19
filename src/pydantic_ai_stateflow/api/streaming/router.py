@@ -109,6 +109,23 @@ def _last_user_text(messages: list[ModelMessage]) -> str:
     return ""
 
 
+def _find_last_role_id(
+    history: list[Any], role: str,
+) -> UUID | None:
+    """Return the id of the last ``Message`` with ``role`` in history, or None.
+
+    Used by the streaming router to thread the new turn's ``parent_id``
+    through the message tree:
+
+      - submit-message → parent_of_new_user = last "assistant"
+      - regenerate-message → parent_of_new_assistant = last "user"
+    """
+    for msg in reversed(history):
+        if getattr(msg, "role", None) == role:
+            return getattr(msg, "id", None)
+    return None
+
+
 def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
     """Replace ``adapter.messages`` with just the trailing user request.
 
@@ -215,6 +232,8 @@ def build_streaming_router(
 
         last_message = adapter.messages[-1] if adapter.messages else None
         prompt_text = _last_user_text(adapter.messages)
+        trigger = getattr(adapter.run_input, "trigger", "submit-message")
+        is_regenerate = trigger == "regenerate-message"
 
         # Server-stateful contract: the repo is the source of truth for
         # conversation history. We trim ``adapter.messages`` down to the
@@ -228,13 +247,49 @@ def build_streaming_router(
         # ``tool_call_id`` references.
         _trim_adapter_messages_to_last_user_turn(adapter)
 
-        if prompt_text:
-            await thread_repo.add_message(
-                thread_id,
-                role="user",
-                parts=[{"type": "text", "text": prompt_text}],
-                tenant_id=tenant_id,
+        # Determine parent_id for the new turn so the message tree stays
+        # connected. Two flows:
+        #
+        #   submit-message: parent = last assistant in active branch
+        #     (or None for the very first turn). Persist a new user msg
+        #     under that parent; on_complete persists the assistant under
+        #     the freshly-created user msg.
+        #
+        #   regenerate-message: don't persist a new user msg — frontend
+        #     is asking for a re-run of the existing last user turn.
+        #     New assistant becomes a sibling of the prior one (same
+        #     parent_id = last user msg's id).
+        active_branch_before = await thread_repo.history(
+            thread_id, tenant_id=tenant_id, limit=history_limit,
+        )
+
+        if is_regenerate:
+            # Regenerate semantics: the assistant being regenerated is
+            # REPLACED with a sibling whose parent is the same user turn
+            # the old assistant was replying to. We skip past any trailing
+            # assistant in the active branch to find that user turn.
+            last_user_id = _find_last_role_id(active_branch_before, "user")
+            new_assistant_parent_id = last_user_id
+        else:
+            # Submit-message semantics: the new user msg's parent is the
+            # LAST message in the active branch (any role). If the prior
+            # run was aborted mid-stream, the active branch may end in a
+            # user msg with no assistant reply — that's still a valid
+            # parent, the new user msg simply continues the conversation.
+            new_user_parent_id = (
+                active_branch_before[-1].id if active_branch_before else None
             )
+            new_assistant_parent_id = None  # set after we persist user
+
+            if prompt_text:
+                user_msg = await thread_repo.add_message(
+                    thread_id,
+                    role="user",
+                    parts=[{"type": "text", "text": prompt_text}],
+                    tenant_id=tenant_id,
+                    parent_id=new_user_parent_id,
+                )
+                new_assistant_parent_id = user_msg.id
 
         rows = await thread_repo.history(
             thread_id, tenant_id=tenant_id, limit=history_limit,
@@ -242,7 +297,8 @@ def build_streaming_router(
         # We already persisted the current user turn AND the trimmed
         # ``adapter.messages`` will carry it back into the prompt via the
         # adapter's frontend_messages merge, so drop it from our
-        # repo-driven history to avoid duplication.
+        # repo-driven history to avoid duplication. For regenerate the
+        # last user IS the prompt — drop it for the same reason.
         history = messages_to_model_history(rows, drop_prompt=prompt_text)
 
         resolved_deps = await _resolve_deps(
@@ -274,6 +330,7 @@ def build_streaming_router(
                 role="assistant",
                 parts=[{"type": "text", "text": text}],
                 tenant_id=tenant_id,
+                parent_id=new_assistant_parent_id,
             )
 
         # We already built the adapter (to peek at `messages` for the
