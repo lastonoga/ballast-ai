@@ -20,4 +20,4 @@ class PersistenceProvider:
             return SqlAlchemyUnitOfWork(sessionmaker)
 
         # Bind UoW *factory* — callers call it to get fresh UoW
-        container.bind(SqlAlchemyUnitOfWork, lambda _: _uow_factory, singleton=True)  # type: ignore[arg-type, return-value]
+        container.bind(SqlAlchemyUnitOfWork, lambda _: _uow_factory, singleton=True)  # type: ignore[arg-type]
