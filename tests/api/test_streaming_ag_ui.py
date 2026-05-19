@@ -20,11 +20,20 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 
 
 def _parse(frame: bytes) -> tuple[str, dict[str, object]]:
+    """Parse a canonical AG-UI SSE frame.
+
+    Wire format: a single ``data:`` line containing a JSON object whose
+    ``type`` field is the discriminator. ``event:`` headers are NOT
+    emitted (the AG-UI client's `parseSSEStream` ignores them).
+    """
     text = frame.decode("utf-8")
-    assert text.endswith("\n\n")
-    head, payload = text.rstrip("\n").split("\ndata: ", 1)
-    assert head.startswith("event: ")
-    return head[len("event: "):], json.loads(payload)
+    assert text.endswith("\n\n"), f"frame missing terminator: {text!r}"
+    line = text.rstrip("\n")
+    assert line.startswith("data: "), f"missing data: prefix: {line!r}"
+    obj = json.loads(line[len("data: "):])
+    assert "type" in obj, f"missing 'type' discriminator: {obj!r}"
+    kind = obj.pop("type")
+    return kind, obj
 
 
 def test_stream_event_run_started_constructor() -> None:
@@ -202,12 +211,18 @@ def test_ag_ui_encoder_rejects_unknown_kind() -> None:
 
 
 def test_ag_ui_encoder_escapes_newlines_in_data() -> None:
-    """SSE data lines MUST NOT contain raw \\n — JSON-encode payload."""
+    """SSE data lines MUST NOT contain raw \\n — JSON-encode payload.
+
+    Canonical format is a single ``data:`` line + blank terminator, so a
+    well-formed frame contains exactly 2 newline characters (one
+    terminating ``data:``, one blank-line terminator).
+    """
     enc = AGUIEncoder()
     mid = uuid4()
     frame = enc.encode(StreamEvent.text_message_content(mid, "a\nb"))
     text = frame.decode("utf-8")
-    assert text.count("\n") == 3
+    assert text.count("\n") == 2
+    assert "\\n" in text  # newline json-escaped, not raw
 
 
 def test_stream_event_kind_enum_wire_values() -> None:
@@ -250,11 +265,11 @@ async def test_streaming_endpoint_streams_events_as_sse() -> None:
     assert r.headers["content-type"].startswith("text/event-stream")
     body_text = r.text
     for token in (
-        "event: RUN_STARTED",
-        "event: TEXT_MESSAGE_START",
-        "event: TEXT_MESSAGE_CONTENT",
-        "event: TEXT_MESSAGE_END",
-        "event: RUN_FINISHED",
+        '"type":"RUN_STARTED"',
+        '"type":"TEXT_MESSAGE_START"',
+        '"type":"TEXT_MESSAGE_CONTENT"',
+        '"type":"TEXT_MESSAGE_END"',
+        '"type":"RUN_FINISHED"',
     ):
         assert token in body_text
 

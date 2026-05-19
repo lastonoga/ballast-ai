@@ -148,7 +148,7 @@ async def test_router_defaults_to_ag_ui() -> None:
             f"/threads/{th.id}/messages",
             json=body, headers={"X-Tenant-Id": str(tid)},
         )
-    assert "event: TEXT_MESSAGE_CONTENT" in r.text
+    assert '"type":"TEXT_MESSAGE_CONTENT"' in r.text
 
 
 @pytest.mark.asyncio

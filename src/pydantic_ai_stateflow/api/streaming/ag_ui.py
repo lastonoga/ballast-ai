@@ -18,15 +18,22 @@ class AGUIEncoder:
     https://github.com/ag-ui-protocol/ag-ui/blob/main/sdks/python/ag_ui/core/events.py
     (spec: https://docs.ag-ui.com/concepts/events).
 
-    Each event becomes::
+    Each event becomes a single ``data:`` line carrying a JSON object
+    with the event ``type`` discriminator inlined::
 
-        event: TEXT_MESSAGE_CONTENT
-        data: {"messageId":"...","delta":"hi"}
+        data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"...","delta":"hi"}
         <blank line>
 
-    JSON-encoding the data payload guarantees no raw newlines inside
-    ``data:`` lines (SSE requires single-line data values). Unknown kinds
-    raise ``ValueError`` — callers must use :class:`StreamEventKind`.
+    Importantly the ``type`` is inside the JSON, NOT in a separate
+    ``event:`` SSE header. ``@ag-ui/client``'s ``parseSSEStream`` ignores
+    ``event:`` lines entirely — it only joins ``data:`` lines, parses as
+    JSON, and validates against a Zod discriminated union keyed on
+    ``type``. Emitting ``event: <kind>`` produces ZodError on the client
+    (`invalid_union_discriminator: path=["type"]`).
+
+    JSON-encoding guarantees no raw newlines inside the ``data:`` line
+    (SSE requires single-line data values). Unknown kinds raise
+    ``ValueError`` — callers must use :class:`StreamEventKind`.
     """
 
     media_type = "text/event-stream"
@@ -34,5 +41,5 @@ class AGUIEncoder:
     def encode(self, event: StreamEvent) -> bytes:
         if event.kind not in StreamEventKind._value2member_map_:
             raise ValueError(f"unknown StreamEvent kind: {event.kind!r}")
-        payload = json.dumps(event.data, separators=(",", ":"))
-        return f"event: {event.kind}\ndata: {payload}\n\n".encode()
+        payload = {"type": event.kind, **event.data}
+        return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n".encode()
