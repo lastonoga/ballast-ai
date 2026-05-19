@@ -153,3 +153,9 @@ Picked the empty-stream path over the "set title from first user message client-
 
 `feat(notes-app/frontend): iteration 3 — real AG-UI runtime + RemoteThreadListAdapter`
 
+# Iteration 3 — framework round 2
+
+F16 closed via `ThreadAwareHttpAgent` helper at `src/lib/thread-aware-http-agent.ts`. The inline `NotesAppAgent` subclass that lived in `runtime-provider.tsx` is gone — the provider now imports the helper and passes `{ apiUrl, headers }` declaratively. Behavior is identical (same per-run `this.url` rewrite); the win is reusability and a single documented seam for the "per-thread URL" pattern. Promote to a separate npm package when a second app needs it.
+
+F18 closed framework-side: `GET /threads` now honors the `offset` query param (the adapter has been passing it via `opts?.after` since iter 3); validated with 422 responses for negative offset / non-positive limit / `limit > 500`.
+
