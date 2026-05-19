@@ -66,7 +66,10 @@ def _lazy_runner(app: FastAPI) -> AgentRunner:
     ) -> AsyncIterator[StreamEvent]:
         if "runner" not in _cached:
             repo = app.state.container.get(NoteRepository)
-            _cached["runner"] = build_notes_runner(build_agent(), repo)
+            thread_repo = app.state.thread_repo
+            _cached["runner"] = build_notes_runner(
+                build_agent(), repo, thread_repo,
+            )
         async for event in _cached["runner"](
             thread_id=thread_id,
             run_id=run_id,
@@ -129,6 +132,9 @@ def build_app(
     # admin/debug endpoints) can inspect what the agent wrote without
     # round-tripping through the container.
     app.state.notes_repo = notes
+    # Expose the thread repo too — the lazy runner factory needs it to
+    # rehydrate message_history per request (server-stateful contract).
+    app.state.thread_repo = repo
     return app
 
 

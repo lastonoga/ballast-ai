@@ -39,6 +39,10 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai_stateflow.api.streaming import AgentRunner, make_runner
 
 if TYPE_CHECKING:
+    from pydantic_ai_stateflow.persistence.thread.repository import (
+        ThreadRepository,
+    )
+
     from notes_app.notes.repository import NoteRepository
     from notes_app.notes.tools import NoteToolDeps
 
@@ -96,13 +100,20 @@ def build_agent(
 def build_notes_runner(
     agent: Agent[NoteToolDeps, str],
     note_repo: NoteRepository,
+    thread_repo: ThreadRepository,
 ) -> AgentRunner:
     """Wrap ``agent`` as an ``AgentRunner`` that injects per-request deps.
 
-    Uses ``make_runner(deps=factory)`` (F12): mints a fresh
-    ``NoteToolDeps(repo, tenant_id)`` per HTTP request from the runner-
-    supplied ``tenant_id``. Tool-call SSE events (F13) flow through
-    automatically.
+    Uses ``make_runner(deps=factory, thread_repo=...)``:
+
+    - ``deps`` factory mints a fresh ``NoteToolDeps(repo, tenant_id)`` per
+      HTTP request from the runner-supplied ``tenant_id``. Tool-call SSE
+      events flow through automatically.
+    - ``thread_repo`` lets the adapter reconstruct ``message_history``
+      from the persisted thread before invoking the agent (server-
+      stateful contract — see ``src/pydantic_ai_stateflow/api/streaming/
+      pydantic_ai_adapter.py``). Without this, every turn would be
+      amnesiac.
 
     ``text_field`` is the identity — agent output IS the reply string.
     """
@@ -112,5 +123,8 @@ def build_notes_runner(
         return NoteToolDeps(repo=note_repo, tenant_id=tenant_id)
 
     return make_runner(
-        agent, text_field=lambda out: out or "", deps=deps_factory,
+        agent,
+        text_field=lambda out: out or "",
+        deps=deps_factory,
+        thread_repo=thread_repo,
     )
