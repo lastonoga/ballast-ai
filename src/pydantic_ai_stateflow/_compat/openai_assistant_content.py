@@ -93,17 +93,28 @@ def install_assistant_content_shim() -> None:
     @functools.wraps(original)
     def patched(self: Any) -> Any:
         result = original(self)
-        if (
-            result is not None
-            and result.get("content") is None
-            and result.get("tool_calls")
-        ):
+        # Normalize ``content: None`` → ``""`` on any assistant turn the
+        # mapper actually emits. pydantic-ai drops truly-empty responses
+        # by returning ``None`` upstream (``openai.py:_into_message_param``
+        # check ``if not self.texts and not self.thinkings and not
+        # self.tool_calls``), so a non-None result with ``content:None``
+        # always carries either tool_calls OR reasoning content — both
+        # legitimate OpenAI-spec shapes, both rejected by Alibaba's Qwen
+        # endpoint with "content field is a required field". An empty
+        # string keeps the semantics ("no surrounding text") and passes
+        # strict validators.
+        if result is not None and result.get("content") is None:
+            tool_calls = result.get("tool_calls") or ()
+            has_reasoning = any(
+                k in result for k in ("reasoning", "reasoning_details")
+            )
             result["content"] = ""
             log.debug(
                 "_into_message_param normalized content:None → '' "
-                "(tool_calls=%d, tool_call_ids=%s)",
-                len(result["tool_calls"]),
-                [tc.get("id") for tc in result["tool_calls"]],
+                "(tool_calls=%d, tool_call_ids=%s, has_reasoning=%s)",
+                len(tool_calls),
+                [tc.get("id") for tc in tool_calls] if tool_calls else [],
+                has_reasoning,
             )
         log.debug("_into_message_param result=%r", result)
         return result

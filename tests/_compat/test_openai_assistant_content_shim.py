@@ -39,6 +39,28 @@ def test_shim_normalizes_null_content_when_tool_calls_present() -> None:
     assert result["tool_calls"] == _StubMapper.tool_calls
 
 
+def test_shim_normalizes_null_content_when_only_thinking_present() -> None:
+    """Reasoning-only assistant turns (ThinkingPart but no text/tool_calls)
+    also surface as ``content:None`` from pydantic-ai. Alibaba rejects
+    that just like the tool-call-only case — shim must normalize to "".
+    """
+    from pydantic_ai.models.openai import OpenAIChatModel
+
+    mapper_cls = OpenAIChatModel._MapModelResponseContext  # noqa: SLF001
+
+    class _StubMapper:
+        texts: list[str] = []
+        thinkings: dict[str, list[str]] = {"reasoning": ["I should…"]}
+        tool_calls: list[dict] = []
+
+    result = mapper_cls._into_message_param(_StubMapper())  # noqa: SLF001
+    assert result is not None
+    assert result["content"] == "", result
+    assert "tool_calls" not in result
+    # Reasoning text preserved on whatever field name the mapper used.
+    assert result.get("reasoning") == "I should…"
+
+
 def test_shim_leaves_text_only_messages_alone() -> None:
     from pydantic_ai.models.openai import OpenAIChatModel
 
