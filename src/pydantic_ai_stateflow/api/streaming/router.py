@@ -380,6 +380,9 @@ def build_streaming_router(
             text reply and we'll persist that.
             """
             from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+            from pydantic_ai.ui.vercel_ai import (  # noqa: PLC0415
+                VercelAIAdapter as _VercelAIAdapter,
+            )
 
             output = result.output
             if isinstance(output, DeferredToolRequests):
@@ -389,25 +392,59 @@ def build_streaming_router(
                     thread_id,
                 )
                 return
-            text = output if isinstance(output, str) else str(output)
-            if not text:
+
+            # Persist the FULL assistant turn — text + reasoning +
+            # tool-call/tool-result parts — using
+            # ``VercelAIAdapter.dump_messages`` to convert pydantic-ai's
+            # ``ModelResponse`` back into the same Vercel UIMessage parts
+            # the frontend rendered live. That way page reload restores
+            # reasoning chains, tool-call cards, and approval outcomes
+            # exactly as they appeared during the streaming run.
+            #
+            # We collect every assistant UIMessage emitted AFTER the
+            # latest user prompt and merge their parts into one repo row
+            # (assistant-ui groups them visually anyway). Multiple
+            # ModelResponses arise when the agent loops through
+            # tool_call → tool_return → text in one run.
+            all_msgs = result.all_messages()
+            ui_msgs = _VercelAIAdapter.dump_messages(
+                all_msgs, sdk_version=6,
+            )
+            last_user_idx = -1
+            for i, m in enumerate(ui_msgs):
+                if m.role == "user":
+                    last_user_idx = i
+            asst_parts: list[dict[str, Any]] = []
+            for m in ui_msgs[last_user_idx + 1:]:
+                if m.role != "assistant":
+                    continue
+                for p in m.parts:
+                    # ``UIMessagePart`` is a discriminated-union of
+                    # pydantic models — model_dump round-trips cleanly
+                    # to the same JSON the frontend's useChat already
+                    # parses on the wire.
+                    asst_parts.append(p.model_dump(mode="json", by_alias=True))
+
+            if not asst_parts:
                 _log.warning(
-                    "on_complete: agent produced empty assistant text "
-                    "(thread=%s, output_type=%s) — nothing persisted",
-                    thread_id, type(output).__name__,
+                    "on_complete: dump_messages returned no assistant "
+                    "parts (thread=%s output=%r) — nothing persisted",
+                    thread_id, output,
                 )
                 return
+
             persisted = await thread_repo.add_message(
                 thread_id,
                 role="assistant",
-                parts=[{"type": "text", "text": text}],
+                parts=asst_parts,
                 tenant_id=tenant_id,
                 parent_id=new_assistant_parent_id,
             )
             _log.info(
                 "on_complete: persisted assistant msg id=%s parent=%s "
-                "len=%d",
-                persisted.id, new_assistant_parent_id, len(text),
+                "parts=%d (kinds=%s)",
+                persisted.id, new_assistant_parent_id, len(asst_parts),
+                [p.get("type") for p in asst_parts],
             )
 
         # We already built the adapter (to peek at `messages` for the

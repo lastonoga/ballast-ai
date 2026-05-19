@@ -156,7 +156,15 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
 
     msgs = await repo.history(thread.id, tenant_id=tenant_id)
     assert [m.role for m in msgs] == ["user", "assistant"]
-    assert msgs[1].parts == [{"type": "text", "text": "hi there"}]
+    # Persisted assistant parts are Vercel UIMessage shape (dumped via
+    # VercelAIAdapter.dump_messages), so each text part includes a
+    # ``state`` field too. Verify the text content survives — we don't
+    # pin the exact shape so the upstream Vercel schema can evolve.
+    text_parts = [
+        p for p in msgs[1].parts if p.get("type") == "text"
+    ]
+    assert text_parts, msgs[1].parts
+    assert any(p.get("text") == "hi there" for p in text_parts), text_parts
 
 
 @pytest.mark.asyncio

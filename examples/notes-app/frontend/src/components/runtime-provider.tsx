@@ -319,18 +319,22 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               const rows = (await r.json()) as Array<{
                 id: string;
                 role: string;
-                parts: Array<{ type: string; text?: string }>;
+                parts: Array<Record<string, unknown>>;
               }>;
               if (cancelled || chat.messages.length > 0) return;
-              const restored: UIMessage[] = rows.map((row) => ({
+              // Backend persists assistant parts in the exact Vercel
+              // UIMessage shape (text + reasoning + tool-* with state)
+              // via VercelAIAdapter.dump_messages on the server. Just
+              // pass them through — useChat / assistant-ui will render
+              // reasoning chains, tool-call cards, and approval outcomes
+              // identical to the live stream. User-message parts are
+              // text-only ({type:"text", text:...}) so they restore
+              // unchanged too.
+              const restored = rows.map((row) => ({
                 id: row.id,
                 role: row.role as UIMessage["role"],
-                parts: row.parts.map((p) => ({
-                  type: "text" as const,
-                  text: p.text ?? "",
-                  state: "done" as const,
-                })),
-              }));
+                parts: row.parts as unknown as UIMessage["parts"],
+              })) as UIMessage[];
               if (restored.length > 0) {
                 chat.setMessages(restored);
               }
