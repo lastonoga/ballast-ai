@@ -31,7 +31,6 @@ class ThreadRepository(Protocol):
         purpose_metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
-        id: UUID | None = None,
     ) -> Thread: ...
     async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None: ...
     async def add_message(
@@ -71,19 +70,9 @@ class InMemoryThreadRepository:
         purpose_metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
-        id: UUID | None = None,
     ) -> Thread:
-        new_id = id if id is not None else uuid4()
-        if new_id in self._threads:
-            # Multi-tenant safety: refuse to overwrite an existing thread
-            # even if the caller's tenant_id differs. Router translates
-            # this to 404 in the lazy-create branch (don't leak
-            # cross-tenant existence).
-            raise KeyError(
-                f"Thread id collision: {new_id} already exists",
-            )
         thread = Thread(
-            id=new_id,
+            id=uuid4(),
             tenant_id=tenant_id,
             purpose=purpose,
             purpose_metadata=dict(purpose_metadata),

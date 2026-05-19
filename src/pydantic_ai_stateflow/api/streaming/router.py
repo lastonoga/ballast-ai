@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
@@ -184,40 +184,18 @@ def extract_text(parts: list[Any]) -> str:
 class _PostMessageBody(BaseModel):
     """Request body for ``POST /threads/{id}/messages``.
 
-    Native shape is ``{role, parts}``. The endpoint also accepts AG-UI's
-    ``RunAgentInput`` shape (``{threadId, runId, messages: [...]}`` — see
-    https://docs.ag-ui.com/) which arrives from ``@ag-ui/client``'s
-    ``HttpAgent`` verbatim. AG-UI bodies are normalized to ``(role, parts)``
-    by taking the LAST ``role=="user"`` message's ``content`` as a single
-    text part. Other AG-UI fields (``tools``, ``context``, history, …)
-    are intentionally dropped — message_history reconstruction lives on
-    the agent side via thread persistence, not via per-request payload.
+    Wire shape is the native ``{role, parts}`` — we are **server-stateful**
+    (per spec): the client sends ONLY the new user turn and the backend
+    reconstructs ``message_history`` from its own ``ThreadRepository``
+    before invoking the agent. AG-UI's ``RunAgentInput`` (full client-
+    held history) is NOT accepted here; frontends using ``@ag-ui/client``
+    must override ``HttpAgent.requestInit`` to ship ``{role, parts}``
+    instead (see ``examples/notes-app/frontend/src/lib/thread-aware-
+    http-agent.ts``).
     """
 
     role: str = "user"
     parts: list[MessagePart] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_ag_ui_body(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        if "parts" in data or "messages" not in data:
-            return data
-        msgs = data.get("messages")
-        if not isinstance(msgs, list):
-            return data
-        last_user = next(
-            (m for m in reversed(msgs)
-             if isinstance(m, dict) and m.get("role") == "user"),
-            None,
-        )
-        if last_user is None:
-            return data
-        content = last_user.get("content", "")
-        if not isinstance(content, str) or not content:
-            return data
-        return {"role": "user", "parts": [{"type": "text", "text": content}]}
 
 
 # ---------------------------------------------------------------------------
@@ -329,31 +307,7 @@ def build_streaming_router(
         chosen: StreamEncoder = encoder or _ENCODERS[protocol]()
         thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
         if thread is None:
-            # Lazy-create the thread so a client holding a stale id (after a
-            # backend restart of an in-memory repo, or a cold-start where the
-            # frontend skipped /threads POST) just works. The created thread
-            # keeps the URL's id — see ThreadRepository.create accepting an
-            # optional `id` kwarg.
-            try:
-                thread = await thread_repo.create(
-                    id=thread_id,
-                    purpose="conversation",
-                    purpose_metadata={},
-                    actor_id="user",
-                    tenant_id=tenant_id,
-                )
-            except TypeError:
-                # Legacy repos without `id` kwarg — fall through to 404 so
-                # the client knows to initialize() first.
-                raise HTTPException(
-                    status_code=404, detail="thread not found",
-                ) from None
-            except KeyError:
-                # Id collision — thread exists under a different tenant.
-                # Don't leak cross-tenant existence; respond as if missing.
-                raise HTTPException(
-                    status_code=404, detail="thread not found",
-                ) from None
+            raise HTTPException(status_code=404, detail="thread not found")
         await thread_repo.add_message(
             thread_id,
             role=body.role,
