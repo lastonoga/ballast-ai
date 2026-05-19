@@ -82,31 +82,35 @@ def install_assistant_content_shim() -> None:
     mapper_cls = OpenAIChatModel._MapModelResponseContext  # noqa: SLF001
     original: Callable[..., Any] = mapper_cls._into_message_param  # noqa: SLF001
 
-    import logging  # noqa: PLC0415
+    import sys  # noqa: PLC0415
 
-    _shim_logger = logging.getLogger("pydantic_ai_stateflow._compat.shim")
+    def _diag(msg: str) -> None:
+        line = f"[stateflow-shim] {msg}"
+        print(line, file=sys.stdout, flush=True)
+        print(line, file=sys.stderr, flush=True)
+
+    _diag(
+        "install_assistant_content_shim() RUNNING — "
+        f"mapper_cls={mapper_cls!r} original={original!r}",
+    )
 
     @functools.wraps(original)
     def patched(self: Any) -> Any:
         result = original(self)
-        # Temporary diagnostic: log every outgoing assistant turn so we
-        # can see exactly what shape the upstream LLM sees. Strip back
-        # to a single "content normalized" log line once the Alibaba
-        # 400 mystery is resolved.
-        _shim_logger.info(
-            "_into_message_param result=%r",
-            result,
-        )
+        # Temporary diagnostic: dump every outgoing assistant turn so we
+        # can see exactly what shape the upstream LLM sees. Direct
+        # stderr-write bypasses any logging config the host app might
+        # have. Strip back once the Alibaba 400 mystery is resolved.
+        _diag(f"_into_message_param result={result!r}")
         if (
             result is not None
             and result.get("content") is None
             and result.get("tool_calls")
         ):
             result["content"] = ""
-            _shim_logger.info(
-                "_into_message_param normalized content:None → '' "
-                "(tool_calls=%d)",
-                len(result["tool_calls"]),
+            _diag(
+                f"_into_message_param normalized content:None → '' "
+                f"(tool_calls={len(result['tool_calls'])})",
             )
         return result
 
@@ -122,12 +126,12 @@ def install_assistant_content_shim() -> None:
         result = await original_map_messages(self, *args, **kwargs)
         try:
             import json  # noqa: PLC0415
-            _shim_logger.info(
-                "_map_messages OUTGOING request body:\n%s",
-                json.dumps(list(result), indent=2, default=str),
+            _diag(
+                "_map_messages OUTGOING request body:\n"
+                + json.dumps(list(result), indent=2, default=str),
             )
-        except Exception:  # noqa: BLE001
-            _shim_logger.info("_map_messages OUTGOING (unprintable): %r", result)
+        except Exception as exc:  # noqa: BLE001
+            _diag(f"_map_messages OUTGOING (unprintable): {result!r} (err: {exc})")
         return result
 
     OpenAIChatModel._map_messages = patched_map_messages  # noqa: SLF001
