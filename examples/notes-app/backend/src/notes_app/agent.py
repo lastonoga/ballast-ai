@@ -205,6 +205,29 @@ def build_model_settings() -> OpenRouterModelSettings | None:
         settings["openrouter_reasoning"] = reasoning
         populated = True
 
+    # Provider routing: skip upstreams that mishandle tool-call continuations.
+    # Notably, Qwen on Alibaba's endpoint rejects assistant messages with
+    # ``content: null`` + ``tool_calls=[...]`` (which pydantic-ai produces
+    # per OpenAI spec on the second LLM hop after a tool call), surfacing as
+    # ``<400> InternalError.Algo.InvalidParameter: The content field is a
+    # required field.`` Set ``OPENROUTER_PROVIDER_IGNORE=alibaba`` (comma-
+    # separated for multiple) to route around it.
+    ignore_raw = os.environ.get("OPENROUTER_PROVIDER_IGNORE")
+    only_raw = os.environ.get("OPENROUTER_PROVIDER_ONLY")
+    provider_cfg: dict[str, list[str]] = {}
+    if ignore_raw:
+        provider_cfg["ignore"] = [
+            s.strip() for s in ignore_raw.split(",") if s.strip()
+        ]
+    if only_raw:
+        provider_cfg["only"] = [
+            s.strip() for s in only_raw.split(",") if s.strip()
+        ]
+    if provider_cfg:
+        # OpenRouterProviderConfig is a TypedDict; assignment is fine.
+        settings["openrouter_provider"] = provider_cfg  # type: ignore[typeddict-item]
+        populated = True
+
     if populated:
         _logger.info("OpenRouter model_settings: %s", dict(settings))
     return settings if populated else None

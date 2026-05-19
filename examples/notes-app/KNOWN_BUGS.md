@@ -127,7 +127,30 @@ upstream — Vercel's adapter handles approvals out of the box.
   callout in `PrepareSendMessagesRequest`'s JSDoc would have saved an
   hour.
 
-### B9. Live browser smoke not driven for iter 4 round 1
+### B9. Qwen on Alibaba endpoint rejects `content: null` on tool-call follow-up
+
+- **Where**: OpenRouter → Alibaba upstream for `qwen/qwen3.6-plus`
+- **Symptom**: after a successful tool-call round-trip (e.g. user
+  approves `delete_note`, tool runs, agent loops back to the LLM to
+  produce a final reply), the second LLM call 400s with:
+  `<400> InternalError.Algo.InvalidParameter: The content field is a
+  required field.`
+- **Root cause**: pydantic-ai (per OpenAI spec) sends the assistant
+  turn that contained the tool call as
+  `{role: "assistant", content: null, tool_calls: [...]}`. The OpenAI
+  schema allows `content: null` when `tool_calls` is present; Alibaba's
+  Qwen endpoint requires `content` as a string. Other upstreams for
+  the same model accept it.
+- **Workaround**: route around the Alibaba upstream via OpenRouter
+  provider routing. We expose this as an env var on the example:
+  `OPENROUTER_PROVIDER_IGNORE=alibaba` (or `OPENROUTER_PROVIDER_ONLY=...`
+  for a positive allowlist). `build_model_settings()` plumbs it into
+  `openrouter_provider`.
+- **Upstream**: Alibaba endpoint compliance with OpenAI spec, or a
+  pydantic-ai shim that fills `content: ""` for tool-call-only
+  assistant turns when the model is known to be Qwen-on-Alibaba.
+
+### B10. Live browser smoke not driven for iter 4 round 1
 
 - **Symptom**: no browser-controller available in the session that
   shipped iter 4. The full HITL round-trip was verified via curl
