@@ -228,6 +228,21 @@ def build_streaming_router(
     A fresh ``run_id`` is generated per POST and passed to the runner so
     its emitted ``RUN_STARTED`` / ``RUN_FINISHED`` events stay correlated.
 
+    **Assistant reply persistence (F7).** The router observes the event
+    stream and auto-persists the assistant message on each
+    ``TEXT_MESSAGE_END``. The runner does NOT need to call
+    ``repo.add_message`` for the assistant turn. Specifically:
+
+    - ``TEXT_MESSAGE_START`` resets a per-message accumulator
+      (multiple messages per run are supported).
+    - ``TEXT_MESSAGE_CONTENT`` appends the ``delta``.
+    - ``TEXT_MESSAGE_END`` flushes the accumulator as a single
+      assistant message via ``thread_repo.add_message``.
+    - If the stream errors out (``RUN_ERROR``) before
+      ``TEXT_MESSAGE_END``, the partial assistant text is NOT persisted
+      (the user message is already persisted before the stream starts).
+    - Tool-only runs (no text events) persist nothing extra.
+
     If `encoder` is supplied it overrides the per-request `?protocol=` query
     param; otherwise the encoder is chosen from `_ENCODERS` by protocol.
     Encoders may return ``b""`` for events they intentionally drop (e.g.
@@ -259,12 +274,35 @@ def build_streaming_router(
         run_id = uuid4()
 
         async def _gen() -> AsyncIterator[bytes]:
+            accumulated_text = ""
+            assistant_message_id: UUID | None = None
             async for event in agent_runner(
                 thread_id=thread_id,
                 run_id=run_id,
                 message=body,
                 tenant_id=tenant_id,
             ):
+                if event.kind == StreamEventKind.TEXT_MESSAGE_START.value:
+                    raw_mid = event.data.get("messageId")
+                    assistant_message_id = (
+                        UUID(raw_mid) if isinstance(raw_mid, str) else None
+                    )
+                    accumulated_text = ""
+                elif event.kind == StreamEventKind.TEXT_MESSAGE_CONTENT.value:
+                    delta = event.data.get("delta", "")
+                    if isinstance(delta, str):
+                        accumulated_text += delta
+                elif event.kind == StreamEventKind.TEXT_MESSAGE_END.value:
+                    if assistant_message_id is not None:
+                        await thread_repo.add_message(
+                            thread_id,
+                            role="assistant",
+                            parts=[{"type": "text", "text": accumulated_text}],
+                            tenant_id=tenant_id,
+                        )
+                    # Reset for any subsequent message in the same run.
+                    assistant_message_id = None
+                    accumulated_text = ""
                 frame = chosen.encode(event)
                 if frame:
                     yield frame
