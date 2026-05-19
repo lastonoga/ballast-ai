@@ -25,6 +25,11 @@ class FieldSpec:
     target_type: type | None = None
     literal_values: tuple[Any, ...] | None = None
     nested_spec: OutputSpec | None = None
+    # Per-field Selector pulled from ``Annotated[Ref[T], Selector(...)]``.
+    # When present, the resolver should call this Selector instead of
+    # pulling IDs from ``ContextSources``. ``Any`` to avoid circular import
+    # with grounded.selector; the resolver casts on use.
+    selector: Any | None = None
 
 
 @dataclass

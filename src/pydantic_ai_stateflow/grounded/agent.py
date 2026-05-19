@@ -7,6 +7,7 @@ from pydantic_ai import Agent
 
 from pydantic_ai_stateflow.grounded._spec import OutputSpec
 from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
+from pydantic_ai_stateflow.grounded.selector import SelectorRegistry
 
 OutT = TypeVar("OutT", bound=BaseModel)
 
@@ -43,9 +44,16 @@ class GroundedResult(BaseModel, Generic[OutT]):
 class GroundedAgent(Generic[OutT]):
     """Wrapper that builds a per-call dynamic output type and delegates to agent.run."""
 
-    def __init__(self, agent: Agent[Any, OutT], *, output_type: type[OutT]) -> None:
+    def __init__(
+        self,
+        agent: Agent[Any, OutT],
+        *,
+        output_type: type[OutT],
+        selectors: SelectorRegistry | None = None,
+    ) -> None:
         self.agent = agent
         self.output_type = output_type
+        self.selectors = selectors
         self._resolver = GroundedResolver(output_type)
 
     async def run(
@@ -54,9 +62,17 @@ class GroundedAgent(Generic[OutT]):
         *,
         instructions: str | None = None,
         constraints: dict[str, Any] | None = None,
+        selector_ctx: Any | None = None,
         **agent_kwargs: Any,
     ) -> GroundedResult[OutT]:
-        dynamic_output, spec = self._resolver.build(context, constraints=constraints)
+        # ``abuild`` is selector-aware AND backward-compatible with
+        # HydrationMap-style context-scan; safe to always use here.
+        dynamic_output, spec = await self._resolver.abuild(
+            context,
+            selector_ctx=selector_ctx if selector_ctx is not None else context,
+            selectors=self.selectors,
+            constraints=constraints,
+        )
 
         # Build a fresh Agent that uses the dynamic output_type.
         # We don't mutate `self.agent` to keep it reusable across runs.

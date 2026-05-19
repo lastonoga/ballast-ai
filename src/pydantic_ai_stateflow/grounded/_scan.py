@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, FieldSpec, OutputSpec
 from pydantic_ai_stateflow.grounded.ref import Ref
+from pydantic_ai_stateflow.grounded.selector import Selector
 
 
 def scan_output(model: type[BaseModel], path: str = "") -> OutputSpec:
@@ -15,18 +16,30 @@ def scan_output(model: type[BaseModel], path: str = "") -> OutputSpec:
 
     Recurses into nested BaseModel and list[BaseModel] fields. Stops at
     primitive / unrecognised fields (FieldRole.FREE).
+
+    Reads ``Annotated[Ref[T], Selector(...)]`` metadata via Pydantic's
+    own ``FieldInfo.metadata`` (which preserves all Annotated extras),
+    avoiding ``get_type_hints`` pitfalls with forward refs / classes
+    defined inside functions.
     """
     spec = OutputSpec(model=model)
     for name, info in model.model_fields.items():
         full_path = f"{path}.{name}" if path else name
-        spec.fields[name] = _classify(name, full_path, info.annotation)
+        selector = next(
+            (m for m in info.metadata if isinstance(m, Selector)),
+            None,
+        )
+        spec.fields[name] = _classify(name, full_path, info.annotation, selector)
     return spec
 
 
-def _classify(name: str, path: str, annotation: Any) -> FieldSpec:
+def _classify(name: str, path: str, annotation: Any, selector: Selector | None = None) -> FieldSpec:
     # Direct Ref[X]
     if _is_ref_type(annotation):
-        return FieldSpec(name=name, path=path, role=FieldRole.REF, target_type=_ref_target(annotation))
+        return FieldSpec(
+            name=name, path=path, role=FieldRole.REF,
+            target_type=_ref_target(annotation), selector=selector,
+        )
 
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -36,14 +49,18 @@ def _classify(name: str, path: str, annotation: Any) -> FieldSpec:
         non_none = [a for a in args if a is not NoneType and a is not type(None)]
         if len(non_none) == 1 and _is_ref_type(non_none[0]):
             return FieldSpec(
-                name=name, path=path, role=FieldRole.OPTIONAL_REF, target_type=_ref_target(non_none[0])
+                name=name, path=path, role=FieldRole.OPTIONAL_REF,
+                target_type=_ref_target(non_none[0]), selector=selector,
             )
 
     # list[Ref[X]] / list[BaseModel] / list[primitive]
     if origin is list and args:
         inner = args[0]
         if _is_ref_type(inner):
-            return FieldSpec(name=name, path=path, role=FieldRole.LIST_REF, target_type=_ref_target(inner))
+            return FieldSpec(
+                name=name, path=path, role=FieldRole.LIST_REF,
+                target_type=_ref_target(inner), selector=selector,
+            )
         if isinstance(inner, type) and issubclass(inner, BaseModel):
             return FieldSpec(
                 name=name, path=path, role=FieldRole.LIST_NESTED,

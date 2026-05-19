@@ -100,6 +100,9 @@ from pydantic_ai_stateflow.grounded import (
     GroundedResolver,
     GroundedResult,
     Ref,
+    Selector,
+    SelectorRegistry,
+    register_grounded_tools,
 )
 from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire, traced
 from pydantic_ai_stateflow.patterns import (
@@ -254,6 +257,8 @@ __all__ = [
     "SchemaAdherenceScorer",
     "ScoreResult",
     "Scorer",
+    "Selector",
+    "SelectorRegistry",
     "SemanticDeduper",
     "SemanticLoopDetected",
     "SemanticLoopDetector",
@@ -280,5 +285,6 @@ __all__ = [
     "has_logfire",
     "make_helper_agent_with_approval_tools",
     "messages_to_model_history",
+    "register_grounded_tools",
     "traced",
 ]

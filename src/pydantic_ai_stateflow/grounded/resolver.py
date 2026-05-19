@@ -9,6 +9,10 @@ from pydantic_ai_stateflow.grounded._build import build_dynamic
 from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
 from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, FieldSpec, OutputSpec
 from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from pydantic_ai_stateflow.grounded.selector import (
+    SelectorRegistry,
+    resolve_selector_ids,
+)
 
 
 class GroundedResolver:
@@ -18,6 +22,14 @@ class GroundedResolver:
     per Pattern), while `build` is called per-run with a context that
     varies. Returns (DynamicModel, OutputSpec) so callers like
     HydrationMap (Task 18) can re-traverse the structure.
+
+    Two entry points:
+
+    - ``build(context, constraints=...)`` — sync, backward-compatible.
+      Uses ``HydrationMap``-style context-scanning to collect IDs.
+    - ``abuild(context, ...)`` — async, honors ``Selector`` metadata on
+      ``Annotated[Ref[T], Selector(...)]`` fields. Selectors take
+      precedence over context-scan IDs.
     """
 
     def __init__(self, output_type: type[BaseModel]) -> None:
@@ -30,6 +42,36 @@ class GroundedResolver:
         constraints: dict[str, Any] | None = None,
     ) -> tuple[type[BaseModel], OutputSpec]:
         sources = scan_context(context, self._spec)
+        if constraints:
+            sources = self._apply_constraints(sources, constraints)
+        dynamic = build_dynamic(self.output_type, self._spec, sources)
+        return dynamic, self._spec
+
+    async def abuild(
+        self,
+        context: BaseModel,
+        *,
+        selector_ctx: Any | None = None,
+        selectors: SelectorRegistry | None = None,
+        constraints: dict[str, Any] | None = None,
+    ) -> tuple[type[BaseModel], OutputSpec]:
+        """Async build that resolves any ``Selector`` metadata on output fields.
+
+        ``selector_ctx`` is passed to each selector function (typically a
+        ``RunContext`` or a deps-bearing object the lambda closes over).
+        Falls back to context-scan for fields with no Selector, preserving
+        backward compatibility with HydrationMap-style grounding.
+        """
+        sources = scan_context(context, self._spec)
+        # Layer Selector IDs on top — they win over context-scan results
+        # for the specific entity types they target.
+        for fspec in _ref_fields(self._spec):
+            if fspec.selector is None:
+                continue
+            if fspec.target_type is None:
+                continue
+            ids = await resolve_selector_ids(fspec.selector, selector_ctx, selectors)
+            sources.by_entity_type[fspec.target_type] = list(ids)
         if constraints:
             sources = self._apply_constraints(sources, constraints)
         dynamic = build_dynamic(self.output_type, self._spec, sources)
@@ -66,3 +108,14 @@ class GroundedResolver:
                 "(only top-level field names)"
             )
         return self._spec.fields.get(path)
+
+
+def _ref_fields(spec: OutputSpec) -> list[FieldSpec]:
+    """Recursively yield all REF-shaped fields under ``spec`` (incl. nested)."""
+    out: list[FieldSpec] = []
+    for f in spec.fields.values():
+        if f.role in (FieldRole.REF, FieldRole.LIST_REF, FieldRole.OPTIONAL_REF):
+            out.append(f)
+        elif f.role in (FieldRole.NESTED, FieldRole.LIST_NESTED) and f.nested_spec:
+            out.extend(_ref_fields(f.nested_spec))
+    return out

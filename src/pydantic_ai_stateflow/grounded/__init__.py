@@ -6,6 +6,13 @@ from pydantic_ai_stateflow.grounded.errors import (
 )
 from pydantic_ai_stateflow.grounded.ref import Ref
 from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
+from pydantic_ai_stateflow.grounded.selector import (
+    Selector,
+    SelectorFunc,
+    SelectorRegistry,
+    extract_selector,
+)
+from pydantic_ai_stateflow.grounded.tools import register_grounded_tools
 
 __all__ = [
     "GroundedAgent",
@@ -15,4 +22,9 @@ __all__ = [
     "GroundedResolver",
     "GroundedResult",
     "Ref",
+    "Selector",
+    "SelectorFunc",
+    "SelectorRegistry",
+    "extract_selector",
+    "register_grounded_tools",
 ]
