@@ -97,3 +97,59 @@ The backend MUST satisfy these to plug into assistant-ui without custom client g
 ## Commit
 
 `feat(notes-app/frontend): iteration 1 — assistant-ui shell on shadcn (mock runtime)`
+
+# Iteration 3 — frontend wiring
+
+Scope: swap the mock runtime for the real backend — canonical AG-UI streaming for messages, tenant-scoped `/threads` CRUD for persistence.
+
+## Packages installed
+
+- `@assistant-ui/react-ag-ui` (0.0.30) — wraps an `@ag-ui/client` agent in an assistant-ui runtime. Hook is `useAgUiRuntime({ agent })` (singular — the doc-snippet name `useAgUiThreadRuntime` is stale; the package only ships `useAgUiRuntime`).
+- `@ag-ui/client` (0.0.53) — provides `HttpAgent` (the POST/SSE transport) and re-exports `@ag-ui/core` types (`RunAgentInput`, event schemas).
+- `assistant-stream` (0.3.14) — for `createAssistantStream` used by `generateTitle` (empty-stream no-op).
+- `@assistant-ui/core` (0.2.2) — added as a direct dep so we can import `RemoteThreadListAdapter`'s sibling types (`RemoteThreadInitializeResponse`, `RemoteThreadListResponse`, `RemoteThreadMetadata`, `RemoteThreadListPageOptions`); `@assistant-ui/react` re-exports only the adapter type itself.
+
+## What assistant-ui's AG-UI adapter accepted unchanged
+
+Group A landed canonical AG-UI camelCase events (`runStarted`, `textMessageStart/Content/End`, `toolCallStart/Args/End`, `runFinished`, `runError`, `messageId`, `threadId`, `runId`, `toolCallId`, `delta`). `@ag-ui/client`'s SSE parser and event schemas (from `@ag-ui/core`) use exactly this shape — see `dist/index.d.ts` types `RunStartedEvent`, `TextMessageContentEvent`, etc. **Zero translation layer needed on the wire format.**
+
+## What required a bridge
+
+One mismatch: `HttpAgent` POSTs to ONE fixed URL, but our streaming endpoint embeds the thread id in the path (`POST /threads/{id}/messages?protocol=ag-ui`). Two-line bridge — subclass `HttpAgent`, override `run(input)`, set `this.url` from `input.threadId` before delegating to `super.run(input)`. See `src/components/runtime-provider.tsx::NotesAppAgent`. Logged as framework TODO #1 below — the backend could equivalently grow a thread-agnostic `POST /agent?protocol=ag-ui` that reads `threadId` from the JSON body, which is what the AG-UI reference deployment assumes.
+
+## `RemoteThreadListAdapter` mapping
+
+| Adapter method | Backend call | Notes |
+| --- | --- | --- |
+| `list(opts)` | `GET /threads?include_archived=…` (×2 in parallel for regular + archived) | Server may return a bare array or `{threads:[…]}` — adapter accepts both. |
+| `initialize()` | `POST /threads` body `{purpose, purpose_metadata, actor_id}` | Returns `{remoteId: t.id, externalId: undefined}`. |
+| `rename(id, title)` | `PATCH /threads/{id}` body `{title}` | |
+| `archive(id)` / `unarchive(id)` | `POST /threads/{id}/archive` (or `/unarchive`) | 404 treated as success (already in target state). |
+| `delete(id)` | `DELETE /threads/{id}` | 404 treated as success. |
+| `fetch(id)` | `GET /threads/{id}` | Returns the single `RemoteThreadMetadata`. |
+| `generateTitle(id, messages)` | (none) | **Decision: return `createAssistantStream(c => c.close())`** — an empty, immediately-closed stream. Iteration 3 has no agent-driven title endpoint, so the runtime's auto-title step is a no-op; users rename manually via the thread-list "more" menu (which goes through `rename` → `PATCH`). |
+
+`status` mapping: backend's `status === "archived"` OR a non-null `archived_at` → `"archived"`; otherwise `"regular"`.
+
+## `generateTitle` decision
+
+Picked the empty-stream path over the "set title from first user message client-side" alternative. Reasoning: (a) one less place that needs to know about title heuristics, (b) once the backend ships `POST /threads/{id}/title` per framework TODO #7 (iter-1 RETRO), the swap is one function body — no client-side fallback to delete. The user-visible cost is that new threads start untitled until the user renames them.
+
+## Smoke verification
+
+- `pnpm build` clean.
+- `pnpm dev` + `curl http://localhost:3000/` with **no backend running** → HTTP 200 (page mounts; runtime errors propagate to assistant-ui's standard error UI on the first network call, not a white screen).
+
+## Framework TODOs for the next round
+
+1. **Backend should accept thread id in the request body**, not just the path. Either expose a thread-agnostic `POST /agent?protocol=ag-ui` (matches the AG-UI reference deployment so `HttpAgent` works with a single fixed `url:` and zero subclassing), OR document the per-thread URL pattern as a first-class part of our AG-UI flavor. The current path-based shape forces every AG-UI client to subclass `HttpAgent`.
+2. **`POST /threads/{id}/title`** that streams an `AssistantStream` (one `appendText` call) — fulfills iter-1 framework TODO #7, lets `generateTitle` do real work.
+3. **Thread list pagination**: backend ignores our `offset` query param today; the adapter passes `opts?.after` through as `offset` in anticipation. Either honor it server-side or document that the list endpoint is unpaginated.
+4. **Suggestion adapter wiring** (iter-1 TODO #9 — `POST /threads/{id}/suggestions`) — still deferred; the welcome screen currently shows static `ThreadPrimitive.Suggestions` only.
+5. **HITL `AgUiInterrupt` shape**: the AG-UI runtime surfaces `unstable_getPendingInterrupts` / `unstable_submitInterruptResponses` (see `AgUiAssistantRuntime`). When `HITLGate` lands, the encoder must emit interrupts matching `AgUiInterrupt` (`{ id, reason, message?, toolCallId?, responseSchema?, expiresAt?, metadata? }`) and accept resume responses keyed by `interruptId`.
+6. **Thread-list `unstable_Provider`** on the adapter: currently unused, but the same hook is how `useCloudThreadListAdapter` injects per-thread history / attachments adapters. When we want server-loaded message history on switch (rather than re-streaming), wire `GET /threads/{id}/messages` through here.
+
+## Commit
+
+`feat(notes-app/frontend): iteration 3 — real AG-UI runtime + RemoteThreadListAdapter`
+

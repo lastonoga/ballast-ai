@@ -2,12 +2,12 @@
 
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
-import { MockRuntimeProvider } from "@/components/mock-runtime-provider";
+import { RuntimeProvider } from "@/components/runtime-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 export default function Home() {
   return (
-    <MockRuntimeProvider>
+    <RuntimeProvider>
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <AssistantSidebar>
           <div className="flex h-full flex-col">
@@ -15,7 +15,7 @@ export default function Home() {
               <div className="flex flex-col">
                 <span className="text-sm font-semibold">Notes</span>
                 <span className="text-xs text-muted-foreground">
-                  iteration 1 — mock runtime
+                  iteration 3 — live backend
                 </span>
               </div>
               <ThemeToggle />
@@ -26,6 +26,6 @@ export default function Home() {
           </div>
         </AssistantSidebar>
       </div>
-    </MockRuntimeProvider>
+    </RuntimeProvider>
   );
 }
