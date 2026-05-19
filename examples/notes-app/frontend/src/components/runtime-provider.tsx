@@ -1,33 +1,127 @@
 "use client";
 
 /**
- * Iteration-3 runtime provider.
+ * Iteration-4 runtime provider — Vercel AI SDK transport.
  *
  * Wires assistant-ui to the notes-app FastAPI backend using:
- *   - `@assistant-ui/react-ag-ui` for the streaming runtime (canonical AG-UI
- *     events: run_started / text_message_* / tool_call_* / run_finished /
- *     run_error in camelCase, exactly what our backend emits).
- *   - `useRemoteThreadListRuntime` for cross-session thread persistence backed
- *     by `/threads` CRUD endpoints (see `thread-list-adapter.ts`).
+ *   - `@assistant-ui/react-ai-sdk` (`useAISDKRuntime`) + `@ai-sdk/react`
+ *     (`useChat`) over the Vercel AI SDK v6 wire format. Our backend
+ *     serializes events via `pydantic_ai.ui.vercel_ai.VercelAIAdapter`,
+ *     so `useChat` parses them natively (text-delta, tool-input-*,
+ *     tool-approval-request, finish, etc).
+ *   - `useRemoteThreadListRuntime` for cross-session thread persistence
+ *     backed by `/threads` CRUD endpoints (see `thread-list-adapter.ts`).
+ *   - `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses`
+ *     so that clicking Approve/Cancel auto-rebroadcasts the conversation
+ *     with the approval response attached — pydantic-ai resumes the
+ *     paused `requires_approval=True` tool call on the next round-trip.
  *
- * Bridge: AG-UI's `HttpAgent` posts to a single fixed URL, but our backend
- * exposes a per-thread streaming endpoint. `ThreadAwareHttpAgent` (in
- * `src/lib/thread-aware-http-agent.ts`) encapsulates the per-run URL rewrite.
+ * URL bridge: Vercel's `DefaultChatTransport` is built for a single
+ * `/api/chat` URL. Our backend exposes a per-thread streaming endpoint
+ * (`POST /threads/{threadId}/messages`), so we override `api` per
+ * request via `prepareSendMessagesRequest` using the current
+ * thread-list-item's `remoteId` from `useAuiState`.
+ *
+ * Approval bridge: the assistant-ui Vercel runtime does NOT proxy
+ * `chatHelpers.addToolApprovalResponse` through `addResult`, so the
+ * approval card (`<DeleteNoteApproval />`) reads the helpers from
+ * `ChatHelpersContext` and calls `addToolApprovalResponse` directly.
  */
 
-import { useEffect, useMemo, type FC, type PropsWithChildren } from "react";
 import {
   AssistantRuntimeProvider,
   useAui,
   useAuiState,
   useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
-import { useAgUiRuntime } from "@assistant-ui/react-ag-ui";
+import {
+  useAISDKRuntime,
+  AssistantChatTransport,
+} from "@assistant-ui/react-ai-sdk";
+import { useChat } from "@ai-sdk/react";
+import {
+  type ChatTransport,
+  type UIMessage,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+} from "ai";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type FC,
+  type PropsWithChildren,
+} from "react";
 import { buildRemoteThreadListAdapter } from "@/lib/thread-list-adapter";
-import { ThreadAwareHttpAgent } from "@/lib/thread-aware-http-agent";
 
 const DEFAULT_API_URL = "http://localhost:8000";
 const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
+
+/**
+ * Minimal slice of `useChat`'s helpers the approval card needs.
+ * Pulled from `@ai-sdk/react`'s `UseChatHelpers<UIMessage>` so the
+ * runtime can hand it to deferred-tool consumers without leaking the
+ * full chat shape.
+ */
+export type ChatApprovalHelpers = Pick<
+  ReturnType<typeof useChat<UIMessage>>,
+  "addToolApprovalResponse"
+>;
+
+const ChatHelpersContext = createContext<ChatApprovalHelpers | null>(null);
+
+/**
+ * Read the approval helpers from the nearest `<RuntimeProvider>`. Used
+ * by `makeAssistantToolUI` cards that need to call
+ * `addToolApprovalResponse({ id, approved })` on the underlying
+ * `useChat` instance — assistant-ui's per-tool `addResult` callback only
+ * triggers `addToolOutput`, not the approval response path.
+ */
+export const useChatApprovalHelpers = (): ChatApprovalHelpers => {
+  const ctx = useContext(ChatHelpersContext);
+  if (!ctx) {
+    throw new Error(
+      "useChatApprovalHelpers must be used inside <RuntimeProvider>",
+    );
+  }
+  return ctx;
+};
+
+/**
+ * Build a per-thread transport that rewrites `api` to the backend's
+ * `POST /threads/{remoteId}/messages` URL on every send. We extend
+ * `AssistantChatTransport` (not `DefaultChatTransport`) so the
+ * assistant-ui-specific extras (model context, callSettings, tools)
+ * still get folded into the body upstream.
+ */
+function buildTransport(
+  apiUrl: string,
+  headers: Record<string, string>,
+  getRemoteId: () => string | undefined,
+): ChatTransport<UIMessage> {
+  return new AssistantChatTransport<UIMessage>({
+    // `api` is required by the base type but our `prepareSendMessagesRequest`
+    // overrides it on every send. Keep the template visible for error logs.
+    api: `${apiUrl}/threads/{threadId}/messages`,
+    headers,
+    prepareSendMessagesRequest: ({ body, headers: h }) => {
+      const remoteId = getRemoteId();
+      // The runtime guarantees a remoteId exists before sending (the
+      // per-thread `initialize()` resolves it). Bail loud if it doesn't.
+      if (!remoteId) {
+        throw new Error(
+          "[runtime-provider] missing thread remoteId at send time",
+        );
+      }
+      return {
+        api: `${apiUrl}/threads/${remoteId}/messages`,
+        body: body ?? {},
+        headers: h,
+      };
+    },
+  });
+}
 
 export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
@@ -43,80 +137,112 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     [apiUrl, headers],
   );
 
+  // assistant-ui's `useRemoteThreadListRuntime` re-invokes `runtimeHook`
+  // for each thread. To pass `apiUrl`/`headers` in without closing over
+  // stale references, we curry them via a factory.
+  const runtimeHook = useMemo(
+    () =>
+      function PerThreadRuntime() {
+        const aui = useAui();
+        const remoteId = useAuiState((s) => s.threadListItem.remoteId);
+        const threadListItemState = useAuiState((s) => s.threadListItem);
+
+        // `prepareSendMessagesRequest` needs the *current* remoteId; capture
+        // it through a ref so the transport instance is stable across renders
+        // (rebuilding the transport per render confuses `useChat`).
+        const remoteIdRef = useRef<string | undefined>(remoteId);
+        useEffect(() => {
+          remoteIdRef.current = remoteId;
+        }, [remoteId]);
+
+        // The transport must be stable across renders — `useChat` keys
+        // its internal `AbstractChat` instance off the transport identity.
+        // `apiUrl`/`headers` are config-time constants in practice; we
+        // depend on them so the linter is happy.
+        const transport = useMemo(
+          () =>
+            buildTransport(
+              apiUrl,
+              headers,
+              () => remoteIdRef.current,
+            ),
+          [],
+        );
+
+        const chat = useChat<UIMessage>({
+          id: remoteId,
+          transport,
+          // Auto-resend the conversation as soon as the user supplies all
+          // outstanding approval responses — pydantic-ai's
+          // `VercelAIAdapter.deferred_tool_results` then picks them up.
+          sendAutomaticallyWhen:
+            lastAssistantMessageIsCompleteWithApprovalResponses,
+        });
+
+        const runtime = useAISDKRuntime(chat);
+
+        // Eagerly fire `initialize()` for brand-new threads. Same fix as
+        // iter 3: `RemoteThreadListHookInstanceManager`'s built-in
+        // `unstable_on("initialize")` only fires once `messages.length > 0`,
+        // so a brand-new thread's first POST would land on a phantom client
+        // id the backend has never seen (→ 404). `initialize()` is
+        // idempotent via the manager's internal promise cache.
+        useEffect(() => {
+          if (threadListItemState.status === "new") {
+            void aui.threadListItem().initialize();
+          }
+        }, [aui, threadListItemState.status]);
+
+        const approvalHelpers = useMemo<ChatApprovalHelpers>(
+          () => ({ addToolApprovalResponse: chat.addToolApprovalResponse }),
+          [chat.addToolApprovalResponse],
+        );
+
+        // Stash helpers on the runtime so the outer provider can publish
+        // them via context. The outer provider mounts a fresh
+        // `<ChatHelpersContext.Provider>` per thread by re-reading via
+        // `useAuiState` from the runtime side, but that's circular — so
+        // instead we attach them as a property on the runtime object and
+        // read them in the outer wrapper.
+        (runtime as unknown as {
+          __chatApprovalHelpers: ChatApprovalHelpers;
+        }).__chatApprovalHelpers = approvalHelpers;
+
+        return runtime;
+      },
+    [apiUrl, headers],
+  );
+
   const runtime = useRemoteThreadListRuntime({
     adapter,
-    runtimeHook: function RuntimeHook() {
-      // `useAgUiRuntime` lives inside the per-thread provider, so the agent
-      // is rebuilt for each thread switch — cheap, and gives the underlying
-      // HttpAgent its own AbortController per thread.
-      const agent = useMemo(
-        () => new ThreadAwareHttpAgent({ apiUrl, headers }),
-        // Recreated when api/tenant config changes (effectively never at
-        // runtime, but keeps the hook honest).
-        [apiUrl, headers],
-      );
-
-      // Bridge: the canonical pattern from assistant-ui's own
-      // `useAssistantTransportRuntime` (see
-      // node_modules/@assistant-ui/react/dist/legacy-runtime/runtime-cores/
-      // assistant-transport/useAssistantTransportRuntime.js:73) is to read
-      // the per-thread `remoteId` from the thread-list-item store and feed
-      // it back to the underlying transport. `useAgUiRuntime` doesn't do
-      // this on its own, so we wire it explicitly.
-      //
-      // `useAui`/`useAuiState` are public exports of `@assistant-ui/react`
-      // (re-exported from `@assistant-ui/store`); see
-      // node_modules/@assistant-ui/react/dist/index.d.ts line 2.
-      const aui = useAui();
-      const remoteId = useAuiState((s) => s.threadListItem.remoteId);
-
-      // `ThreadAwareHttpAgent.run()` rewrites `this.url` from
-      // `input.threadId`, which AG-UI's `AgUiThreadRuntimeCore` populates
-      // from `adapters.threadList.threadId`. Keep both in sync with the
-      // resolved per-thread `remoteId`.
-      useEffect(() => {
-        agent.threadId = remoteId ?? "";
-      }, [agent, remoteId]);
-
-      // Eagerly fire `initialize()` for brand-new threads. Background:
-      // `RemoteThreadListHookInstanceManager` (core/dist/.../
-      // RemoteThreadListHookInstanceManager.js) listens for
-      // `runtime.threads.main.unstable_on("initialize")` to auto-call
-      // `aui.threadListItem().initialize()` (which POSTs /threads).
-      // That event is only emitted from `ensureInitialized()` paths —
-      // and `external-store-thread-runtime-core.ts:237` gates it on
-      // `messages.length > 0`. So an empty new thread NEVER triggers it,
-      // and the first `POST /threads/{id}/messages` lands on a phantom
-      // client-generated id the backend has never seen (→ 404).
-      //
-      // We sidestep the broken event path by initializing as soon as the
-      // per-thread provider mounts in `status === "new"`. Subsequent
-      // renders are no-ops (status flips to `regular` once `remoteId`
-      // resolves). `initialize()` is idempotent via the internal
-      // `initPromiseRef` in the hook-instance manager.
-      const threadListItemState = useAuiState((s) => s.threadListItem);
-      useEffect(() => {
-        if (threadListItemState.status === "new") {
-          aui.threadListItem().initialize();
-        }
-      }, [aui, threadListItemState.status]);
-
-      return useAgUiRuntime({
-        agent,
-        // Tell AG-UI's `AgUiThreadRuntimeCore` which thread it's running
-        // against so it propagates `threadId` into `RunAgentInput`.
-        adapters: {
-          threadList: {
-            threadId: remoteId ?? "",
-          },
-        },
-      });
-    },
+    runtimeHook,
   });
+
+  // Pull the per-thread chat helpers off the runtime. They're mutated
+  // when threads switch (the runtimeHook reattaches them), so we read
+  // them via a getter wrapped in a stable proxy.
+  const helpersProxy = useMemo<ChatApprovalHelpers>(
+    () => ({
+      addToolApprovalResponse: (...args) => {
+        const live = (runtime as unknown as {
+          __chatApprovalHelpers?: ChatApprovalHelpers;
+        }).__chatApprovalHelpers;
+        if (!live) {
+          throw new Error(
+            "[runtime-provider] no per-thread chat helpers — runtime not ready",
+          );
+        }
+        return live.addToolApprovalResponse(...args);
+      },
+    }),
+    [runtime],
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      {children}
+      <ChatHelpersContext.Provider value={helpersProxy}>
+        {children}
+      </ChatHelpersContext.Provider>
     </AssistantRuntimeProvider>
   );
 };
