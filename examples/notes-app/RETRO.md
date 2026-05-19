@@ -67,3 +67,47 @@ XS=<30 min, S=<2 h, M=half-day.
 3. Add CORS to backend; point frontend at `http://localhost:8000` (env var).
 4. Add the notes domain (SQLModel `Note`, agent tools `create_note` / `edit_note` / `delete_note` / `search_notes`), one tenant for now.
 5. End-to-end smoke: open browser, create thread, ask "make me a note about X", see the tool-call card render, see the note persisted in the backend DB.
+
+---
+
+## Iteration 3 — wiring backend ↔ frontend, notes domain + tools
+
+Two parallel commits: `caad2e4` (backend domain + tools) and `f64091f` (frontend real runtime). End-to-end CRUD smoke against backend confirmed (POST/GET/PATCH/DELETE /threads all 200/204 via curl).
+
+### What worked
+
+- **F1–F11 paid off.** Canonical AG-UI events + auto-persist + thread CRUD endpoints + `make_runner` + `MessagePart` types let both halves land in parallel with no protocol re-negotiation.
+- **`@ag-ui/client`'s `HttpAgent` accepted our canonical events as-is** — camelCase field names, event-type names, all wire-compatible. Zero translation layer in the frontend.
+- **5 agent tools registered cleanly** (`create_note` / `list_notes` / `search_notes` / `edit_note` / `delete_note`) via `@agent.tool` + `NoteToolDeps(repo, tenant_id)` deps_type.
+- **Backend smoke**: `POST /threads` → `GET /threads` → `PATCH /threads/{id}` rename → `DELETE /threads/{id}` 204 all worked end-to-end via curl with a fresh tenant header.
+
+### Friction surfaced (new gap list — F12–F19)
+
+| # | Source | What | Effort |
+|---|---|---|---|
+| F12 | backend | `make_runner` accepts only static `deps`; multi-tenant apps must hand-roll the diff/emit loop to inject per-request `NoteToolDeps`. Should accept `deps: Any \| Callable[..., Any \| Awaitable[Any]] = None` where the callable receives runner kwargs. | S |
+| F13 | backend | We added tool-call `StreamEvent` kinds in F11 but **no producer emits them yet**. `make_runner` is text-only; agent tool calls fire on the backend but the frontend never sees a `tool_call_start/args/end` SSE event, so assistant-ui's tool-call cards never render. Extend `make_runner` (or ship a sibling) to emit canonical tool-call events as pydantic-ai's stream yields tool-call parts. | M |
+| F14 | backend | No domain-repo scaffold / docs. `NoteRepository` + `InMemoryNoteRepository` were rebuilt from scratch mirroring `ThreadRepository`. Ship a `pydantic_ai_stateflow.persistence.scaffold` doc or template. | XS |
+| F15 | backend | `Engine` has no DI hook for app-defined domain repos. The example uses a module-level singleton; production apps will want `engine.container.bind(NoteRepository, factory)`. Wire repos through the Container. | S |
+| F16 | frontend | `HttpAgent` posts to one fixed URL; our backend uses `POST /threads/{id}/messages?protocol=ag-ui`. Subclassed as `NotesAppAgent` overriding `.run(input)` to rebuild `this.url` from `input.threadId`. Ship a thread-agnostic `POST /agent?thread_id=...` runtime URL OR ship a first-class "thread-aware HttpAgent" wrapper from the framework. | S |
+| F17 | frontend | `generateTitle` adapter method requires an assistant-stream `ReadableStream`. We return an empty stream (manual rename only). Backend `POST /threads/{id}/title` agent-driven streaming would fix this — deferred from Group C. | M |
+| F18 | frontend | `GET /threads` doesn't honor `offset` pagination. With dozens of threads the UI would over-fetch. Add `offset` parameter. | XS |
+| F19 | both | Suggestion adapter endpoint (`POST /threads/{id}/suggestions` → `[{prompt: str}]`). Welcome screen suggestions are static today. | S |
+
+### Decisions for next iterations
+
+- **F12 + F13 first** (before iteration 4) — without them, the UI works but feels lobotomised: agent tool-calls succeed on the backend, notes are created in the repo, but the user sees only the final text reply with no tool-call card. The dogfood loses its "look at the tool calls" demo value.
+- **F14 + F15** — punt to iteration 4 or 5; not blocking dog-fooding.
+- **F16** — punt to iteration 4 (when HITL also touches the streaming endpoint shape).
+- **F17 (title streaming)** — wait until iteration 5 (Reflection) — then the title generator can be a Reflection-wrapped agent.
+- **F18, F19** — polish; defer.
+
+### Iteration 4 plan (HITL)
+
+Before adding `HITLGate` + approval cards, **fix F12 + F13** so the tool-call demo actually visible. Then:
+
+1. `make_runner` gains `deps` callable + tool-call event emission.
+2. App adds `BudgetGuard(max_iterations=10)` so the model can't infinite-loop the tools.
+3. Add an `ApprovalStage` wrapping `delete_note` (destructive) via `HITLGate(channel=UIChannel(), policy=AllowAll())`.
+4. Frontend ships a `<HitlApprovalCard />` bound to a stable tool name (e.g. `__hitl_approval`).
+5. End-to-end: "delete the note about X" → approval card appears → user clicks Approve → note is deleted.
