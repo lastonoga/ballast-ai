@@ -78,6 +78,8 @@ def build_agent(
         resolved_model,
         provider=OpenRouterProvider(api_key=resolved_key),
     )
+    from pydantic_ai_stateflow.grounded import register_grounded_tools
+
     agent: Agent[_Deps, str] = Agent(
         model=model,
         output_type=str,
@@ -85,6 +87,10 @@ def build_agent(
         system_prompt=SYSTEM_PROMPT,
     )
     register_note_tools(agent)
+    # Install per-run ``prepare`` hooks on tools whose params are
+    # ``Annotated[Ref[T], Selector(...)]``. Replaces the iter-3
+    # hand-rolled ``_prepare_note_id_closed_set``.
+    register_grounded_tools(agent)
     return agent
 
 

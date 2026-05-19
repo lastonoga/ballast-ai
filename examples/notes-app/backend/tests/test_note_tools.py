@@ -134,3 +134,56 @@ async def test_list_notes_is_tenant_scoped(
     assert [n.title for n in await repo.list_(tenant_id=t1)] == ["t1-note"]
     assert [n.title for n in await repo.list_(tenant_id=t2)] == ["t2-note"]
     assert await repo.search("note", tenant_id=t1) == await repo.list_(tenant_id=t1)
+
+
+async def test_grounded_prepare_narrows_delete_note_to_real_ids(
+    repo: InMemoryNoteRepository, tenant_id: UUID,
+) -> None:
+    """``register_grounded_tools`` wires Selector → JSON-schema enum.
+
+    Validates the iter-3 → iter-4 migration: the per-run ``prepare``
+    hook now comes from the framework rather than hand-rolled here.
+    """
+    from pydantic_ai import Agent
+    from pydantic_ai_stateflow.grounded import register_grounded_tools
+
+    from notes_app.notes.tools import register_note_tools
+
+    agent: Agent[NoteToolDeps, str] = Agent(
+        model="test", output_type=str, deps_type=NoteToolDeps,
+    )
+    register_note_tools(agent)
+    register_grounded_tools(agent)
+
+    n = await repo.create(title="g", body="b", tenant_id=tenant_id)
+    deps = _make_deps(repo, tenant_id)
+    ctx = _FakeCtx(deps=deps)
+
+    delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001
+    assert delete.prepare is not None
+    new_def = await delete.prepare(ctx, delete.tool_def)  # type: ignore[arg-type, misc]
+    assert new_def is not None
+    assert new_def.parameters_json_schema["properties"]["note_id"]["enum"] == [str(n.id)]
+
+
+async def test_grounded_prepare_hides_delete_note_when_empty(
+    repo: InMemoryNoteRepository, tenant_id: UUID,
+) -> None:
+    """Empty repo → tool hidden so the model can't fabricate an id."""
+    from pydantic_ai import Agent
+    from pydantic_ai_stateflow.grounded import register_grounded_tools
+
+    from notes_app.notes.tools import register_note_tools
+
+    agent: Agent[NoteToolDeps, str] = Agent(
+        model="test", output_type=str, deps_type=NoteToolDeps,
+    )
+    register_note_tools(agent)
+    register_grounded_tools(agent)
+
+    deps = _make_deps(repo, tenant_id)
+    ctx = _FakeCtx(deps=deps)
+
+    delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001
+    assert delete.prepare is not None
+    assert (await delete.prepare(ctx, delete.tool_def)) is None  # type: ignore[arg-type, misc]

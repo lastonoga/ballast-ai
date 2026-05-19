@@ -9,20 +9,28 @@ The `NoteToolDeps` dataclass is the `ctx.deps` shape; it's supplied per
 request by the runner in `main.py` (one tenant per HTTP request, one
 shared in-memory repo for the process).
 
+Closed-set ``note_id`` constraint: ``edit_note`` / ``delete_note`` declare
+their ``note_id`` parameter as
+``Annotated[Ref[Note], Selector(lambda c: c.deps.repo.list_(...))]``. The
+framework's ``register_grounded_tools`` (in ``agent.build_agent``) reads
+that metadata at run-time and installs the per-run ``prepare`` hook that
+narrows ``note_id`` to a closed enum of real note IDs (and hides the tool
+entirely when the user has zero notes). This replaces the hand-rolled
+``_prepare_note_id_closed_set`` we used in iteration 3.
+
 Note on annotations: we intentionally do NOT use
-`from __future__ import annotations` here. pydantic-ai's tool-registration
-introspects parameter types via `get_type_hints()` at decoration time, and
+``from __future__ import annotations`` here. pydantic-ai's tool-registration
+introspects parameter types via ``get_type_hints()`` at decoration time, and
 postponed-evaluation annotations have bitten this codebase before (see
-`project_pydantic_ai_api_quirks.md`). The annotations on these tools are
-already concrete (str / UUID / int / Note), so eager evaluation is fine.
+``project_pydantic_ai_api_quirks.md``).
 """
 
 from dataclasses import dataclass
-from dataclasses import replace as dataclasses_replace
+from typing import Annotated
 from uuid import UUID
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.tools import ToolDefinition
+from pydantic_ai_stateflow.grounded import Ref, Selector
 
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
@@ -40,58 +48,14 @@ class NoteToolDeps:
     tenant_id: UUID
 
 
-async def _prepare_note_id_closed_set(
-    ctx: RunContext[NoteToolDeps],
-    tool_def: ToolDefinition,
-) -> ToolDefinition | None:
-    """Per-run `prepare` hook that pins `note_id` to a closed set of UUIDs.
-
-    Fetches the current tenant's notes from the repo and replaces the
-    raw-UUID JSON schema for the ``note_id`` parameter with an ``enum``
-    of just the IDs that actually exist right now. The model literally
-    cannot pass a fabricated UUID — provider-side JSON Schema validation
-    (OpenRouter, OpenAI, Anthropic) rejects values outside the enum.
-
-    Side effect: when the user has zero notes, the tool is HIDDEN from
-    the catalog (returning ``None``). That forces the model to either
-    `list_notes` (and discover there are none) or `create_note` first,
-    rather than calling edit/delete against a phantom id.
-
-    This is the iter-3 example-side stand-in for the framework's
-    promised ``Ref[Note]`` (spec SP1 GroundedSchema) — same goal (zero
-    hallucination on closed-set references) without the full
-    hydration / dynamic-schema machinery yet.
-    """
-    notes = await ctx.deps.repo.list_(
-        tenant_id=ctx.deps.tenant_id, limit=1000,
-    )
-    if not notes:
-        return None  # hide tool when there's nothing to reference
-
-    ids = [str(n.id) for n in notes]
-    # Build a human-readable enum description so the model can pick the
-    # right id from context (title preview) without a second tool call.
-    id_to_title = {str(n.id): n.title for n in notes}
-    enum_desc = "; ".join(
-        f"{nid} = {id_to_title[nid]!r}" for nid in ids[:20]
-    )
-
-    props = dict(tool_def.parameters_json_schema.get("properties", {}))
-    note_id_schema = dict(props.get("note_id", {}))
-    note_id_schema["enum"] = ids
-    note_id_schema["description"] = (
-        f"ID of an existing note. MUST be one of: {enum_desc}"
-    )
-    props["note_id"] = note_id_schema
-
-    new_schema = dict(tool_def.parameters_json_schema)
-    new_schema["properties"] = props
-
-    return dataclasses_replace(tool_def, parameters_json_schema=new_schema)
-
-
 def register_note_tools(agent: Agent[NoteToolDeps, str]) -> None:
-    """Register the CRUD tools on `agent`. Idempotent within one Agent."""
+    """Register the CRUD tools on `agent`. Idempotent within one Agent.
+
+    After calling this, the agent owner should also call
+    ``pydantic_ai_stateflow.grounded.register_grounded_tools(agent)`` so
+    the ``Annotated[Ref[Note], Selector(...)]`` on ``edit_note`` /
+    ``delete_note`` becomes a per-run closed-set enum.
+    """
 
     @agent.tool
     async def create_note(
@@ -132,34 +96,50 @@ def register_note_tools(agent: Agent[NoteToolDeps, str]) -> None:
             query, tenant_id=ctx.deps.tenant_id, limit=limit,
         )
 
-    @agent.tool(prepare=_prepare_note_id_closed_set)
+    @agent.tool
     async def edit_note(
         ctx: RunContext[NoteToolDeps],
-        note_id: UUID,
+        note_id: Annotated[
+            Ref[Note],
+            Selector(lambda c: c.deps.repo.list_(
+                tenant_id=c.deps.tenant_id, limit=1000,
+            )),
+        ],
         title: str | None = None,
         body: str | None = None,
     ) -> Note:
         """Edit an existing note. Pass only the fields you want to change.
 
-        `note_id` is constrained at the schema level to the set of notes
-        that currently exist for this user — you cannot fabricate one.
-        Returns the updated note.
+        `note_id` is constrained at the schema level (via Selector) to
+        the set of notes that currently exist for this user — you cannot
+        fabricate one. Returns the updated note.
         """
+        # The framework's Ref-aware tool wrapper passes the UUID through
+        # to the function; if a Ref instance slipped in we accept it too.
+        nid = note_id.id if isinstance(note_id, Ref) else note_id
         return await ctx.deps.repo.update(
-            note_id,
+            nid,
             title=title,
             body=body,
             tenant_id=ctx.deps.tenant_id,
         )
 
-    @agent.tool(prepare=_prepare_note_id_closed_set)
+    @agent.tool
     async def delete_note(
-        ctx: RunContext[NoteToolDeps], note_id: UUID,
+        ctx: RunContext[NoteToolDeps],
+        note_id: Annotated[
+            Ref[Note],
+            Selector(lambda c: c.deps.repo.list_(
+                tenant_id=c.deps.tenant_id, limit=1000,
+            )),
+        ],
     ) -> str:
         """Delete the note with the given id. Idempotent — safe to call twice.
 
-        `note_id` is constrained at the schema level to the set of notes
-        that currently exist for this user. Returns a short confirmation.
+        `note_id` is constrained at the schema level (via Selector) to
+        the set of notes that currently exist for this user. Returns a
+        short confirmation.
         """
-        await ctx.deps.repo.delete(note_id, tenant_id=ctx.deps.tenant_id)
-        return f"deleted {note_id}"
+        nid = note_id.id if isinstance(note_id, Ref) else note_id
+        await ctx.deps.repo.delete(nid, tenant_id=ctx.deps.tenant_id)
+        return f"deleted {nid}"
