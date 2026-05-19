@@ -19,6 +19,7 @@ import {
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { useDebugMode } from "@/lib/use-debug-mode";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -259,6 +260,11 @@ const AssistantMessage: FC = () => {
   const ACTION_BAR_PT = "pt-1.5";
   const ACTION_BAR_HEIGHT = `-mb-7.5 min-h-7.5 ${ACTION_BAR_PT}`;
 
+  // Debug mode gates reasoning chains + tool-call cards. OFF by default so
+  // the chat stays focused on the user-facing reply; flip the header
+  // Bug toggle to inspect what the agent actually did.
+  const debug = useDebugMode((s) => s.enabled);
+
   return (
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
@@ -271,11 +277,14 @@ const AssistantMessage: FC = () => {
       >
         <MessagePrimitive.GroupedParts
           groupBy={(part) => {
-            if (part.type === "reasoning")
-              return ["group-chainOfThought", "group-reasoning"];
+            if (part.type === "reasoning") {
+              return debug
+                ? ["group-chainOfThought", "group-reasoning"]
+                : null;
+            }
             if (part.type === "tool-call") {
               if (getMcpAppFromToolPart(part)) return null;
-              return ["group-chainOfThought", "group-tool"];
+              return debug ? ["group-chainOfThought", "group-tool"] : null;
             }
             return null;
           }}
@@ -308,9 +317,9 @@ const AssistantMessage: FC = () => {
               case "text":
                 return <MarkdownText />;
               case "reasoning":
-                return <Reasoning {...part} />;
+                return debug ? <Reasoning {...part} /> : null;
               case "tool-call":
-                return part.toolUI ?? <ToolFallback {...part} />;
+                return debug ? (part.toolUI ?? <ToolFallback {...part} />) : null;
               default:
                 return null;
             }

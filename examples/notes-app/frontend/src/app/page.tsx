@@ -2,6 +2,7 @@
 
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
+import { DebugToggle } from "@/components/debug-toggle";
 import { RuntimeProvider } from "@/components/runtime-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -18,7 +19,10 @@ export default function Home() {
                   iteration 3 — live backend
                 </span>
               </div>
-              <ThemeToggle />
+              <div className="flex items-center gap-1">
+                <DebugToggle />
+                <ThemeToggle />
+              </div>
             </header>
             <div className="flex-1 overflow-y-auto p-3">
               <ThreadList />
