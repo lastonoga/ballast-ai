@@ -22,8 +22,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.models.openrouter import OpenRouterModel
+from pydantic_ai.profiles import InlineDefsJsonSchemaTransformer, ModelProfile
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai_stateflow.api.streaming import AgentRunner, make_runner
 
 if TYPE_CHECKING:
@@ -31,7 +32,37 @@ if TYPE_CHECKING:
     from notes_app.notes.tools import NoteToolDeps
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+# Force native JSON-schema mode for `output_type=BaseModel` agents. Without
+# this, pydantic-ai's default is "tool" mode (synthetic final_result tool +
+# tool_choice="required"), which OpenRouter's Qwen 3.6 endpoints reject —
+# no provider serving qwen/qwen3.6-plus supports tool_choice="required".
+# Alibaba's Qwen3.6 endpoints additionally require the literal word "json"
+# in the instructions before accepting any response_format; the
+# native_output_requires_schema_in_instructions flag inlines the prompted-
+# output template (which says "JSON object") into the system prompt to
+# satisfy that check.
+_QWEN_3_6_NATIVE_PROFILE = ModelProfile(
+    json_schema_transformer=InlineDefsJsonSchemaTransformer,
+    ignore_streamed_leading_whitespace=True,
+    supports_json_schema_output=True,
+    supports_json_object_output=True,
+    default_structured_output_mode="native",
+    native_output_requires_schema_in_instructions=True,
+)
+
+
+def _profile_for(model_id: str) -> ModelProfile | None:
+    """Return a profile override for model ids the upstream qwen profile misses.
+
+    Returns None for ids pydantic-ai handles correctly — `OpenRouterModel`
+    resolves the profile via its built-in registry in that case.
+    """
+    if model_id.startswith("qwen/qwen3.6") or model_id.startswith("qwen/qwen-3.6"):
+        return _QWEN_3_6_NATIVE_PROFILE
+    return None
+
 
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal notes app. "
@@ -64,9 +95,13 @@ def build_agent(
     *,
     model_name: str | None = None,
     api_key: str | None = None,
-    base_url: str = OPENROUTER_BASE_URL,
 ) -> Agent[NoteToolDeps, ChatReply]:
     """Build the OpenRouter-backed agent and register the note tools.
+
+    Uses pydantic-ai's dedicated `OpenRouterModel` + `OpenRouterProvider`
+    (NOT the generic `OpenAIModel` + `base_url` shim) so OpenRouter-specific
+    behaviour (provider routing, app headers, tool_choice negotiation) is
+    handled inside pydantic-ai instead of us re-inventing it.
 
     The returned agent has `deps_type=NoteToolDeps` — callers supply the
     repo + tenant_id via `agent.run_stream(..., deps=NoteToolDeps(...))`.
@@ -85,8 +120,11 @@ def build_agent(
             "OPENROUTER_API_KEY env var is required to build the agent"
         )
 
-    provider = OpenAIProvider(base_url=base_url, api_key=resolved_key)
-    model = OpenAIModel(resolved_model, provider=provider)
+    model = OpenRouterModel(
+        resolved_model,
+        provider=OpenRouterProvider(api_key=resolved_key),
+        profile=_profile_for(resolved_model),
+    )
     agent: Agent[_Deps, ChatReply] = Agent(
         model=model,
         output_type=ChatReply,
