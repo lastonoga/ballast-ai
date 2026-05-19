@@ -11,12 +11,15 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
+from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
 from pydantic_ai_stateflow.persistence.thread.repository import (
     ThreadClosedError,
     _walk_active_branch,
 )
+
+_log = get_logger(__name__)
 
 
 class PostgresThreadRepository:
@@ -93,6 +96,11 @@ class PostgresThreadRepository:
         self._session.add(msg_row)
         await self._session.flush()
         await self._session.refresh(msg_row)
+        _log.debug(
+            "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
+            "parent=%s parts=%d",
+            thread_id, msg_row.id, role, parent_id, len(msg_row.parts),
+        )
         return Message.from_row(msg_row)
 
     async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
@@ -134,7 +142,13 @@ class PostgresThreadRepository:
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
         msgs = [Message.from_row(r) for r in rows]
-        return _walk_active_branch(msgs, limit=limit)
+        branch = _walk_active_branch(msgs, limit=limit)
+        _log.debug(
+            "PostgresThreadRepository.history: thread=%s total=%d "
+            "active_branch=%d",
+            thread_id, len(msgs), len(branch),
+        )
+        return branch
 
     async def siblings(
         self, message_id: UUID, *, tenant_id: UUID,

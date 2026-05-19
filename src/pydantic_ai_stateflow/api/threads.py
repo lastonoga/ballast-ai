@@ -7,7 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from pydantic_ai_stateflow.api.deps import get_tenant_id
+from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+
+_log = get_logger(__name__)
 
 _TenantDep = Depends(get_tenant_id)
 _IncludeArchivedQuery = Query(default=False)
@@ -56,6 +59,10 @@ def build_threads_router(
         body: CreateThreadBody,
         tenant_id: UUID = _TenantDep,
     ) -> dict[str, Any]:
+        _log.info(
+            "POST /threads (tenant=%s purpose=%s actor=%s)",
+            tenant_id, body.purpose, body.actor_id,
+        )
         thread = await thread_repo.create(
             purpose=body.purpose,
             purpose_metadata=body.purpose_metadata,
@@ -95,11 +102,22 @@ def build_threads_router(
         tenant_id: UUID = _TenantDep,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        _log.debug(
+            "GET /threads/%s/messages (tenant=%s limit=%d)",
+            thread_id, tenant_id, limit,
+        )
         thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
         if thread is None:
+            _log.warning(
+                "GET /threads/%s/messages → 404 (tenant=%s)",
+                thread_id, tenant_id,
+            )
             raise HTTPException(status_code=404, detail="thread not found")
         msgs = await thread_repo.history(
             thread_id, tenant_id=tenant_id, limit=limit,
+        )
+        _log.debug(
+            "GET /threads/%s/messages → %d msgs", thread_id, len(msgs),
         )
         return [m.model_dump(mode="json") for m in msgs]
 

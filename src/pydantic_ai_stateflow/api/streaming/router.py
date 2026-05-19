@@ -34,7 +34,10 @@ from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
 )
+from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+
+_log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
@@ -222,8 +225,17 @@ def build_streaming_router(
         thread_id: UUID,
         tenant_id: UUID = _TenantDep,
     ) -> Response:
+        _log.info(
+            "POST /threads/%s/messages received (tenant=%s)",
+            thread_id, tenant_id,
+        )
         thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
         if thread is None:
+            _log.warning(
+                "POST /threads/%s/messages → 404 (thread not found for "
+                "tenant=%s)",
+                thread_id, tenant_id,
+            )
             raise HTTPException(status_code=404, detail="thread not found")
 
         adapter = await VercelAIAdapter.from_request(
@@ -234,6 +246,12 @@ def build_streaming_router(
         prompt_text = _last_user_text(adapter.messages)
         trigger = getattr(adapter.run_input, "trigger", "submit-message")
         is_regenerate = trigger == "regenerate-message"
+        _log.debug(
+            "post_message parsed: trigger=%s prompt_text=%r "
+            "adapter_messages=%d last_role=%s",
+            trigger, prompt_text, len(adapter.messages),
+            getattr(last_message, "__class__", type(None)).__name__,
+        )
         # ``deferred_tool_results`` is non-None when the body carries
         # approval responses for a paused ``requires_approval=True`` tool
         # call — VercelAIAdapter extracts them from
@@ -257,7 +275,15 @@ def build_streaming_router(
         # "Tool call results were provided, but the message history
         # does not contain any unprocessed tool calls."
         if deferred_results is None:
+            _log.debug("post_message: trimming adapter.messages to last user turn")
             _trim_adapter_messages_to_last_user_turn(adapter)
+        else:
+            _log.info(
+                "post_message: deferred_tool_results present "
+                "(approvals=%d, calls=%d) — skipping trim",
+                len(deferred_results.approvals or {}),
+                len(deferred_results.calls or {}),
+            )
 
         # Determine parent_id for the new turn so the message tree stays
         # connected. Two flows:
@@ -275,6 +301,12 @@ def build_streaming_router(
             thread_id, tenant_id=tenant_id, limit=history_limit,
         )
 
+        _log.debug(
+            "active_branch_before=%d msgs (last_role=%s)",
+            len(active_branch_before),
+            active_branch_before[-1].role if active_branch_before else None,
+        )
+
         if is_regenerate:
             # Regenerate semantics: the assistant being regenerated is
             # REPLACED with a sibling whose parent is the same user turn
@@ -282,6 +314,11 @@ def build_streaming_router(
             # assistant in the active branch to find that user turn.
             last_user_id = _find_last_role_id(active_branch_before, "user")
             new_assistant_parent_id = last_user_id
+            _log.info(
+                "regenerate-message: new assistant will sibling under "
+                "user_id=%s",
+                last_user_id,
+            )
         else:
             # Submit-message semantics: the new user msg's parent is the
             # LAST message in the active branch (any role). If the prior
@@ -302,6 +339,15 @@ def build_streaming_router(
                     parent_id=new_user_parent_id,
                 )
                 new_assistant_parent_id = user_msg.id
+                _log.info(
+                    "submit-message: persisted user msg id=%s parent=%s",
+                    user_msg.id, new_user_parent_id,
+                )
+            else:
+                _log.debug(
+                    "submit-message: no prompt_text (no new user turn to "
+                    "persist) — likely auto-resend after approval",
+                )
 
         rows = await thread_repo.history(
             thread_id, tenant_id=tenant_id, limit=history_limit,
@@ -312,6 +358,10 @@ def build_streaming_router(
         # repo-driven history to avoid duplication. For regenerate the
         # last user IS the prompt — drop it for the same reason.
         history = messages_to_model_history(rows, drop_prompt=prompt_text)
+        _log.debug(
+            "rebuilt message_history from repo: %d rows → %d ModelMessages",
+            len(rows), len(history),
+        )
 
         resolved_deps = await _resolve_deps(
             deps_factory,
@@ -333,16 +383,31 @@ def build_streaming_router(
 
             output = result.output
             if isinstance(output, DeferredToolRequests):
+                _log.info(
+                    "on_complete: agent paused with DeferredToolRequests "
+                    "(thread=%s) — skipping assistant persist",
+                    thread_id,
+                )
                 return
             text = output if isinstance(output, str) else str(output)
             if not text:
+                _log.warning(
+                    "on_complete: agent produced empty assistant text "
+                    "(thread=%s, output_type=%s) — nothing persisted",
+                    thread_id, type(output).__name__,
+                )
                 return
-            await thread_repo.add_message(
+            persisted = await thread_repo.add_message(
                 thread_id,
                 role="assistant",
                 parts=[{"type": "text", "text": text}],
                 tenant_id=tenant_id,
                 parent_id=new_assistant_parent_id,
+            )
+            _log.info(
+                "on_complete: persisted assistant msg id=%s parent=%s "
+                "len=%d",
+                persisted.id, new_assistant_parent_id, len(text),
             )
 
         # We already built the adapter (to peek at `messages` for the

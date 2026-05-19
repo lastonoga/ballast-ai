@@ -53,6 +53,12 @@ Sub-project #7 (API + Observability + Evals):
     ``StreamEvent`` / ``StreamEventKind`` / ``AgentRunner`` / ``make_runner``.
 """
 
+# Side-effect import: attaches NullHandler to the framework root logger
+# AND auto-configures a StreamHandler when ``STATEFLOW_LOG_LEVEL`` is
+# set. Import this BEFORE the shim so any shim diagnostics route through
+# the framework logger.
+from pydantic_ai_stateflow import logging as _logging  # noqa: F401
+
 # Side-effect import: applies upstream pydantic-ai compatibility shims
 # (e.g. normalize OpenAI assistant ``content: null`` → ``""`` for tool-
 # call turns so Alibaba/strict Qwen endpoints accept the request). See
@@ -98,6 +104,10 @@ from pydantic_ai_stateflow.evals import (
     SchemaAdherenceScorer,
     Scorer,
     ScoreResult,
+)
+from pydantic_ai_stateflow.logging import (
+    configure as configure_logging,
+    get_logger,
 )
 from pydantic_ai_stateflow.grounded import (
     GroundedAgent,
@@ -285,9 +295,11 @@ __all__ = [
     "build_hitl_router",
     "build_streaming_router",
     "build_threads_router",
+    "configure_logging",
     "extract_text",
     "get_container",
     "get_engine",
+    "get_logger",
     "get_tenant_id",
     "has_logfire",
     "make_helper_agent_with_approval_tools",

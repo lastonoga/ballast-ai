@@ -4,7 +4,10 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
+from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
+
+_log = get_logger(__name__)
 
 
 class ThreadClosedError(Exception):
@@ -177,6 +180,10 @@ class InMemoryThreadRepository:
         )
         self._threads[thread.id] = thread
         self._messages[thread.id] = []
+        _log.info(
+            "InMemoryThreadRepository.create: id=%s tenant=%s purpose=%s",
+            thread.id, tenant_id, purpose,
+        )
         return thread
 
     async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None:
@@ -209,6 +216,11 @@ class InMemoryThreadRepository:
             created_at=datetime.now(tz=UTC),
         )
         self._messages[thread_id].append(msg)
+        _log.debug(
+            "InMemoryThreadRepository.add_message: thread=%s id=%s role=%s "
+            "parent=%s parts=%d",
+            thread_id, msg.id, role, parent_id, len(msg.parts),
+        )
         return msg
 
     async def history(
@@ -216,9 +228,20 @@ class InMemoryThreadRepository:
     ) -> list[Message]:
         thread = self._threads.get(thread_id)
         if thread is None or thread.tenant_id != tenant_id:
+            _log.debug(
+                "InMemoryThreadRepository.history: thread=%s missing or "
+                "wrong tenant — returning []",
+                thread_id,
+            )
             return []
         all_msgs = self._messages[thread_id]
-        return _walk_active_branch(all_msgs, limit=limit)
+        branch = _walk_active_branch(all_msgs, limit=limit)
+        _log.debug(
+            "InMemoryThreadRepository.history: thread=%s total=%d "
+            "active_branch=%d",
+            thread_id, len(all_msgs), len(branch),
+        )
+        return branch
 
     async def siblings(
         self, message_id: UUID, *, tenant_id: UUID,

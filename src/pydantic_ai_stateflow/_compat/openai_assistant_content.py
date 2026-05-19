@@ -82,41 +82,35 @@ def install_assistant_content_shim() -> None:
     mapper_cls = OpenAIChatModel._MapModelResponseContext  # noqa: SLF001
     original: Callable[..., Any] = mapper_cls._into_message_param  # noqa: SLF001
 
-    import sys  # noqa: PLC0415
+    from pydantic_ai_stateflow.logging import get_logger  # noqa: PLC0415
 
-    def _diag(msg: str) -> None:
-        line = f"[stateflow-shim] {msg}"
-        print(line, file=sys.stdout, flush=True)
-        print(line, file=sys.stderr, flush=True)
-
-    _diag(
-        "install_assistant_content_shim() RUNNING — "
-        f"mapper_cls={mapper_cls!r} original={original!r}",
+    log = get_logger("pydantic_ai_stateflow._compat.openai_assistant_content")
+    log.debug(
+        "install_assistant_content_shim() running — mapper_cls=%r original=%r",
+        mapper_cls, original,
     )
 
     @functools.wraps(original)
     def patched(self: Any) -> Any:
         result = original(self)
-        # Temporary diagnostic: dump every outgoing assistant turn so we
-        # can see exactly what shape the upstream LLM sees. Direct
-        # stderr-write bypasses any logging config the host app might
-        # have. Strip back once the Alibaba 400 mystery is resolved.
-        _diag(f"_into_message_param result={result!r}")
         if (
             result is not None
             and result.get("content") is None
             and result.get("tool_calls")
         ):
             result["content"] = ""
-            _diag(
-                f"_into_message_param normalized content:None → '' "
-                f"(tool_calls={len(result['tool_calls'])})",
+            log.debug(
+                "_into_message_param normalized content:None → '' "
+                "(tool_calls=%d, tool_call_ids=%s)",
+                len(result["tool_calls"]),
+                [tc.get("id") for tc in result["tool_calls"]],
             )
+        log.debug("_into_message_param result=%r", result)
         return result
 
     mapper_cls._into_message_param = patched  # noqa: SLF001
 
-    # ALSO wrap the model's `_map_messages` to log the final outgoing
+    # ALSO wrap the model's ``_map_messages`` to log the final outgoing
     # message list. Captures user/tool/assistant turns alike — so if a
     # 400 traces back to a non-assistant content issue we'll see it.
     original_map_messages = OpenAIChatModel._map_messages  # noqa: SLF001
@@ -124,14 +118,19 @@ def install_assistant_content_shim() -> None:
     @functools.wraps(original_map_messages)
     async def patched_map_messages(self: Any, *args: Any, **kwargs: Any) -> Any:
         result = await original_map_messages(self, *args, **kwargs)
-        try:
-            import json  # noqa: PLC0415
-            _diag(
-                "_map_messages OUTGOING request body:\n"
-                + json.dumps(list(result), indent=2, default=str),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _diag(f"_map_messages OUTGOING (unprintable): {result!r} (err: {exc})")
+        if log.isEnabledFor(10):  # DEBUG
+            try:
+                import json  # noqa: PLC0415
+
+                log.debug(
+                    "_map_messages OUTGOING request body:\n%s",
+                    json.dumps(list(result), indent=2, default=str),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug(
+                    "_map_messages OUTGOING (unprintable): %r (err: %s)",
+                    result, exc,
+                )
         return result
 
     OpenAIChatModel._map_messages = patched_map_messages  # noqa: SLF001
