@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
-from typing import Any, Protocol
-from uuid import UUID
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, runtime_checkable
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -108,12 +108,101 @@ class StreamEncoder(Protocol):
     def encode(self, event: StreamEvent) -> bytes: ...
 
 
+# ---------------------------------------------------------------------------
+# Typed MessagePart union (F3)
+# ---------------------------------------------------------------------------
+
+
+class _TextPart(BaseModel):
+    """Plain text part. Mirrors assistant-ui's `TextMessagePart` shape."""
+
+    type: Literal["text"]
+    text: str
+
+
+class _ToolResultPart(BaseModel):
+    """Result of a previously-emitted tool call, sent back by the client."""
+
+    type: Literal["tool-result"]
+    tool_call_id: str
+    result: Any
+
+
+class _FilePart(BaseModel):
+    """Inline file (image, audio, …) attached to the message."""
+
+    type: Literal["file"]
+    data: str
+    """Base64-encoded file contents."""
+    mime_type: str
+    filename: str | None = None
+
+
+MessagePart = Annotated[
+    _TextPart | _ToolResultPart | _FilePart,
+    Field(discriminator="type"),
+]
+"""Discriminated union of allowed parts on `_PostMessageBody.parts`.
+
+Variants follow assistant-ui's `MessagePart` shapes — keep the ``type``
+literals in sync with the frontend (see
+``examples/notes-app/frontend/RETRO.md``).
+"""
+
+
+def extract_text(parts: list[Any]) -> str:
+    """Concatenate all text parts in order. Non-text parts are skipped.
+
+    Accepts both validated `MessagePart` instances and raw dicts (so it
+    works on `_PostMessageBody.parts` and on serialized repo rows).
+    """
+    chunks: list[str] = []
+    for p in parts:
+        if isinstance(p, _TextPart):
+            chunks.append(p.text)
+        elif isinstance(p, dict) and p.get("type") == "text":
+            text = p.get("text")
+            if isinstance(text, str):
+                chunks.append(text)
+    return "".join(chunks)
+
+
 class _PostMessageBody(BaseModel):
     role: str = "user"
-    parts: list[dict[str, Any]] = Field(default_factory=list)
+    parts: list[MessagePart] = Field(default_factory=list)
 
 
-AgentRunner = Callable[..., AsyncIterator[StreamEvent]]
+# ---------------------------------------------------------------------------
+# AgentRunner Protocol (F4)
+# ---------------------------------------------------------------------------
+
+
+if TYPE_CHECKING:
+    # Forward ref purely for the Protocol signature; runtime resolution not
+    # needed since Protocol bodies aren't introspected for kwargs.
+    pass
+
+
+@runtime_checkable
+class AgentRunner(Protocol):
+    """Adapter that turns a chat message into a stream of AG-UI events.
+
+    ``thread_id``, ``run_id``, and ``tenant_id`` come from the framework;
+    ``message`` is the parsed :class:`_PostMessageBody`. Implementations
+    should yield canonical
+    ``StreamEvent.run_started`` → ``text_message_*`` → ``StreamEvent.run_finished``
+    sequences (see :class:`StreamEventKind`).
+    """
+
+    def __call__(
+        self,
+        *,
+        thread_id: UUID,
+        run_id: UUID,
+        message: _PostMessageBody,
+        tenant_id: UUID,
+    ) -> AsyncIterator[StreamEvent]: ...
+
 
 _ENCODERS: dict[str, type] = {"ag-ui": AGUIEncoder, "vercel": VercelEncoder}
 
@@ -130,10 +219,14 @@ def build_streaming_router(
 ) -> APIRouter:
     """Mount `POST {prefix}/threads/{id}/messages` as an SSE stream.
 
-    `agent_runner` is a callable returning an async iterator of `StreamEvent`s.
-    Provide a fake in tests; production wires it to `agent.run_stream(...)` /
-    `agent.iter(...)`. The user message is persisted BEFORE the stream starts
-    so a client crash mid-stream still leaves the thread consistent.
+    `agent_runner` is an :class:`AgentRunner` returning an async iterator of
+    `StreamEvent`s. Provide a fake in tests; production wires it to
+    :func:`pydantic_ai_stateflow.api.streaming.make_runner`. The user
+    message is persisted BEFORE the stream starts so a client crash
+    mid-stream still leaves the thread consistent.
+
+    A fresh ``run_id`` is generated per POST and passed to the runner so
+    its emitted ``RUN_STARTED`` / ``RUN_FINISHED`` events stay correlated.
 
     If `encoder` is supplied it overrides the per-request `?protocol=` query
     param; otherwise the encoder is chosen from `_ENCODERS` by protocol.
@@ -158,12 +251,19 @@ def build_streaming_router(
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
         await thread_repo.add_message(
-            thread_id, role=body.role, parts=body.parts, tenant_id=tenant_id,
+            thread_id,
+            role=body.role,
+            parts=[p.model_dump() for p in body.parts],
+            tenant_id=tenant_id,
         )
+        run_id = uuid4()
 
         async def _gen() -> AsyncIterator[bytes]:
             async for event in agent_runner(
-                thread_id=thread_id, message=body, tenant_id=tenant_id,
+                thread_id=thread_id,
+                run_id=run_id,
+                message=body,
+                tenant_id=tenant_id,
             ):
                 frame = chosen.encode(event)
                 if frame:

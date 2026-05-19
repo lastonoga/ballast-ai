@@ -205,9 +205,8 @@ async def test_streaming_endpoint_streams_events_as_sse() -> None:
     )
 
     async def runner(
-        *, thread_id: UUID, message: object, tenant_id: UUID,
+        *, thread_id: UUID, run_id: UUID, message: object, tenant_id: UUID,
     ) -> AsyncIterator[StreamEvent]:
-        run_id = uuid4()
         msg_id = uuid4()
         yield StreamEvent.run_started(thread_id=thread_id, run_id=run_id)
         yield StreamEvent.text_message_start(message_id=msg_id)
@@ -220,7 +219,7 @@ async def test_streaming_endpoint_streams_events_as_sse() -> None:
     app.include_router(
         build_streaming_router(thread_repo=repo, agent_runner=runner),
     )
-    body = {"role": "user", "parts": [{"kind": "text", "text": "hi"}]}
+    body = {"role": "user", "parts": [{"type": "text", "text": "hi"}]}
     with TestClient(app) as c:
         r = c.post(
             f"/threads/{th.id}/messages",
@@ -255,7 +254,7 @@ async def test_streaming_endpoint_persists_user_message_before_streaming() -> No
     app.include_router(
         build_streaming_router(thread_repo=repo, agent_runner=runner),
     )
-    body = {"role": "user", "parts": [{"kind": "text", "text": "hello"}]}
+    body = {"role": "user", "parts": [{"type": "text", "text": "hello"}]}
     with TestClient(app) as c:
         c.post(
             f"/threads/{th.id}/messages",
@@ -278,7 +277,7 @@ async def test_streaming_endpoint_404_when_thread_missing() -> None:
     app.include_router(
         build_streaming_router(thread_repo=repo, agent_runner=runner),
     )
-    body = {"role": "user", "parts": [{"kind": "text", "text": "x"}]}
+    body = {"role": "user", "parts": [{"type": "text", "text": "x"}]}
     with TestClient(app) as c:
         r = c.post(
             f"/threads/{uuid4()}/messages", json=body,
@@ -303,7 +302,7 @@ async def test_streaming_endpoint_404_cross_tenant() -> None:
     app.include_router(
         build_streaming_router(thread_repo=repo, agent_runner=runner),
     )
-    body = {"role": "user", "parts": [{"kind": "text", "text": "x"}]}
+    body = {"role": "user", "parts": [{"type": "text", "text": "x"}]}
     with TestClient(app) as c:
         r = c.post(
             f"/threads/{th.id}/messages", json=body,

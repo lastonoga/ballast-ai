@@ -92,7 +92,7 @@ async def test_router_selects_vercel_encoder_via_query() -> None:
 
     app = FastAPI()
     app.include_router(build_streaming_router(thread_repo=repo, agent_runner=runner))
-    body = {"role": "user", "parts": [{"kind": "text", "text": "x"}]}
+    body = {"role": "user", "parts": [{"type": "text", "text": "x"}]}
     with TestClient(app) as c:
         r = c.post(
             f"/threads/{th.id}/messages?protocol=vercel",
