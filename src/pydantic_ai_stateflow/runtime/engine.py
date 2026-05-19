@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from fastapi import APIRouter, FastAPI
 
 from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
 from pydantic_ai_stateflow.runtime.provider import ServiceProvider
 
+if TYPE_CHECKING:
+    from pydantic_ai_stateflow.api.cors import CORSConfig
+
 T = TypeVar("T")
 
 Invariant = Callable[[Container], Awaitable[None]]
+LifespanHook = Callable[[FastAPI], Awaitable[None]]
+
+_logger = logging.getLogger("pydantic_ai_stateflow.engine")
 
 
 class EngineInvariantViolation(Exception):  # noqa: N818
@@ -73,6 +80,9 @@ class Engine:
         *,
         extra_routers: list[APIRouter] | None = None,
         health_checks: dict[str, Callable[[], Awaitable[bool]]] | None = None,
+        cors: CORSConfig | None = None,
+        on_startup: list[LifespanHook] | None = None,
+        on_shutdown: list[LifespanHook] | None = None,
     ) -> FastAPI:
         """Build a FastAPI app with the Container/Engine wired in.
 
@@ -82,16 +92,52 @@ class Engine:
         - Mounts `/healthz` by default.
         - Mounts any `extra_routers` provided.
 
+        Optional knobs (additive — defaults preserve prior behaviour):
+
+        - ``cors``: install Starlette's ``CORSMiddleware`` from a
+          :class:`pydantic_ai_stateflow.api.CORSConfig`. When ``None``
+          (the default) no CORS middleware is installed and cross-origin
+          browser requests will be blocked by the browser.
+        - ``on_startup``: list of ``async def hook(app) -> None``
+          callables awaited (in declared order) *after* ``engine.boot()``.
+          A hook exception is logged and re-raised so startup fails fast.
+        - ``on_shutdown``: list of ``async def hook(app) -> None``
+          callables awaited in REVERSE order during shutdown. Exceptions
+          are logged but swallowed so later hooks still run.
+
         Observability is NOT auto-attached here — install via
         `ObservabilityProvider` in the provider list (spec 4H: provider order).
         """
         from pydantic_ai_stateflow.api.health import build_health_router
 
+        startup_hooks: list[LifespanHook] = list(on_startup or [])
+        shutdown_hooks: list[LifespanHook] = list(on_shutdown or [])
+
         @asynccontextmanager
         async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             if not self._booted:
                 await self.boot()
-            yield
+            for hook in startup_hooks:
+                try:
+                    await hook(_app)
+                except Exception:
+                    _logger.exception(
+                        "startup hook %r raised; aborting boot",
+                        getattr(hook, "__qualname__", repr(hook)),
+                    )
+                    raise
+            try:
+                yield
+            finally:
+                for hook in reversed(shutdown_hooks):
+                    try:
+                        await hook(_app)
+                    except Exception:
+                        _logger.exception(
+                            "shutdown hook %r raised; continuing with "
+                            "remaining hooks",
+                            getattr(hook, "__qualname__", repr(hook)),
+                        )
 
         app = FastAPI(lifespan=_lifespan)
         app.state.container = self.container
@@ -99,4 +145,18 @@ class Engine:
         app.include_router(build_health_router(checks=health_checks))
         for r in extra_routers or []:
             app.include_router(r)
+        if cors is not None:
+            # Import lazily so the CORS surface stays optional at
+            # import-time and matches the rest of the runtime layer.
+            from fastapi.middleware.cors import CORSMiddleware
+
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=list(cors.allow_origins),
+                allow_methods=list(cors.allow_methods),
+                allow_headers=list(cors.allow_headers),
+                allow_credentials=cors.allow_credentials,
+                expose_headers=list(cors.expose_headers),
+                max_age=cors.max_age,
+            )
         return app

@@ -3,6 +3,7 @@ from pydantic_ai_stateflow.api.a2a import (
     AgentCard,
     build_a2a_router,
 )
+from pydantic_ai_stateflow.api.cors import CORSConfig
 from pydantic_ai_stateflow.api.deps import (
     get_container,
     get_engine,
@@ -21,6 +22,7 @@ __all__ = [
     "A2AAgentAdapter",
     "AgentCard",
     "AgentRunner",
+    "CORSConfig",
     "MessagePart",
     "build_a2a_router",
     "build_health_router",
