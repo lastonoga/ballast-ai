@@ -157,6 +157,21 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     [apiUrl, headers],
   );
 
+  // Per-thread chat helpers (publicly: `addToolApprovalResponse`) are
+  // produced inside the `runtimeHook` (one chat per thread) but consumed
+  // outside it (the approval card hangs off `<ChatHelpersContext>` at the
+  // RuntimeProvider level). We bridge via a ref captured by both:
+  //
+  //   - the per-thread runtime hook publishes the latest helpers via
+  //     `useEffect` after every chat-helper identity change
+  //   - the outer proxy reads `.current` on each invocation
+  //
+  // Why not stash on the runtime object: `useRemoteThreadListRuntime`
+  // returns an OUTER runtime wrapper, distinct from the per-thread runtime
+  // we attach properties to — the wrapper hides the attached property,
+  // making "(runtime as any).__chatApprovalHelpers" always undefined.
+  const helpersRef = useRef<ChatApprovalHelpers | null>(null);
+
   // assistant-ui's `useRemoteThreadListRuntime` re-invokes `runtimeHook`
   // for each thread. To pass `apiUrl`/`headers` in without closing over
   // stale references, we curry them via a factory.
@@ -213,20 +228,17 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
           }
         }, [aui, threadListItemState.status]);
 
-        const approvalHelpers = useMemo<ChatApprovalHelpers>(
-          () => ({ addToolApprovalResponse: chat.addToolApprovalResponse }),
-          [chat.addToolApprovalResponse],
-        );
-
-        // Stash helpers on the runtime so the outer provider can publish
-        // them via context. The outer provider mounts a fresh
-        // `<ChatHelpersContext.Provider>` per thread by re-reading via
-        // `useAuiState` from the runtime side, but that's circular — so
-        // instead we attach them as a property on the runtime object and
-        // read them in the outer wrapper.
-        (runtime as unknown as {
-          __chatApprovalHelpers: ChatApprovalHelpers;
-        }).__chatApprovalHelpers = approvalHelpers;
+        // Publish this thread's chat helpers to the outer provider via
+        // the shared ref. Clear on unmount so a stale helper from a
+        // discarded thread can't fire against the wrong chat.
+        useEffect(() => {
+          helpersRef.current = {
+            addToolApprovalResponse: chat.addToolApprovalResponse,
+          };
+          return () => {
+            helpersRef.current = null;
+          };
+        }, [chat.addToolApprovalResponse]);
 
         return runtime;
       },
@@ -238,15 +250,12 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     runtimeHook,
   });
 
-  // Pull the per-thread chat helpers off the runtime. They're mutated
-  // when threads switch (the runtimeHook reattaches them), so we read
-  // them via a getter wrapped in a stable proxy.
+  // Stable proxy over `helpersRef` so consumers can `useContext` once
+  // and call through to whichever chat is currently mounted.
   const helpersProxy = useMemo<ChatApprovalHelpers>(
     () => ({
       addToolApprovalResponse: (...args) => {
-        const live = (runtime as unknown as {
-          __chatApprovalHelpers?: ChatApprovalHelpers;
-        }).__chatApprovalHelpers;
+        const live = helpersRef.current;
         if (!live) {
           throw new Error(
             "[runtime-provider] no per-thread chat helpers — runtime not ready",
@@ -255,7 +264,7 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         return live.addToolApprovalResponse(...args);
       },
     }),
-    [runtime],
+    [],
   );
 
   return (
