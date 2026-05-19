@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Frontend (Next.js / shadcn) — un-ignore lib/ that the Python rule above swallows
+!examples/notes-app/frontend/src/lib/
+!examples/notes-app/frontend/src/lib/**
