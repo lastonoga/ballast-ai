@@ -12,7 +12,7 @@ from pydantic_ai_stateflow.persistence.events.domain import ThreadEvent
 class EventLogRepository(Protocol):
     """Durable per-thread append-only event log.
 
-    Writers (the ``DurableAgent`` workflow) call ``append`` for every
+    Writers (the ``StateflowDurableAgent`` workflow) call ``append`` for every
     event emitted by ``agent.run_stream``. Readers (the SSE endpoint)
     call ``read_since`` on reconnect to catch up on events the client
     missed while disconnected.

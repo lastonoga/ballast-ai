@@ -28,11 +28,21 @@ from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider
+from pydantic_ai_stateflow.persistence import (
+    EventLogRepository,
+    InMemoryEventLogRepository,
+)
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import Engine, register_agent
+from pydantic_ai_stateflow.runtime import (
+    Engine,
+    EventStream,
+    EventStreamProvider,
+    InProcessEventStream,
+    register_agent,
+)
 
 from notes_app.agent import NotesAgent
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
@@ -63,6 +73,8 @@ def build_app(
     notes_repo: NoteRepository | None = None,
     todo_approval_agent: NotesTodoApprovalAgent | None = None,
     todo_flow: TodoApprovalFlow | None = None,
+    event_log: EventLogRepository | None = None,
+    event_stream: EventStream | None = None,
     manage_dbos_lifecycle: bool = True,
 ) -> FastAPI:
     """Construct the FastAPI app.
@@ -74,10 +86,19 @@ def build_app(
     """
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
+    log = event_log or InMemoryEventLogRepository()
+    stream = event_stream or InProcessEventStream()
     flow = todo_flow or TodoApprovalFlow(notes_repo=notes, thread_repo=repo)
 
     agent = notes_agent or NotesAgent(
-        notes_repo=notes, todo_flow=flow,
+        notes_repo=notes,
+        thread_repo=repo,
+        event_log=log,
+        event_stream=stream,
+        todo_flow=flow,
+        # Stable name so DBOS workflow recovery rebinds the instance
+        # to in-flight runs after a process restart.
+        config_name="notes-app-notes-agent",
     )
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
         notes_repo=notes,
@@ -94,6 +115,7 @@ def build_app(
                 instrument_pydantic_ai=True,
                 instrument_httpx=True,
             ),
+            EventStreamProvider(stream=stream, log=log),
         ],
     )
 

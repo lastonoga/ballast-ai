@@ -1,4 +1,4 @@
-"""``DurableAgent`` — ``StateflowAgent`` variant with durable run loop.
+"""``StateflowDurableAgent`` — ``StateflowAgent`` variant with durable run loop.
 
 The motivating problem (from the design discussion):
 
@@ -8,7 +8,7 @@ The motivating problem (from the design discussion):
   ``CancelledError`` cascades down to every ``await`` in tool bodies,
   and any side effects depending on the model's response are lost.
   ``DurableHITLWorkflow`` works around this for HITL specifically by
-  spawning a separate ``@DBOS.workflow``; ``DurableAgent`` solves it
+  spawning a separate ``@DBOS.workflow``; ``StateflowDurableAgent`` solves it
   at the source — the WHOLE agent run lives inside a workflow.
 
 What this buys:
@@ -36,10 +36,10 @@ What this costs:
   - Performance: every persisted event is a row write + signal
     publish. For very high-throughput agent runs swap the in-memory
     log + in-process stream for postgres / Redis.
-  - Per-thread serialization: only one ``DurableAgent.run`` can be
+  - Per-thread serialization: only one ``StateflowDurableAgent.run`` can be
     in-flight per thread at a time (DBOS queue policy, task #127).
 
-Apps adopt ``DurableAgent`` by subclassing it instead of
+Apps adopt ``StateflowDurableAgent`` by subclassing it instead of
 ``StateflowAgent`` — the rest of the contract (``build_agent``,
 ``build_deps``, ``model_settings``, ``@SomeAgent.tool``,
 ``@SomeAgent.system_prompt``, ``metadata_model``) is unchanged.
@@ -72,7 +72,7 @@ _instance_counter = itertools.count()
 
 
 @DBOS.dbos_class()
-class DurableAgent(StateflowAgent, DBOSConfiguredInstance):
+class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
     """``StateflowAgent`` whose ``run`` is a durable DBOS workflow.
 
     Inherits everything from ``StateflowAgent`` — tool decorators,
@@ -89,7 +89,7 @@ class DurableAgent(StateflowAgent, DBOSConfiguredInstance):
         SSE consumers wake up without polling the log.
 
     The streaming router checks for ``isinstance(instance,
-    DurableAgent)`` and routes through the durable path; plain
+    StateflowDurableAgent)`` and routes through the durable path; plain
     ``StateflowAgent`` subclasses keep the current direct streaming
     path. Apps opt in by choosing which base class to extend.
     """
@@ -228,4 +228,4 @@ class DurableAgent(StateflowAgent, DBOSConfiguredInstance):
         )
 
 
-__all__ = ["DurableAgent"]
+__all__ = ["StateflowDurableAgent"]

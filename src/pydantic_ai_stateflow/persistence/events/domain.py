@@ -22,7 +22,7 @@ def _now_utc() -> datetime:
 
 
 class ThreadEvent(SQLModel, table=True):
-    """One event from a ``DurableAgent`` run, persisted for replay.
+    """One event from a ``StateflowDurableAgent`` run, persisted for replay.
 
     ``seq`` is monotonic PER THREAD (not global). Apps that need a
     global ordering can sort on ``(created_at, id)``.

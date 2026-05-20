@@ -50,8 +50,18 @@ from pydantic_ai_stateflow.capabilities import (
     StateflowCapability,
 )
 from pydantic_ai_stateflow.grounded import Ref, Selector
+from pydantic_ai_stateflow.persistence import (
+    EventLogRepository,
+    InMemoryEventLogRepository,
+    InMemoryThreadRepository,
+)
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.runtime import StateflowAgent
+from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from pydantic_ai_stateflow.runtime import (
+    EventStream,
+    InProcessEventStream,
+    StateflowDurableAgent,
+)
 
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
@@ -128,11 +138,16 @@ class NoteToolDeps:
     parent_thread_id: UUID | None = None
 
 
-class NotesAgent(StateflowAgent):
-    """Personal-notes ``StateflowAgent``.
+class NotesAgent(StateflowDurableAgent):
+    """Personal-notes durable agent.
 
-    Carries a ``NoteRepository`` so ``build_deps`` can mint a fresh
-    ``NoteToolDeps`` per request, scoped to the requesting tenant.
+    Extends ``StateflowDurableAgent`` so the run loop is a
+    ``@DBOS.workflow`` — survives SSE disconnects, process restarts,
+    and resumable via Last-Event-ID. Tools / system_prompt / metadata
+    semantics are identical to ``StateflowAgent``; the only difference
+    is the constructor (which now needs ``thread_repo`` + ``event_log``
+    + ``event_stream`` for the durable infrastructure) and the run
+    loop (which the streaming router dispatches into a workflow).
     """
 
     name = "notes"
@@ -142,10 +157,28 @@ class NotesAgent(StateflowAgent):
         self,
         *,
         notes_repo: NoteRepository,
+        thread_repo: ThreadRepository | None = None,
+        event_log: EventLogRepository | None = None,
+        event_stream: EventStream | None = None,
         todo_flow: TodoApprovalFlow | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
+        config_name: str | None = None,
     ) -> None:
+        # Durability infrastructure has in-memory defaults so tests can
+        # instantiate ``NotesAgent(notes_repo=...)`` without setting up
+        # the full event log / signal channel. Production wiring (in
+        # ``main.py``) passes shared instances explicitly so the same
+        # log + stream are visible to the streaming router.
+        # ``config_name=None`` lets the parent class auto-generate a
+        # unique id — production overrides with a stable name so DBOS
+        # workflow recovery can rebind the instance after a restart.
+        super().__init__(
+            thread_repo=thread_repo or InMemoryThreadRepository(),
+            event_log=event_log or InMemoryEventLogRepository(),
+            event_stream=event_stream or InProcessEventStream(),
+            config_name=config_name,
+        )
         self._notes_repo = notes_repo
         self._todo_flow = todo_flow
         self._model_name = model_name

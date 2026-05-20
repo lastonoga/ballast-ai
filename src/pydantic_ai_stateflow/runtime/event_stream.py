@@ -1,6 +1,6 @@
 """Pluggable signal transport for live thread-event broadcasts.
 
-The framework persists every ``DurableAgent`` event to the event log
+The framework persists every ``StateflowDurableAgent`` event to the event log
 (``EventLogRepository.append``) — that's the durable source of truth.
 The ``EventStream`` adds a thin, fire-and-forget **notification**
 channel on top: it lets live SSE consumers wake up the moment a new

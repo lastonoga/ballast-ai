@@ -1,4 +1,4 @@
-"""Tests for ``DurableAgent`` — the durable-by-default StateflowAgent.
+"""Tests for ``StateflowDurableAgent`` — the durable-by-default StateflowAgent.
 
 Verifies the contract:
   - Subclass inherits StateflowAgent's tool / system_prompt / metadata
@@ -28,7 +28,7 @@ from pydantic_ai_stateflow.persistence import (
     InMemoryThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import (
-    DurableAgent,
+    StateflowDurableAgent,
     EventNotification,
     InProcessEventStream,
     thread_channel,
@@ -37,8 +37,8 @@ from pydantic_ai_stateflow.runtime import (
 _counter = itertools.count()
 
 
-class _NotesDurableAgent(DurableAgent):
-    """Minimal ``DurableAgent`` subclass for tests — TestModel-backed."""
+class _NotesStateflowDurableAgent(StateflowDurableAgent):
+    """Minimal ``StateflowDurableAgent`` subclass for tests — TestModel-backed."""
 
     name = "notes-durable-test"
     metadata_model = None
@@ -65,7 +65,7 @@ async def test_run_persists_start_textdelta_done_events(
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
 
-    durable = _NotesDurableAgent(
+    durable = _NotesStateflowDurableAgent(
         thread_repo=thread_repo, event_log=log, event_stream=stream,
         config_name=f"durable-test-{next(_counter)}",
     )
@@ -106,7 +106,7 @@ async def test_run_publishes_notifications_for_each_event(
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
 
-    durable = _NotesDurableAgent(
+    durable = _NotesStateflowDurableAgent(
         thread_repo=thread_repo, event_log=log, event_stream=stream,
         config_name=f"durable-test-{next(_counter)}",
     )
@@ -148,7 +148,7 @@ async def test_run_emits_error_event_when_thread_missing(
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
 
-    durable = _NotesDurableAgent(
+    durable = _NotesStateflowDurableAgent(
         thread_repo=thread_repo, event_log=log, event_stream=stream,
         config_name=f"durable-test-{next(_counter)}",
     )
@@ -171,17 +171,17 @@ async def test_run_emits_error_event_when_thread_missing(
 
 @pytest.mark.asyncio
 async def test_subclass_inherits_stateflow_agent_machinery() -> None:
-    """``DurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools.
+    """``StateflowDurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools.
 
-    Smoke check that ``DurableAgent`` is a drop-in StateflowAgent —
+    Smoke check that ``StateflowDurableAgent`` is a drop-in StateflowAgent —
     apps shouldn't have to re-learn the agent registration API.
     """
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 
-    assert issubclass(_NotesDurableAgent, StateflowAgent)
-    assert _NotesDurableAgent.name == "notes-durable-test"
-    assert _NotesDurableAgent.metadata_model is None
+    assert issubclass(_NotesStateflowDurableAgent, StateflowAgent)
+    assert _NotesStateflowDurableAgent.name == "notes-durable-test"
+    assert _NotesStateflowDurableAgent.metadata_model is None
     # The tool / system_prompt decorators come from the
     # StateflowAgent base unchanged.
-    assert hasattr(_NotesDurableAgent, "tool")
-    assert hasattr(_NotesDurableAgent, "system_prompt")
+    assert hasattr(_NotesStateflowDurableAgent, "tool")
+    assert hasattr(_NotesStateflowDurableAgent, "system_prompt")
