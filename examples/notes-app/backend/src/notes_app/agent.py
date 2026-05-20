@@ -34,6 +34,7 @@ codebase before (see ``project_pydantic_ai_api_quirks.md``).
 """
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -41,6 +42,11 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai_stateflow.capabilities import (
+    BudgetGuard,
+    PIIGuard,
+    StateflowCapability,
+)
 from pydantic_ai_stateflow.grounded import Ref, Selector
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
@@ -62,6 +68,36 @@ SYSTEM_PROMPT = (
     "If the user is chatting and not asking for a note action, just "
     "reply conversationally."
 )
+
+
+# Naive but useful PII patterns for the demo — apps with real privacy
+# constraints would replace these with NER or a vetted policy library.
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_PHONE_RE = re.compile(r"\+?\d[\d\s\-().]{8,}\d")
+
+
+def default_notes_capabilities() -> list[StateflowCapability]:
+    """Capabilities applied to every ``NotesAgent`` run.
+
+    - ``BudgetGuard`` bounds iteration count + token spend per run so a
+      runaway tool-call loop, a chatty model, or a hostile prompt can't
+      hang the request or burn unbounded budget.
+    - ``PIIGuard`` regex-scrubs emails / phone numbers from the model's
+      text replies BEFORE they're persisted to the thread, streamed to
+      the frontend, or shipped to logs.
+
+    Apps that want different limits or patterns can subclass
+    ``NotesAgent`` and override ``build_agent`` to pass a different
+    capability list — the framework is uninvolved.
+    """
+    return [
+        BudgetGuard(
+            max_iterations=20,
+            max_input_tokens=50_000,
+            max_output_tokens=8_000,
+        ),
+        PIIGuard(patterns=[_EMAIL_RE, _PHONE_RE]),
+    ]
 
 
 @dataclass
@@ -117,6 +153,7 @@ class NotesAgent(StateflowAgent):
             output_type=[str, DeferredToolRequests],
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
+            capabilities=default_notes_capabilities(),
         )
 
     async def build_deps(
