@@ -312,11 +312,21 @@ async def edit_note(
     return await ctx.deps.repo.update(nid, title=title, body=body)
 
 
-@NotesAgent.tool
+@NotesAgent.tool(persistent=False)
 async def propose_todo(
     ctx: RunContext[NoteToolDeps], title: str, body: str,
 ) -> str:
     """Open a confirmation thread for a todo and return immediately.
+
+    ``persistent=False`` is REQUIRED here even though this tool has
+    side effects (spawns a helper thread + starts a workflow). The
+    side effects are themselves durable — ``todo_flow.open`` is a
+    framework method that wraps thread creation + ``DBOS.start_workflow_async``
+    in its own durability story. Wrapping THIS tool in ``@DBOS.step``
+    would put us inside a step context when we try to spawn the
+    helper workflow, and DBOS forbids ``start_workflow_async`` from
+    inside a step (asserts ``cur_ctx.is_workflow()``).
+
 
     Use this INSTEAD of ``create_note`` when the user asks to create a
     TODO specifically. The flow is **fire-and-forget + durable**:

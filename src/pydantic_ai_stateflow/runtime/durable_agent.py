@@ -612,6 +612,12 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                     payload={
                         "part_index": event.index,
                         "tool_call_id": part.tool_call_id,
+                        # Vercel AI SDK's ``tool-input-available`` /
+                        # ``tool-output-available`` schemas require
+                        # ``toolName`` — keep it on the persisted
+                        # payload so encoders don't need a separate
+                        # lookup.
+                        "tool_name": part.tool_name,
                         "args": part.args_as_dict() if part.args else {},
                     },
                 )

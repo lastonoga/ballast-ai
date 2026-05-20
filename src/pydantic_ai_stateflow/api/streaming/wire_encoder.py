@@ -198,6 +198,7 @@ class VercelAIWireEncoder:
                 json.dumps({
                     "type": "tool-input-available",
                     "toolCallId": str(p.get("tool_call_id", "")),
+                    "toolName": str(p.get("tool_name", "")),
                     "input": p.get("args", {}),
                 }),
                 event_id=event.seq,
@@ -207,6 +208,7 @@ class VercelAIWireEncoder:
                 json.dumps({
                     "type": "tool-output-available",
                     "toolCallId": str(p.get("tool_call_id", "")),
+                    "toolName": str(p.get("tool_name", "")),
                     "output": p.get("output"),
                 }),
                 event_id=event.seq,
