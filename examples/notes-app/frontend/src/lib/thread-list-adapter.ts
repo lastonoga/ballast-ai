@@ -4,7 +4,7 @@
  * Backend endpoints (all tenant-scoped via the `X-Tenant-Id` header):
  *
  *   GET    /threads?include_archived=false&limit=100&offset=0
- *   POST   /threads               { purpose, purpose_metadata, actor_id }
+ *   POST   /threads               { actor_id }   (notes-app endpoint)
  *   GET    /threads/{id}
  *   PATCH  /threads/{id}          { title }
  *   POST   /threads/{id}/archive
@@ -28,8 +28,8 @@ type BackendThread = {
   title?: string | null;
   status?: string;
   archived_at?: string | null;
-  purpose?: string;
-  purpose_metadata?: Record<string, unknown>;
+  agent?: string;
+  metadata?: Record<string, unknown>;
 };
 
 function toMetadata(t: BackendThread): RemoteThreadThreadMetadataLike {
@@ -40,7 +40,7 @@ function toMetadata(t: BackendThread): RemoteThreadThreadMetadataLike {
     status: archived ? "archived" : "regular",
     remoteId: t.id,
     title: t.title ?? undefined,
-    custom: t.purpose_metadata,
+    custom: t.metadata,
   } satisfies RemoteThreadMetadata;
 }
 
@@ -93,8 +93,6 @@ export function buildRemoteThreadListAdapter(
         method: "POST",
         headers: jsonHeaders,
         body: JSON.stringify({
-          purpose: "conversation",
-          purpose_metadata: {},
           actor_id: "user",
         }),
       });

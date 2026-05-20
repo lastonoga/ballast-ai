@@ -104,25 +104,21 @@ def test_note_repository_is_bound_in_container() -> None:
 
 def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a TestModel-backed agent — no network."""
-    import asyncio
-
     notes_repo = InMemoryNoteRepository()
     app = build_app(notes_repo=notes_repo, agent=_fake_agent(notes_repo))
-    tenant_uuid = uuid4()
-    tenant_id = str(tenant_uuid)
+    tenant_id = str(uuid4())
 
     with TestClient(app) as client:
-        # 1) Create via the framework primitive — notes-app's own
-        # POST /threads endpoint lands in iter 8 #3.
-        thread = asyncio.get_event_loop().run_until_complete(
-            app.state.thread_repo.create(
-                agent="notes",
-                metadata={},
-                actor_id="alice",
-                tenant_id=tenant_uuid,
-            ),
+        # 1) Create via the notes-app's own POST /threads endpoint.
+        r = client.post(
+            "/threads",
+            headers={"X-Tenant-Id": tenant_id},
+            json={"actor_id": "alice"},
         )
-        thread_id = str(thread.id)
+        assert r.status_code == 201, r.text
+        thread = r.json()
+        thread_id = thread["id"]
+        assert thread["agent"] == "notes"
 
         # 2) Get
         r = client.get(
@@ -154,22 +150,17 @@ def test_threads_crud_and_streaming_fake() -> None:
 )
 def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
     """Live smoke against OpenRouter — only runs when key is present."""
-    import asyncio
-
     app = build_app()  # default = lazy real agent
-    tenant_uuid = uuid4()
-    tenant_id = str(tenant_uuid)
+    tenant_id = str(uuid4())
 
     with TestClient(app) as client:
-        thread = asyncio.get_event_loop().run_until_complete(
-            app.state.thread_repo.create(
-                agent="notes",
-                metadata={},
-                actor_id="alice",
-                tenant_id=tenant_uuid,
-            ),
+        r = client.post(
+            "/threads",
+            headers={"X-Tenant-Id": tenant_id},
+            json={"actor_id": "alice"},
         )
-        thread_id = str(thread.id)
+        assert r.status_code == 201
+        thread_id = r.json()["id"]
 
         r = client.post(
             f"/threads/{thread_id}/messages",
@@ -191,22 +182,18 @@ def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
 )
 def test_live_create_note_tool_call() -> None:  # pragma: no cover — network
     """Ask the LLM to create a note; assert the in-memory repo has it."""
-    import asyncio
-
     notes_repo = InMemoryNoteRepository()
     app = build_app(notes_repo=notes_repo)
     tenant_id = uuid4()
 
     with TestClient(app) as client:
-        thread = asyncio.get_event_loop().run_until_complete(
-            app.state.thread_repo.create(
-                agent="notes",
-                metadata={},
-                actor_id="alice",
-                tenant_id=tenant_id,
-            ),
+        r = client.post(
+            "/threads",
+            headers={"X-Tenant-Id": str(tenant_id)},
+            json={"actor_id": "alice"},
         )
-        thread_id = str(thread.id)
+        assert r.status_code == 201
+        thread_id = r.json()["id"]
 
         r = client.post(
             f"/threads/{thread_id}/messages",

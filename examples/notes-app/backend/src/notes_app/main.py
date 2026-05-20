@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
+from pydantic import BaseModel
 from pydantic_ai_stateflow.api import CORSConfig
+from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire
@@ -73,6 +76,35 @@ class _LazyAgent:
         return getattr(self._ensure(), name)
 
 
+class _CreateThreadBody(BaseModel):
+    actor_id: str = "user"
+
+
+def _build_create_thread_router(repo: ThreadRepository) -> APIRouter:
+    """App-owned ``POST /threads`` — the framework no longer ships one.
+
+    Notes-app threads are always bound to the ``"notes"`` agent; the
+    StateflowAgent registry (iter 8 #2) will turn this into a registry
+    lookup, but for now the agent key is hard-coded here.
+    """
+    router = APIRouter()
+
+    @router.post("/threads", status_code=201)
+    async def create_thread(
+        body: _CreateThreadBody,
+        tenant_id: UUID = Depends(get_tenant_id),
+    ) -> dict[str, Any]:
+        thread = await repo.create(
+            agent="notes",
+            metadata={},
+            actor_id=body.actor_id,
+            tenant_id=tenant_id,
+        )
+        return thread.model_dump(mode="json")
+
+    return router
+
+
 def build_app(
     *,
     thread_repo: ThreadRepository | None = None,
@@ -115,13 +147,14 @@ def build_app(
 
     engine = Engine(providers=providers)
     threads_router = build_threads_router(thread_repo=repo)
+    create_router = _build_create_thread_router(repo)
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
         app.state.container.bind(NoteRepository, notes)
 
     app: FastAPI = engine.fastapi_app(
-        extra_routers=[threads_router],
+        extra_routers=[create_router, threads_router],
         # F8: permissive_dev() covers the assistant-ui Next.js dev shell
         # (localhost:3000) and the Vite dev port (localhost:3003).
         cors=CORSConfig.permissive_dev(),
