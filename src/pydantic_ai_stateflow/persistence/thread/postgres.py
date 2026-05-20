@@ -107,6 +107,59 @@ class PostgresThreadRepository:
         )
         return msg
 
+    async def add_message_with_id(
+        self,
+        thread_id: UUID,
+        *,
+        id: UUID,
+        role: str,
+        parts: list[dict[str, Any]],
+        parent_id: UUID | None = None,
+    ) -> Message:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        if thread.status == ThreadStatus.CLOSED:
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot add message",
+            )
+        existing_stmt = select(Message).where(col(Message.id) == id)
+        existing = (await self._session.execute(existing_stmt)).scalar_one_or_none()
+        if existing is not None:
+            return existing
+
+        msg = Message(
+            id=id,
+            thread_id=thread_id,
+            role=role,
+            parts=list(parts),
+            parent_id=parent_id,
+        )
+        self._session.add(msg)
+        await self._session.flush()
+        await self._session.refresh(msg)
+        _log.debug(
+            "PostgresThreadRepository.add_message_with_id: thread=%s "
+            "id=%s role=%s parent=%s parts=%d",
+            thread_id, msg.id, role, parent_id, len(msg.parts),
+        )
+        return msg
+
+    async def all_messages(
+        self,
+        thread_id: UUID,
+        *,
+        limit: int = 1000,
+    ) -> list[Message]:
+        stmt = (
+            select(Message)
+            .where(col(Message.thread_id) == thread_id)
+            .order_by(asc(col(Message.created_at)))
+            .limit(limit)
+        )
+        result = await self._session.execute(stmt)
+        return list(result.scalars().all())
+
     async def close(self, thread_id: UUID) -> Thread:
         thread = await self.load(thread_id)
         if thread is None:

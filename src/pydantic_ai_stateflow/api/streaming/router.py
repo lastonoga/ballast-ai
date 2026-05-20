@@ -166,6 +166,31 @@ def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
 _DEFAULT_HISTORY_LIMIT = 200
 
 
+async def _last_user_client_id_from_body(request: Request) -> UUID | None:
+    """Return the client-generated id of the last user UIMessage, or None.
+
+    Used by the streaming router to detect whether the frontend's
+    ``ThreadHistoryAdapter.append`` flow already persisted the new
+    user turn (in which case the streaming router skips its own
+    auto-persist). Returns None when the body's last user message has
+    no id, or the id isn't a valid UUID (some clients ship short
+    client-only ids that we wouldn't be able to look up anyway).
+    """
+    body = await request.json()
+    messages = body.get("messages") or []
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        raw = msg.get("id")
+        if not isinstance(raw, str):
+            return None
+        try:
+            return UUID(raw)
+        except ValueError:
+            return None
+    return None
+
+
 async def _last_user_text_from_body(request: Request) -> str:
     """Return the text of the LAST user UIMessage in the request body.
 
@@ -297,17 +322,44 @@ async def _durable_post_message(
             last_user_id,
         )
     else:
-        new_user_parent_id = (
-            history_before[-1].id if history_before else None
+        # If the frontend's canonical ``ThreadHistoryAdapter.append``
+        # flow ran first (POST /threads/{id}/messages with the new user
+        # turn's client id), the user message is already in
+        # ``thread_repo`` — find it by the body's client id and skip
+        # the auto-persist. This is the path that enables server-
+        # persisted branches: assistant-ui knows the right ``parent_id``
+        # (sibling on edit, child of last assistant on normal send) and
+        # already wrote it via ``add_message_with_id``.
+        #
+        # Fallback (auto-persist) handles direct curl / non-assistant-ui
+        # clients that POST straight to the streaming endpoint without
+        # first calling ``/messages``.
+        last_user_client_id = await _last_user_client_id_from_body(request)
+        all_msgs = await thread_repo.all_messages(thread_id, limit=history_limit)
+        already_appended = next(
+            (m for m in all_msgs if last_user_client_id and m.id == last_user_client_id),
+            None,
         )
-        user_msg = await thread_repo.add_message(
-            thread_id,
-            role="user",
-            parts=[{"type": "text", "text": prompt_text, "state": "done"}],
-            parent_id=new_user_parent_id,
-        )
-        assistant_parent_id = user_msg.id
-        user_msg_id = user_msg.id
+
+        if already_appended is not None:
+            user_msg_id = already_appended.id
+            assistant_parent_id = already_appended.id
+            _log.debug(
+                "submit-message: user msg %s already persisted by "
+                "frontend append; skipping auto-persist", user_msg_id,
+            )
+        else:
+            new_user_parent_id = (
+                history_before[-1].id if history_before else None
+            )
+            user_msg = await thread_repo.add_message(
+                thread_id,
+                role="user",
+                parts=[{"type": "text", "text": prompt_text, "state": "done"}],
+                parent_id=new_user_parent_id,
+            )
+            assistant_parent_id = user_msg.id
+            user_msg_id = user_msg.id
 
     # Build history dump. ``ModelMessage`` is a TypeAdapter-backed
     # discriminated union (not a BaseModel subclass), so per-instance

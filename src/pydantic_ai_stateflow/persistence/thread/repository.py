@@ -90,9 +90,42 @@ class ThreadRepository(Protocol):
         parts: list[dict[str, Any]],
         parent_id: UUID | None = None,
     ) -> Message: ...
+    async def add_message_with_id(
+        self,
+        thread_id: UUID,
+        *,
+        id: UUID,
+        role: str,
+        parts: list[dict[str, Any]],
+        parent_id: UUID | None = None,
+    ) -> Message:
+        """Persist a message with a caller-supplied id (idempotent).
+
+        Used by the canonical ``ThreadHistoryAdapter.append`` flow:
+        assistant-ui generates the message id client-side and calls
+        ``POST /threads/{id}/messages``, which forwards to this method.
+        If the id already exists in this thread, returns the existing
+        row unchanged (no-op) — so a retry doesn't duplicate.
+        """
+        ...
     async def history(
         self, thread_id: UUID, *, limit: int = 100,
     ) -> list[Message]: ...
+    async def all_messages(
+        self, thread_id: UUID, *, limit: int = 1000,
+    ) -> list[Message]:
+        """All persisted messages for ``thread_id`` (no active-branch walk).
+
+        Returns the full tree as a flat list — siblings included.
+        Callers that need branch navigation (e.g. the HTTP messages
+        endpoint feeding assistant-ui's ``ThreadHistoryAdapter.load``)
+        get every message with its ``parent_id`` and rebuild the tree
+        client-side.
+
+        ``history`` is still the right call when you need just the
+        active branch (e.g. building model-prompt context).
+        """
+        ...
     async def siblings(self, message_id: UUID) -> list[Message]: ...
     async def close(self, thread_id: UUID) -> Thread: ...
     async def list_(
@@ -196,6 +229,46 @@ class InMemoryThreadRepository:
             "limit": limit,
         },
     )
+    async def add_message_with_id(
+        self,
+        thread_id: UUID,
+        *,
+        id: UUID,
+        role: str,
+        parts: list[dict[str, Any]],
+        parent_id: UUID | None = None,
+    ) -> Message:
+        thread = self._threads.get(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        if thread.status == ThreadStatus.CLOSED:
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot add message",
+            )
+        existing = next(
+            (m for m in self._messages[thread_id] if m.id == id),
+            None,
+        )
+        if existing is not None:
+            # Idempotent — same id already persisted (retry or duplicate
+            # append after a network blip). Return as-is.
+            return existing
+        msg = Message(
+            id=id,
+            thread_id=thread_id,
+            role=role,
+            parts=list(parts),
+            parent_id=parent_id,
+            created_at=datetime.now(tz=UTC),
+        )
+        self._messages[thread_id].append(msg)
+        _log.debug(
+            "InMemoryThreadRepository.add_message_with_id: thread=%s "
+            "id=%s role=%s parent=%s parts=%d",
+            thread_id, msg.id, role, parent_id, len(msg.parts),
+        )
+        return msg
+
     async def history(
         self, thread_id: UUID, *, limit: int = 100,
     ) -> list[Message]:
@@ -204,6 +277,15 @@ class InMemoryThreadRepository:
             return []
         all_msgs = self._messages[thread_id]
         return _walk_active_branch(all_msgs, limit=limit)
+
+    async def all_messages(
+        self, thread_id: UUID, *, limit: int = 1000,
+    ) -> list[Message]:
+        thread = self._threads.get(thread_id)
+        if thread is None:
+            return []
+        msgs = sorted(self._messages[thread_id], key=lambda m: m.created_at)
+        return msgs[:limit]
 
     async def siblings(self, message_id: UUID) -> list[Message]:
         for tid, msgs in self._messages.items():

@@ -24,6 +24,7 @@ class TraceName(StrEnum):
     # --- api.threads -------------------------------------------------------
     THREADS_CREATE = "api.threads.create"
     THREADS_GET_MESSAGES = "api.threads.get_messages"
+    THREADS_ADD_MESSAGE = "api.threads.add_message"
 
     # --- persistence.thread ------------------------------------------------
     THREAD_CREATE = "persistence.thread.create"

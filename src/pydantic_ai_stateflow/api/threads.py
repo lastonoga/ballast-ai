@@ -4,17 +4,35 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from pydantic import BaseModel
 
 from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from pydantic_ai_stateflow.persistence.thread.repository import (
+    ThreadClosedError,
+    ThreadRepository,
+)
 
 _log = get_logger(__name__)
 
 _IncludeArchivedQuery = Query(default=False)
 _LimitQuery = Query(default=100, ge=1, le=500)
 _OffsetQuery = Query(default=0, ge=0)
+
+
+class _AppendMessageBody(BaseModel):
+    """Body for ``POST /threads/{id}/messages``.
+
+    Mirrors assistant-ui's ``ThreadHistoryAdapter.append`` payload:
+    the client supplies the message id + parent_id (computed by the
+    runtime's local tree) and the framework persists as-is.
+    """
+
+    id: UUID
+    parent_id: UUID | None = None
+    role: str
+    parts: list[dict[str, Any]]
 
 
 def build_threads_router(
@@ -66,19 +84,64 @@ def build_threads_router(
     @router.get("/threads/{thread_id}/messages")
     @traced(
         TraceName.THREADS_GET_MESSAGES,
-        attrs=lambda thread_id, limit=100, **__: {
+        attrs=lambda thread_id, limit=1000, **__: {
             "thread_id": str(thread_id),
             "limit": limit,
         },
     )
     async def get_messages(
-        thread_id: UUID, limit: int = 100,
+        thread_id: UUID, limit: int = 1000,
     ) -> list[dict[str, Any]]:
+        """Return EVERY message (tree-flat) so the frontend can render branches.
+
+        Previously walked the active branch only — fine for a single-line
+        chat, but assistant-ui's branch picker needs to see sibling
+        messages (same ``parent_id``) to render the ``‹ 1/2 ›`` switcher.
+        Now returns the full set; the frontend reconstructs the tree
+        from each row's ``parent_id``.
+        """
         thread = await thread_repo.load(thread_id)
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
-        msgs = await thread_repo.history(thread_id, limit=limit)
+        msgs = await thread_repo.all_messages(thread_id, limit=limit)
         return [m.model_dump(mode="json") for m in msgs]
+
+    @router.post("/threads/{thread_id}/messages/append", status_code=201)
+    @traced(
+        TraceName.THREADS_ADD_MESSAGE,
+        attrs=lambda thread_id, body, **__: {
+            "thread_id": str(thread_id),
+            "role": body.role,
+        },
+    )
+    async def post_message(
+        thread_id: UUID, body: _AppendMessageBody,
+    ) -> dict[str, Any]:
+        """Persist a single message with caller-supplied id + parent_id.
+
+        Canonical assistant-ui ``ThreadHistoryAdapter.append`` flow: the
+        runtime tracks the message tree client-side and POSTs each new
+        message here with the right ``parent_id`` (last assistant for
+        a normal send, the edited message's parent for an edit / branch,
+        the regenerated message's parent for a regeneration).
+
+        Idempotent on the client-supplied ``id`` — a network retry with
+        the same id returns the existing row instead of duplicating.
+        """
+        thread = await thread_repo.load(thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="thread not found")
+        try:
+            msg = await thread_repo.add_message_with_id(
+                thread_id,
+                id=body.id,
+                role=body.role,
+                parts=body.parts,
+                parent_id=body.parent_id,
+            )
+        except ThreadClosedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return msg.model_dump(mode="json")
 
     @router.post("/threads/{thread_id}/archive")
     async def archive_thread(thread_id: UUID) -> dict[str, Any]:
