@@ -1,3 +1,12 @@
+from pydantic_ai_stateflow.runtime.agents import (
+    AgentRef,
+    StateflowAgent,
+    clear_agent_registry,
+    get_agent,
+    list_agents,
+    register_agent,
+    validate_thread_metadata,
+)
 from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
 from pydantic_ai_stateflow.runtime.dbos_setup import DBOSConfig, build_dbos_config
 from pydantic_ai_stateflow.runtime.det import Det
@@ -6,6 +15,7 @@ from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, Idempote
 from pydantic_ai_stateflow.runtime.provider import ServiceProvider
 
 __all__ = [
+    "AgentRef",
     "Container",
     "DBOSConfig",
     "DefaultContainer",
@@ -15,5 +25,11 @@ __all__ = [
     "IdempotencyInput",
     "IdempotencyValue",
     "ServiceProvider",
+    "StateflowAgent",
     "build_dbos_config",
+    "clear_agent_registry",
+    "get_agent",
+    "list_agents",
+    "register_agent",
+    "validate_thread_metadata",
 ]

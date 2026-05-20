@@ -193,6 +193,7 @@ from pydantic_ai_stateflow.patterns.mutation import (
 )
 from pydantic_ai_stateflow.providers import CoreProvider, PersistenceProvider
 from pydantic_ai_stateflow.runtime import (
+    AgentRef,
     Container,
     DBOSConfig,
     DefaultContainer,
@@ -202,7 +203,13 @@ from pydantic_ai_stateflow.runtime import (
     IdempotencyInput,
     IdempotencyValue,
     ServiceProvider,
+    StateflowAgent,
     build_dbos_config,
+    clear_agent_registry,
+    get_agent,
+    list_agents,
+    register_agent,
+    validate_thread_metadata,
 )
 
 __all__ = [
@@ -294,8 +301,10 @@ __all__ = [
     "SemanticDeduper",
     "SemanticLoopDetected",
     "SemanticLoopDetector",
+    "AgentRef",
     "ServiceProvider",
     "Stage",
+    "StateflowAgent",
     "StateflowCapability",
     "TimeoutResponse",
     "TraceName",
@@ -311,17 +320,22 @@ __all__ = [
     "build_hitl_router",
     "build_streaming_router",
     "build_threads_router",
+    "clear_agent_registry",
     "configure_cost_extractors",
     "configure_logging",
     "extract_text",
+    "get_agent",
     "get_container",
     "get_engine",
-    "register_cost_extractor",
     "get_logger",
     "get_tenant_id",
     "has_logfire",
+    "list_agents",
     "make_helper_agent_with_approval_tools",
     "messages_to_model_history",
+    "register_agent",
+    "register_cost_extractor",
     "register_grounded_tools",
     "traced",
+    "validate_thread_metadata",
 ]

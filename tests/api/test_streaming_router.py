@@ -36,6 +36,62 @@ from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
+from pydantic_ai_stateflow.runtime import (
+    StateflowAgent,
+    clear_agent_registry,
+    register_agent,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_registry() -> Any:
+    """Per-test isolation: blow away the process-wide agent registry."""
+    clear_agent_registry()
+    yield
+    clear_agent_registry()
+
+
+class _TestStateflowAgent(StateflowAgent):
+    """Test seam: wraps a pre-built pydantic-ai ``Agent`` + optional
+    ``deps_factory`` + ``model_settings`` into a ``StateflowAgent``
+    instance the registry can resolve.
+
+    Defaults the registered ``name`` to ``"conversation"`` to match what
+    the test fixtures write into ``Thread.agent``.
+    """
+
+    name = "conversation"
+
+    def __init__(
+        self,
+        agent: Agent[Any, Any],
+        *,
+        deps_factory: Any = None,
+        model_settings: Any = None,
+    ) -> None:
+        self._agent = agent
+        self._deps_factory = deps_factory
+        self._model_settings = model_settings
+
+    def build_agent(self) -> Agent[Any, Any]:
+        return self._agent
+
+    async def build_deps(
+        self, *, thread: Any, tenant_id: UUID, message: Any,
+    ) -> Any:
+        if self._deps_factory is None:
+            return None
+        result = self._deps_factory(
+            thread_id=thread.id, tenant_id=tenant_id, message=message,
+        )
+        # support async factories too
+        import inspect as _inspect
+        if _inspect.isawaitable(result):
+            return await result
+        return result
+
+    def model_settings(self) -> Any:
+        return self._model_settings
 
 
 def _ag_ui_body(*, thread_id: UUID, user_text: str) -> dict[str, Any]:
@@ -61,12 +117,21 @@ def _ag_ui_body(*, thread_id: UUID, user_text: str) -> dict[str, Any]:
 def _build_app(
     repo: InMemoryThreadRepository,
     agent: Agent[Any, Any],
-    **kwargs: Any,
+    *,
+    deps_factory: Any = None,
+    model_settings: Any = None,
 ) -> FastAPI:
-    app = FastAPI()
-    app.include_router(
-        build_streaming_router(thread_repo=repo, agent=agent, **kwargs),
+    """Register ``agent`` as the ``"conversation"`` StateflowAgent and
+    build a streaming-router-only FastAPI app over ``repo``."""
+    register_agent(
+        _TestStateflowAgent(
+            agent,
+            deps_factory=deps_factory,
+            model_settings=model_settings,
+        ),
     )
+    app = FastAPI()
+    app.include_router(build_streaming_router(thread_repo=repo))
     return app
 
 

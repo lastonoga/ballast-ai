@@ -22,7 +22,6 @@ Endpoint contract::
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
@@ -38,14 +37,13 @@ from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from pydantic_ai_stateflow.runtime.agents import get_agent
 
 _log = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
     from pydantic_ai.agent import AgentRunResult
     from pydantic_ai.messages import ModelMessage
-    from pydantic_ai.settings import ModelSettings
     from starlette.responses import Response
 
 
@@ -53,34 +51,14 @@ DepsT = TypeVar("DepsT")
 OutT = TypeVar("OutT")
 
 DepsFactory = Callable[..., Any] | Callable[..., Awaitable[Any]]
-"""Callable that mints per-request agent deps.
+"""Retained for backwards compatibility of the public type name.
 
-Receives keyword arguments ``thread_id: UUID``, ``tenant_id: UUID``, and
-``message: ModelMessage`` (the just-arrived user turn). May be sync or
-async. Anything that isn't a callable is passed through unchanged.
+The streaming router itself no longer takes a ``deps_factory`` — apps
+register a ``StateflowAgent`` whose ``build_deps`` method serves the
+same role.
 """
 
 _TenantDep = Depends(get_tenant_id)
-
-
-async def _resolve_deps(
-    deps_factory: Any,
-    *,
-    thread_id: UUID,
-    tenant_id: UUID,
-    message: ModelMessage | None,
-) -> Any:
-    """Invoke ``deps_factory`` per-request, or pass it through if not callable."""
-    if deps_factory is None:
-        return None
-    if callable(deps_factory):
-        result = deps_factory(
-            thread_id=thread_id, tenant_id=tenant_id, message=message,
-        )
-        if inspect.isawaitable(result):
-            return await result
-        return result
-    return deps_factory
 
 
 def _last_user_text(messages: list[ModelMessage]) -> str:
@@ -179,40 +157,38 @@ _DEFAULT_HISTORY_LIMIT = 200
 def build_streaming_router(
     *,
     thread_repo: ThreadRepository,
-    agent: Agent[Any, Any],
-    deps_factory: DepsFactory | None = None,
-    model_settings: ModelSettings | None = None,
     prefix: str = "",
     history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> APIRouter:
     """Mount ``POST {prefix}/threads/{id}/messages`` as a Vercel-AI stream.
 
     Server-stateful contract: the thread MUST already exist (404 otherwise
-    — no lazy-create). The just-arrived user turn is persisted via
-    ``thread_repo.add_message`` BEFORE the model runs, so a client crash
-    mid-stream still leaves the thread consistent. After the agent
-    completes the assistant reply is persisted via an ``on_complete``
-    callback wired into ``VercelAIAdapter.run_stream``.
+    — no lazy-create). Its ``agent`` field is the registry key for a
+    ``StateflowAgent`` instance the app registered at startup; the
+    framework resolves that instance via
+    ``pydantic_ai_stateflow.runtime.agents.get_agent`` and uses its
+    ``agent`` (pydantic-ai ``Agent``), ``build_deps(...)``, and
+    ``model_settings()`` to drive the run. The streaming endpoint itself
+    is agent-agnostic.
 
-    Tool-approval responses (Vercel AI SDK v6 ``approval-responded`` parts)
-    are extracted by ``VercelAIAdapter.deferred_tool_results`` and threaded
-    into ``run_stream`` so ``@agent.tool(requires_approval=True)`` tools
-    resume after the user clicks Approve/Cancel.
+    The just-arrived user turn is persisted via ``thread_repo.add_message``
+    BEFORE the model runs, so a client crash mid-stream still leaves the
+    thread consistent. After the agent completes the assistant reply is
+    persisted via an ``on_complete`` callback wired into
+    ``VercelAIAdapter.run_stream``.
+
+    Tool-approval responses (Vercel AI SDK v6 ``approval-responded``
+    parts) are extracted by ``VercelAIAdapter.deferred_tool_results``
+    and threaded into ``run_stream`` so
+    ``@agent.tool(requires_approval=True)`` tools resume after the user
+    clicks Approve/Cancel.
 
     ``message_history`` is reconstructed from ``thread_repo.history(...)``
-    (excluding the just-persisted current user turn — pydantic-ai re-derives
-    that one from the incoming body messages).
+    (excluding the just-persisted current user turn — pydantic-ai
+    re-derives that one from the incoming body messages).
 
     Args:
       thread_repo: source of truth for thread + message persistence.
-      agent: pydantic-ai ``Agent`` to run on each request.
-      deps_factory: callable invoked per request with
-        ``thread_id``, ``tenant_id``, ``message`` kwargs to mint fresh
-        deps for the agent. If ``None`` and the agent declares
-        ``deps_type``, that's the caller's problem (pydantic-ai will
-        raise). Non-callable values pass through unchanged.
-      model_settings: forwarded to the agent on every run. Use this to
-        thread ``temperature``, OpenRouter reasoning config, etc.
       prefix: optional router prefix.
       history_limit: cap on the number of rows hydrated from the repo
         per request (default 200).
@@ -246,6 +222,10 @@ def build_streaming_router(
                 thread_id, tenant_id,
             )
             raise HTTPException(status_code=404, detail="thread not found")
+
+        stateflow_agent = get_agent(thread.agent)
+        agent = stateflow_agent.agent
+        model_settings = stateflow_agent.model_settings()
 
         adapter = await VercelAIAdapter.from_request(
             request, agent=agent, sdk_version=6,
@@ -379,9 +359,8 @@ def build_streaming_router(
             len(rows), len(history),
         )
 
-        resolved_deps = await _resolve_deps(
-            deps_factory,
-            thread_id=thread_id,
+        resolved_deps = await stateflow_agent.build_deps(
+            thread=thread,
             tenant_id=tenant_id,
             message=last_message,
         )

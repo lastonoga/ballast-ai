@@ -26,32 +26,42 @@ from fastapi.testclient import TestClient
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
+from notes_app.agent import NotesAgent
 from notes_app.main import build_app
 from notes_app.notes.repository import InMemoryNoteRepository
 from notes_app.notes.tools import NoteToolDeps, register_note_tools
 
 
-def _fake_agent(
-    notes_repo: InMemoryNoteRepository | None = None,
-    *,
-    with_tools: bool = False,
-) -> Agent[NoteToolDeps, str]:
-    """Build an in-memory agent over ``TestModel`` for CI smoke.
+class _FakeNotesAgent(NotesAgent):
+    """``NotesAgent`` variant whose ``build_agent`` returns a TestModel agent.
 
-    ``with_tools=False`` (default) skips tool registration so ``TestModel``
-    just emits a plain text reply (it would otherwise auto-call every
-    registered tool, which buries the lifecycle ``finish`` chunk behind a
-    fanout of tool-call events the basic smoke check doesn't need).
+    Skips OpenRouter entirely so the CI smoke runs without
+    ``OPENROUTER_API_KEY``. Tool registration is opt-in: ``TestModel``
+    auto-calls every registered tool, which buries the lifecycle
+    ``finish`` chunk behind a fanout of tool-call events.
     """
-    del notes_repo  # repo is bound via the deps factory in build_app
-    agent: Agent[NoteToolDeps, str] = Agent(
-        TestModel(custom_output_text="Hello, world!"),
-        output_type=str,
-        deps_type=NoteToolDeps,
-    )
-    if with_tools:
-        register_note_tools(agent)
-    return agent
+
+    def __init__(
+        self,
+        *,
+        notes_repo: InMemoryNoteRepository,
+        with_tools: bool = False,
+    ) -> None:
+        super().__init__(notes_repo=notes_repo)
+        self._with_tools = with_tools
+
+    def build_agent(self) -> Agent[NoteToolDeps, str]:
+        agent: Agent[NoteToolDeps, str] = Agent(
+            TestModel(custom_output_text="Hello, world!"),
+            output_type=str,
+            deps_type=NoteToolDeps,
+        )
+        if self._with_tools:
+            register_note_tools(agent)
+        return agent
+
+    def model_settings(self) -> None:
+        return None
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
@@ -96,7 +106,10 @@ def test_note_repository_is_bound_in_container() -> None:
     from notes_app.notes.repository import NoteRepository
 
     notes_repo = InMemoryNoteRepository()
-    app = build_app(notes_repo=notes_repo, agent=_fake_agent(notes_repo))
+    app = build_app(
+        notes_repo=notes_repo,
+        notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
+    )
     with TestClient(app):
         assert app.state.container.has(NoteRepository)
         assert app.state.container.get(NoteRepository) is notes_repo
@@ -105,7 +118,10 @@ def test_note_repository_is_bound_in_container() -> None:
 def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a TestModel-backed agent — no network."""
     notes_repo = InMemoryNoteRepository()
-    app = build_app(notes_repo=notes_repo, agent=_fake_agent(notes_repo))
+    app = build_app(
+        notes_repo=notes_repo,
+        notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
+    )
     tenant_id = str(uuid4())
 
     with TestClient(app) as client:
