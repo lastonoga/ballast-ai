@@ -107,20 +107,17 @@ def build_app(
     # re-creating the app in tests just overwrites the same name.
     register_agent(agent)
 
-    providers = []
-    if has_logfire():
-        providers.append(
+    engine = Engine(
+        providers=[
             ObservabilityProvider(
-                service_name=os.environ.get(
-                    "LOGFIRE_SERVICE_NAME", "notes-app",
-                ),
-                environment=os.environ.get("LOGFIRE_ENVIRONMENT", "dev"),
+                service_name="app",
+                environment="dev",
                 instrument_pydantic_ai=True,
                 instrument_httpx=True,
-            ),
-        )
-
-    engine = Engine(providers=providers)
+            )
+        ]
+    )
+    
     threads_router = build_threads_router(thread_repo=repo)
     create_router = _build_create_thread_router(repo)
     streaming_router = build_streaming_router(thread_repo=repo)
