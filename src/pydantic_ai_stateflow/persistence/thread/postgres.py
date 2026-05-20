@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import asc, desc, select
 from sqlalchemy import delete as sa_delete
@@ -22,10 +22,7 @@ from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
-from pydantic_ai_stateflow.persistence.thread.repository import (
-    ThreadClosedError,
-    _walk_active_branch,
-)
+from pydantic_ai_stateflow.persistence.thread.repository import ThreadClosedError
 
 _log = get_logger(__name__)
 
@@ -81,7 +78,7 @@ class PostgresThreadRepository:
         *,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: str | None = None,
+        id: str | None = None,
     ) -> Message:
         thread = await self.load(thread_id)
         if thread is None:
@@ -90,62 +87,39 @@ class PostgresThreadRepository:
             raise ThreadClosedError(
                 f"Thread {thread_id} is closed; cannot add message",
             )
+        if id is not None:
+            existing_stmt = select(Message).where(col(Message.id) == id)
+            existing = (
+                await self._session.execute(existing_stmt)
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
 
         msg = Message(
+            id=id or str(uuid4()),
             thread_id=thread_id,
             role=role,
             parts=list(parts),
-            parent_id=parent_id,
         )
         self._session.add(msg)
         await self._session.flush()
         await self._session.refresh(msg)
         _log.debug(
             "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
-            "parent=%s parts=%d",
-            thread_id, msg.id, role, parent_id, len(msg.parts),
+            "parts=%d",
+            thread_id, msg.id, role, len(msg.parts),
         )
         return msg
 
-    async def add_message_with_id(
-        self,
-        thread_id: UUID,
-        *,
-        id: str,
-        role: str,
-        parts: list[dict[str, Any]],
-        parent_id: str | None = None,
-    ) -> Message:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        if thread.status == ThreadStatus.CLOSED:
-            raise ThreadClosedError(
-                f"Thread {thread_id} is closed; cannot add message",
-            )
-        existing_stmt = select(Message).where(col(Message.id) == id)
-        existing = (await self._session.execute(existing_stmt)).scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-        msg = Message(
-            id=id,
-            thread_id=thread_id,
-            role=role,
-            parts=list(parts),
-            parent_id=parent_id,
-        )
-        self._session.add(msg)
-        await self._session.flush()
-        await self._session.refresh(msg)
-        _log.debug(
-            "PostgresThreadRepository.add_message_with_id: thread=%s "
-            "id=%s role=%s parent=%s parts=%d",
-            thread_id, msg.id, role, parent_id, len(msg.parts),
-        )
-        return msg
-
-    async def all_messages(
+    @traced(
+        TraceName.THREAD_HISTORY,
+        attrs=lambda _self, thread_id, *, limit=1000, **__: {
+            "thread_id": str(thread_id),
+            "limit": limit,
+            "backend": "postgres",
+        },
+    )
+    async def history(
         self,
         thread_id: UUID,
         *,
@@ -160,6 +134,19 @@ class PostgresThreadRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def delete_messages(
+        self, thread_id: UUID, *, ids: list[str],
+    ) -> None:
+        if not ids:
+            return
+        await self._session.execute(
+            sa_delete(Message).where(
+                col(Message.thread_id) == thread_id,
+                col(Message.id).in_(ids),
+            ),
+        )
+        await self._session.flush()
+
     async def close(self, thread_id: UUID) -> Thread:
         thread = await self.load(thread_id)
         if thread is None:
@@ -168,57 +155,6 @@ class PostgresThreadRepository:
         thread.closed_at = datetime.now(tz=UTC)
         await self._session.flush()
         return thread
-
-    @traced(
-        TraceName.THREAD_HISTORY,
-        attrs=lambda _self, thread_id, *, limit=100, **__: {
-            "thread_id": str(thread_id),
-            "limit": limit,
-            "backend": "postgres",
-        },
-    )
-    async def history(
-        self,
-        thread_id: UUID,
-        *,
-        limit: int = 100,
-    ) -> list[Message]:
-        stmt = (
-            select(Message)
-            .where(col(Message.thread_id) == thread_id)
-            .order_by(asc(col(Message.created_at)))
-        )
-        result = await self._session.execute(stmt)
-        msgs = list(result.scalars().all())
-        return _walk_active_branch(msgs, limit=limit)
-
-    async def siblings(self, message_id: str) -> list[Message]:
-        target_stmt = select(Message).where(col(Message.id) == message_id)
-        target_result = await self._session.execute(target_stmt)
-        target = target_result.scalar_one_or_none()
-        if target is None:
-            return []
-
-        if target.parent_id is None:
-            stmt = (
-                select(Message)
-                .where(
-                    col(Message.thread_id) == target.thread_id,
-                    col(Message.parent_id).is_(None),
-                )
-                .order_by(asc(col(Message.created_at)))
-            )
-        else:
-            stmt = (
-                select(Message)
-                .where(
-                    col(Message.thread_id) == target.thread_id,
-                    col(Message.parent_id) == target.parent_id,
-                )
-                .order_by(asc(col(Message.created_at)))
-            )
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
 
     async def list_(
         self,

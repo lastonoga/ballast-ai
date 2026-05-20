@@ -298,7 +298,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         user_message_id: str,
         prompt: str,
         history_dump: list[dict[str, Any]],
-        assistant_parent_id: str | None = None,
     ) -> WorkflowHandleAsync[None]:
         """Enqueue ``self.run`` into the per-thread serialization queue.
 
@@ -328,7 +327,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 thread_id_str=str(thread_id),
                 prompt=prompt,
                 history_dump=history_dump,
-                assistant_parent_id_str=assistant_parent_id,
             )
 
     async def cancel_thread_runs(self, thread_id: UUID) -> int:
@@ -380,7 +378,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         thread_id_str: str,
         prompt: str,
         history_dump: list[dict[str, Any]],
-        assistant_parent_id_str: str | None = None,
     ) -> None:
         """Durable agent run — drives ``agent.iter()`` and persists every event.
 
@@ -497,7 +494,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             await self._persist_assistant_turn(
                 thread_id=thread_id,
                 result=final_result,
-                parent_id=assistant_parent_id_str,
             )
 
         await self._persist_and_publish(
@@ -510,7 +506,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         *,
         thread_id: UUID,
         result: Any,
-        parent_id: str | None,
     ) -> None:
         """Dump the assistant's Vercel-AI UI parts and persist as one message row.
 
@@ -558,7 +553,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             thread_id,
             role="assistant",
             parts=asst_parts,
-            parent_id=parent_id,
         )
 
     async def _encode_and_persist(

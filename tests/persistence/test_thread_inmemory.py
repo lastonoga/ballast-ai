@@ -109,55 +109,8 @@ async def test_agent_accepts_custom_app_string(repo):
 
 
 @pytest.mark.asyncio
-async def test_history_walks_active_branch_picking_newest_sibling(repo):
-    """Regenerated branches are siblings; history returns the newest path.
-
-    Tree shape:
-
-        u1 - a1 - u2 - a2_old
-                    \- a2_new   <- newer => active
-
-    Active branch: [u1, a1, u2, a2_new]. ``a2_old`` is preserved in
-    storage (accessible via ``siblings``) but skipped on the linear
-    history walk.
-    """
-    import asyncio
-
-    thread = await repo.create(agent="conversation", metadata={})
-
-    u1 = await repo.add_message(
-        thread.id, role="user", parts=[{"type": "text", "text": "hi"}],
-        parent_id=None,
-    )
-    a1 = await repo.add_message(
-        thread.id, role="assistant", parts=[{"type": "text", "text": "hello"}],
-        parent_id=u1.id,
-    )
-    u2 = await repo.add_message(
-        thread.id, role="user", parts=[{"type": "text", "text": "again"}],
-        parent_id=a1.id,
-    )
-    a2_old = await repo.add_message(
-        thread.id, role="assistant", parts=[{"type": "text", "text": "v1"}],
-        parent_id=u2.id,
-    )
-    await asyncio.sleep(0.001)
-    a2_new = await repo.add_message(
-        thread.id, role="assistant", parts=[{"type": "text", "text": "v2"}],
-        parent_id=u2.id,
-    )
-
-    branch = await repo.history(thread.id)
-    assert [m.id for m in branch] == [u1.id, a1.id, u2.id, a2_new.id]
-    assert a2_old.id not in {m.id for m in branch}
-
-    sibs = await repo.siblings(a2_new.id)
-    assert {s.id for s in sibs} == {a2_old.id, a2_new.id}
-
-
-@pytest.mark.asyncio
-async def test_history_falls_back_to_linear_for_legacy_null_parents(repo):
-    """Pre-branching threads (all parent_id=NULL) still render in order."""
+async def test_history_is_linear_ordered_by_created_at(repo):
+    """Messages come back in insertion order — flat list, no tree."""
     thread = await repo.create(agent="conversation", metadata={})
     m1 = await repo.add_message(
         thread.id, role="user", parts=[{"type": "text", "text": "1"}],
@@ -170,3 +123,38 @@ async def test_history_falls_back_to_linear_for_legacy_null_parents(repo):
     )
     history = await repo.history(thread.id)
     assert [m.id for m in history] == [m1.id, m2.id, m3.id]
+
+
+@pytest.mark.asyncio
+async def test_add_message_with_id_is_idempotent(repo):
+    """Re-adding the same client-supplied id returns the existing row."""
+    thread = await repo.create(agent="conversation", metadata={})
+    first = await repo.add_message(
+        thread.id, role="user", id="client-123",
+        parts=[{"type": "text", "text": "hi"}],
+    )
+    again = await repo.add_message(
+        thread.id, role="user", id="client-123",
+        parts=[{"type": "text", "text": "different but ignored"}],
+    )
+    assert again.id == first.id
+    assert again.parts == first.parts  # original parts kept
+    assert len(await repo.history(thread.id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_messages_drops_only_listed_ids(repo):
+    """``delete_messages`` removes specified ids; unknown ids ignored."""
+    thread = await repo.create(agent="conversation", metadata={})
+    m1 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "1"}],
+    )
+    m2 = await repo.add_message(
+        thread.id, role="assistant", parts=[{"type": "text", "text": "2"}],
+    )
+    m3 = await repo.add_message(
+        thread.id, role="user", parts=[{"type": "text", "text": "3"}],
+    )
+    await repo.delete_messages(thread.id, ids=[m2.id, "nonexistent"])
+    history = await repo.history(thread.id)
+    assert [m.id for m in history] == [m1.id, m3.id]

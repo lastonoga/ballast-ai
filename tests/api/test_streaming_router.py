@@ -137,7 +137,7 @@ async def test_returns_404_when_thread_missing() -> None:
     missing = uuid4()
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{missing}/runs",
+            f"/threads/{missing}/messages",
             json=_ag_ui_body(thread_id=missing, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -153,7 +153,7 @@ async def test_persists_user_message_before_stream() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hello world"),
             headers={"Accept": "text/event-stream"},
         )
@@ -180,7 +180,7 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -198,21 +198,23 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
 
 @pytest.mark.asyncio
 async def test_message_history_reconstructed_from_repo() -> None:
-    """Seed 3 prior turns; verify the agent sees them via
-    ``last_model_request_parameters.messages``."""
+    """Body carries full history (matching useChat behavior); body-vs-DB
+    sync keeps the prior 3 rows + appends the new turn-3 user msg.
+    Agent then sees all 3 user turns in ``message_history``.
+    """
     repo = InMemoryThreadRepository()
     thread = await repo.create(agent="conversation", metadata={})
-    await repo.add_message(
-        thread.id, role="user",
-        parts=[{"type": "text", "text": "turn1-user"}],
+    t1u = await repo.add_message(
+        thread.id, role="user", id="t1u",
+        parts=[{"type": "text", "text": "turn1-user", "state": "done"}],
     )
-    await repo.add_message(
-        thread.id, role="assistant",
-        parts=[{"type": "text", "text": "turn1-assistant"}],
+    t1a = await repo.add_message(
+        thread.id, role="assistant", id="t1a",
+        parts=[{"type": "text", "text": "turn1-assistant", "state": "done"}],
     )
-    await repo.add_message(
-        thread.id, role="user",
-        parts=[{"type": "text", "text": "turn2-user"}],
+    t2u = await repo.add_message(
+        thread.id, role="user", id="t2u",
+        parts=[{"type": "text", "text": "turn2-user", "state": "done"}],
     )
 
     seen_messages: list[list[Any]] = []
@@ -232,10 +234,33 @@ async def test_message_history_reconstructed_from_repo() -> None:
     )
     app = _build_app(repo, agent)
 
+    body = {
+        "trigger": "submit-message",
+        "id": str(thread.id),
+        "messages": [
+            {
+                "id": t1u.id, "role": "user",
+                "parts": [{"type": "text", "text": "turn1-user", "state": "done"}],
+            },
+            {
+                "id": t1a.id, "role": "assistant",
+                "parts": [{"type": "text", "text": "turn1-assistant", "state": "done"}],
+            },
+            {
+                "id": t2u.id, "role": "user",
+                "parts": [{"type": "text", "text": "turn2-user", "state": "done"}],
+            },
+            {
+                "id": str(uuid4()), "role": "user",
+                "parts": [{"type": "text", "text": "turn3-user", "state": "done"}],
+            },
+        ],
+    }
+
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
-            json=_ag_ui_body(thread_id=thread.id, user_text="turn3-user"),
+            f"/threads/{thread.id}/messages",
+            json=body,
             headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
@@ -264,7 +289,7 @@ async def test_stream_emits_canonical_vercel_ai_events() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -310,7 +335,7 @@ async def test_deps_factory_invoked_per_request() -> None:
     app = _build_app(repo, agent, deps_factory=deps_factory)
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -350,7 +375,7 @@ async def test_model_settings_flow_through() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -364,21 +389,20 @@ async def test_model_settings_flow_through() -> None:
 
 
 @pytest.mark.asyncio
-async def test_regenerate_message_creates_sibling_assistant() -> None:
-    """``trigger=regenerate-message`` doesn't add a new user turn; the
-    new assistant reply becomes a sibling of the previous one (same
-    ``parent_id``), so both versions are preserved in storage."""
+async def test_regenerate_truncates_old_assistant_then_emits_new() -> None:
+    """Regenerate = body has user but no trailing assistant. The body-vs-DB
+    sync drops the stale assistant row; the agent run then persists a
+    fresh one. Flat list: edit / regenerate collapse to truncate-then-append.
+    """
     repo = InMemoryThreadRepository()
     thread = await repo.create(agent="conversation", metadata={})
     user_msg = await repo.add_message(
-        thread.id, role="user",
+        thread.id, role="user", id="u1",
         parts=[{"type": "text", "text": "hi"}],
-        parent_id=None,
     )
     asst_v1 = await repo.add_message(
-        thread.id, role="assistant",
+        thread.id, role="assistant", id="a1",
         parts=[{"type": "text", "text": "v1"}],
-        parent_id=user_msg.id,
     )
 
     agent: Agent[None, str] = Agent(
@@ -392,34 +416,24 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
         "messageId": str(asst_v1.id),
         "messages": [
             {
-                "id": str(user_msg.id), "role": "user",
+                "id": user_msg.id, "role": "user",
                 "parts": [{"type": "text", "text": "hi", "state": "done"}],
-            },
-            {
-                "id": str(asst_v1.id), "role": "assistant",
-                "parts": [{"type": "text", "text": "v1", "state": "done"}],
             },
         ],
     }
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=body,
             headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200, r.text
         _ = r.text
 
-    siblings_of_user = await repo.siblings(user_msg.id)
-    assert [s.id for s in siblings_of_user] == [user_msg.id]
-
-    asst_siblings = await repo.siblings(asst_v1.id)
-    assert len(asst_siblings) == 2
-    assert {s.parent_id for s in asst_siblings} == {user_msg.id}
-
-    branch = await repo.history(thread.id)
-    assert [m.role for m in branch] == ["user", "assistant"]
-    assert branch[-1].id != asst_v1.id  # newer sibling wins
+    history = await repo.history(thread.id)
+    assert [m.role for m in history] == ["user", "assistant"]
+    assert history[0].id == user_msg.id  # user preserved
+    assert history[1].id != asst_v1.id  # stale assistant dropped, new minted
 
 
 @pytest.mark.asyncio
@@ -430,7 +444,7 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
     from pydantic_ai_stateflow.api.streaming.router import (
-        _trim_adapter_messages_to_last_user_turn,
+        _trim_adapter_messages_to_last_user_prompt,
     )
 
     repo = InMemoryThreadRepository()
@@ -468,7 +482,7 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
 
     msgs_before = list(adapter.messages)
     if adapter.deferred_tool_results is None:
-        _trim_adapter_messages_to_last_user_turn(adapter)
+        _trim_adapter_messages_to_last_user_prompt(adapter)
     msgs_after = list(adapter.messages)
 
     assert msgs_before == msgs_after, (
@@ -517,7 +531,7 @@ async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/runs",
+            f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="who?"),
             headers={"Accept": "text/event-stream"},
         )

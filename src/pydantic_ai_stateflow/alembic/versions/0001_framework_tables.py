@@ -49,12 +49,12 @@ def upgrade() -> None:
 
     # 2. messages (FK → threads)
     #
-    # ``id`` / ``parent_id`` are free-form strings (NOT UUIDs) so
-    # client-supplied ids — e.g. assistant-ui's short random strings
-    # like ``"MbPSd9jddGfC6UAV"`` — round-trip 1:1 without coercion.
-    # Backend-issued ids default to ``str(uuid4())`` for uniqueness.
-    # This keeps branch siblings (which assistant-ui keys off
-    # ``parent_id``) aligned with the frontend's local tree.
+    # Flat linear list — no ``parent_id``. ``id`` is a free-form string
+    # (not UUID) so assistant-ui's short client ids like
+    # ``"MbPSd9jddGfC6UAV"`` round-trip 1:1. Backend-issued ids default
+    # to ``str(uuid4())``. The UI runtime renders a flat array so we
+    # don't model branches — edit / regenerate collapse to "truncate
+    # then append" in ``POST /threads/{id}/messages``.
     op.create_table(
         "messages",
         sa.Column("id", sa.String(), primary_key=True),
@@ -66,12 +66,6 @@ def upgrade() -> None:
         ),
         sa.Column("role", sa.String(), nullable=False),
         sa.Column(
-            "parent_id",
-            sa.String(),
-            sa.ForeignKey("messages.id"),
-            nullable=True,
-        ),
-        sa.Column(
             "parts",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
@@ -80,7 +74,6 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
-    op.create_index("ix_messages_parent_id", "messages", ["parent_id"])
 
     # 3. outbox
     op.create_table(

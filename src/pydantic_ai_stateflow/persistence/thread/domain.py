@@ -86,15 +86,17 @@ class Thread(SQLModel, table=True):
 
 
 class Message(SQLModel, table=True):
-    """One message in a thread. Threads are conversation TREES, not lists.
+    """One message in a thread — flat linear list, no tree structure.
 
     ``id`` is a free-form string (NOT a UUID) so client-supplied ids —
     e.g. assistant-ui's short random strings — round-trip 1:1 without
     coercion. Backend-issued messages default to ``str(uuid4())`` for
-    uniqueness. ``parent_id`` references ``id`` and is therefore also
-    a string. NULL only for the very first message in a thread.
-    Siblings share ``parent_id`` and represent branches — produced by
-    ``trigger='regenerate-message'`` or user-message edits.
+    uniqueness.
+
+    No ``parent_id``: the UI runtime (``@assistant-ui/react-ai-sdk``
+    over Vercel ``useChat``) renders a flat message array and has no
+    branch switcher. Edit / regenerate collapse to "truncate then
+    append" via the body-vs-DB diff in ``POST /threads/{id}/messages``.
     """
 
     __tablename__ = "messages"
@@ -104,9 +106,6 @@ class Message(SQLModel, table=True):
     )
     thread_id: UUID = Field(foreign_key="threads.id", index=True)
     role: str  # "system" / "user" / "assistant" / "tool"
-    parent_id: str | None = Field(
-        default=None, foreign_key="messages.id", index=True, nullable=True,
-    )
     parts: list[dict[str, Any]] = Field(
         default_factory=list,
         sa_column=Column(JSONB, nullable=False, server_default="[]"),
