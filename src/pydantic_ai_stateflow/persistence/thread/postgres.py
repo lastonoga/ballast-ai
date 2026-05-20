@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from pydantic_ai_stateflow.logging import get_logger
+from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
 from pydantic_ai_stateflow.persistence.thread.repository import (
@@ -32,6 +34,13 @@ class PostgresThreadRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @traced(
+        TraceName.THREAD_CREATE,
+        attrs=lambda _self, *, purpose, tenant_id, **__: {
+            "tenant_id": str(tenant_id), "purpose": purpose,
+            "backend": "postgres",
+        },
+    )
     async def create(
         self,
         *,
@@ -62,6 +71,15 @@ class PostgresThreadRepository:
             return None
         return Thread.from_row(row)
 
+    @traced(
+        TraceName.THREAD_ADD_MESSAGE,
+        attrs=lambda _self, thread_id, *, role, tenant_id, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id),
+            "role": role,
+            "backend": "postgres",
+        },
+    )
     async def add_message(
         self,
         thread_id: UUID,
@@ -118,6 +136,15 @@ class PostgresThreadRepository:
         assert loaded is not None
         return loaded
 
+    @traced(
+        TraceName.THREAD_HISTORY,
+        attrs=lambda _self, thread_id, *, tenant_id, limit=100, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id),
+            "limit": limit,
+            "backend": "postgres",
+        },
+    )
     async def history(
         self,
         thread_id: UUID,

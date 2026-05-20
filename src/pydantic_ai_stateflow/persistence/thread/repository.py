@@ -5,6 +5,8 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 from pydantic_ai_stateflow.logging import get_logger
+from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
 
 _log = get_logger(__name__)
@@ -158,6 +160,12 @@ class InMemoryThreadRepository:
         self._threads: dict[UUID, Thread] = {}
         self._messages: dict[UUID, list[Message]] = {}
 
+    @traced(
+        TraceName.THREAD_CREATE,
+        attrs=lambda _self, *, purpose, tenant_id, **__: {
+            "tenant_id": str(tenant_id), "purpose": purpose,
+        },
+    )
     async def create(
         self,
         *,
@@ -192,6 +200,14 @@ class InMemoryThreadRepository:
             return None
         return thread
 
+    @traced(
+        TraceName.THREAD_ADD_MESSAGE,
+        attrs=lambda _self, thread_id, *, role, tenant_id, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id),
+            "role": role,
+        },
+    )
     async def add_message(
         self,
         thread_id: UUID,
@@ -223,6 +239,14 @@ class InMemoryThreadRepository:
         )
         return msg
 
+    @traced(
+        TraceName.THREAD_HISTORY,
+        attrs=lambda _self, thread_id, *, tenant_id, limit=100, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id),
+            "limit": limit,
+        },
+    )
     async def history(
         self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
     ) -> list[Message]:

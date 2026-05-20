@@ -35,6 +35,8 @@ from pydantic_ai_stateflow.api.streaming.history import (
     messages_to_model_history,
 )
 from pydantic_ai_stateflow.logging import get_logger
+from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 _log = get_logger(__name__)
@@ -220,6 +222,13 @@ def build_streaming_router(
     router = APIRouter(prefix=prefix)
 
     @router.post("/threads/{thread_id}/messages")
+    @traced(
+        TraceName.STREAMING_POST_MESSAGE,
+        attrs=lambda _request, thread_id, tenant_id=None, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id) if tenant_id else "<dep>",
+        },
+    )
     async def post_message(
         request: Request,
         thread_id: UUID,

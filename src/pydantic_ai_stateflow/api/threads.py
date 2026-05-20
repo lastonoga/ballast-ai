@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.logging import get_logger
+from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 _log = get_logger(__name__)
@@ -55,6 +57,13 @@ def build_threads_router(
     router = APIRouter(prefix=prefix)
 
     @router.post("/threads", status_code=201)
+    @traced(
+        TraceName.THREADS_CREATE,
+        attrs=lambda body, tenant_id=None, **__: {
+            "tenant_id": str(tenant_id) if tenant_id else "<dep>",
+            "purpose": body.purpose,
+        },
+    )
     async def create_thread(
         body: CreateThreadBody,
         tenant_id: UUID = _TenantDep,
@@ -97,6 +106,14 @@ def build_threads_router(
         return thread.model_dump(mode="json")
 
     @router.get("/threads/{thread_id}/messages")
+    @traced(
+        TraceName.THREADS_GET_MESSAGES,
+        attrs=lambda thread_id, tenant_id=None, limit=100, **__: {
+            "thread_id": str(thread_id),
+            "tenant_id": str(tenant_id) if tenant_id else "<dep>",
+            "limit": limit,
+        },
+    )
     async def get_messages(
         thread_id: UUID,
         tenant_id: UUID = _TenantDep,

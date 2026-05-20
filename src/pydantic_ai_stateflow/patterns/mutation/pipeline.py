@@ -8,6 +8,7 @@ from uuid import UUID
 from dbos import DBOS, DBOSConfiguredInstance
 
 from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.mutation.primitives import (
     AcceptedResult,
     ApplyTransaction,
@@ -77,7 +78,7 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
         ))
 
     @DBOS.workflow()
-    @traced("pattern.mutation_pipeline", attrs=lambda self, proposal, *, tenant_id: {
+    @traced(TraceName.PATTERN_MUTATION_PIPELINE, attrs=lambda self, proposal, *, tenant_id: {
         "tenant_id": str(tenant_id), "pattern": self.name,
     })
     async def run(

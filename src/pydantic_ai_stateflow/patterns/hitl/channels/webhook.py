@@ -12,6 +12,7 @@ from dbos import DBOS
 from pydantic import BaseModel, ConfigDict, HttpUrl, TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
 from pydantic_ai_stateflow.patterns.hitl.response import (
     HITLResponse,
@@ -85,7 +86,7 @@ class WebhookChannel:
     def __init__(self, *, config: WebhookConfig) -> None:
         self.config = config
 
-    @traced("channel.webhook", attrs=lambda self, prompt, *, request_id: {
+    @traced(TraceName.CHANNEL_WEBHOOK, attrs=lambda self, prompt, *, request_id: {
         "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
     })
     async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:

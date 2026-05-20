@@ -10,5 +10,6 @@ from pydantic_ai_stateflow.observability.provider import (
     has_logfire,
 )
 from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 
-__all__ = ["ObservabilityProvider", "has_logfire", "traced"]
+__all__ = ["ObservabilityProvider", "TraceName", "has_logfire", "traced"]

@@ -9,6 +9,7 @@ from dbos import DBOS, SetWorkflowID
 from pydantic import TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
@@ -77,7 +78,7 @@ class ConversationalChannel:
         self.gate_workflow_id_resolver = gate_workflow_id_resolver
         self.actor_id = actor_id
 
-    @traced("channel.conversational", attrs=lambda self, prompt, *, request_id: {
+    @traced(TraceName.CHANNEL_CONVERSATIONAL, attrs=lambda self, prompt, *, request_id: {
         "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
     })
     async def ask(

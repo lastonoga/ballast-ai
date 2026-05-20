@@ -121,7 +121,12 @@ from pydantic_ai_stateflow.grounded import (
     SelectorRegistry,
     register_grounded_tools,
 )
-from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire, traced
+from pydantic_ai_stateflow.observability import (
+    ObservabilityProvider,
+    TraceName,
+    has_logfire,
+    traced,
+)
 from pydantic_ai_stateflow.patterns import (
     AbortOnLoop,
     ApprovalStage,
@@ -283,6 +288,7 @@ __all__ = [
     "Stage",
     "StateflowCapability",
     "TimeoutResponse",
+    "TraceName",
     "TypedLoopGuard",
     "UIChannel",
     "Voter",
