@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import traceback
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -199,7 +200,52 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         # within an agent run, which is what DBOS's memoization key
         # needs.
         step_name = f"tool:{fn.__qualname__}"
-        wrapped = DBOS.step(name=step_name)(fn)
+        step_wrapped = DBOS.step(name=step_name)(fn)
+
+        @functools.wraps(fn)
+        async def explained(*args: Any, **kwargs: Any) -> Any:
+            """Catch DBOS's bare ``AssertionError`` when a step tries to
+            spawn a workflow, and re-raise with a fix the developer
+            can actually act on.
+
+            DBOS guards ``start_workflow_async`` / ``Queue.enqueue`` /
+            ``DurableHITLWorkflow.open`` (anything that creates a child
+            workflow) with ``assert cur_ctx.is_workflow()`` — which
+            fires from inside a ``@DBOS.step``. The default
+            traceback shows ``AssertionError`` with no message + a
+            dbos-internal frame, and a developer reading that has no
+            idea why their tool can't spawn a workflow.
+
+            ``persistent=True`` (the StateflowDurableAgent default)
+            applies ``@DBOS.step``. Tools that spawn workflows MUST
+            be marked ``persistent=False`` — the spawned workflow is
+            already durable in its own right, so the @DBOS.step wrap
+            on the caller adds nothing and actively blocks the spawn.
+            """
+            try:
+                return await step_wrapped(*args, **kwargs)
+            except AssertionError as exc:
+                tb_text = "".join(traceback.format_tb(exc.__traceback__))
+                if "create_start_workflow_child" not in tb_text:
+                    raise
+                raise RuntimeError(
+                    f"Tool {fn.__qualname__!r} tried to spawn a DBOS "
+                    "workflow (e.g. via DBOS.start_workflow_async, "
+                    "Queue.enqueue, or a framework helper like "
+                    "DurableHITLWorkflow.open) from inside @DBOS.step. "
+                    "DBOS forbids this because steps must be leaf "
+                    "operations.\n\n"
+                    "FIX: decorate this tool with "
+                    f"@SomeAgent.tool(persistent=False). The "
+                    "spawned workflow is already durable on its own, "
+                    "so the @DBOS.step wrap on the caller adds nothing "
+                    "AND blocks the spawn.\n\n"
+                    "Background: StateflowDurableAgent wraps tools in "
+                    "@DBOS.step by default (persistent=None → True) so "
+                    "writes are memoised across workflow replay. Tools "
+                    "whose side-effect is itself a durable workflow "
+                    "don't need (and can't have) this wrap.",
+                ) from exc
 
         # Preserve introspection metadata that pydantic-ai's tool
         # registration reads (it uses ``get_type_hints`` + the function
@@ -207,12 +253,12 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         # the DBOS-step return value would clobber the step's behavior,
         # so re-mirror just the attributes pydantic-ai actually reads.
         functools.update_wrapper(
-            wrapped, fn,
+            explained, fn,
             assigned=("__module__", "__name__", "__qualname__",
                       "__doc__", "__annotations__"),
             updated=(),
         )
-        return wrapped
+        return explained
 
     @DBOS.step()
     async def _persist_and_publish(
