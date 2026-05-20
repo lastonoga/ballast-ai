@@ -124,7 +124,13 @@ async def test_persists_user_message_before_stream() -> None:
     roles = [m.role for m in msgs]
     assert "user" in roles
     user_row = next(m for m in msgs if m.role == "user")
-    assert user_row.parts == [{"type": "text", "text": "hello world"}]
+    # Persisted user parts include ``state: "done"`` (Vercel UIMessage
+    # shape) so client-side restore via ``chat.setMessages`` doesn't
+    # trip useChat's discriminator. Validate content rather than the
+    # exact dict to keep the assertion future-proof.
+    assert user_row.parts == [
+        {"type": "text", "text": "hello world", "state": "done"},
+    ]
 
 
 @pytest.mark.asyncio

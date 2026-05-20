@@ -334,7 +334,14 @@ def build_streaming_router(
                 user_msg = await thread_repo.add_message(
                     thread_id,
                     role="user",
-                    parts=[{"type": "text", "text": prompt_text}],
+                    # ``state: "done"`` matches Vercel UIMessage's TextUIPart
+                    # for a fully-rendered user turn. On restore via
+                    # ``chat.setMessages``, parts without ``state`` slip
+                    # through useChat's discriminator into a different
+                    # branch and break ``MessagePartText`` rendering.
+                    parts=[{
+                        "type": "text", "text": prompt_text, "state": "done",
+                    }],
                     tenant_id=tenant_id,
                     parent_id=new_user_parent_id,
                 )
@@ -420,10 +427,24 @@ def build_streaming_router(
                     continue
                 for p in m.parts:
                     # ``UIMessagePart`` is a discriminated-union of
-                    # pydantic models — model_dump round-trips cleanly
-                    # to the same JSON the frontend's useChat already
-                    # parses on the wire.
-                    asst_parts.append(p.model_dump(mode="json", by_alias=True))
+                    # pydantic models. ``exclude_none=True`` strips
+                    # explicit nulls (``providerMetadata``,
+                    # ``preliminary``, ``approval`` …) so the persisted
+                    # JSON matches the wire shape useChat already
+                    # parses on the live stream. Keeping the nulls
+                    # breaks the rendering side: assistant-ui's
+                    # ``MessagePartText`` throws "can only be used
+                    # inside text or reasoning message parts" because
+                    # explicit-null fields shift the part through a
+                    # different discriminator branch in
+                    # ``useAISDKRuntime``'s mapping.
+                    asst_parts.append(
+                        p.model_dump(
+                            mode="json",
+                            by_alias=True,
+                            exclude_none=True,
+                        ),
+                    )
 
             if not asst_parts:
                 _log.warning(
