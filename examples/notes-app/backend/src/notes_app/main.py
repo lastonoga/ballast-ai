@@ -28,7 +28,7 @@ from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
-from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire
+from pydantic_ai_stateflow.observability import ObservabilityProvider
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
@@ -46,6 +46,9 @@ if TYPE_CHECKING:
     pass
 
 load_dotenv()
+
+
+_TenantDep = Depends(get_tenant_id)
 
 
 class _CreateThreadBody(BaseModel):
@@ -67,7 +70,7 @@ def _build_create_thread_router(repo: ThreadRepository) -> APIRouter:
     @router.post("/threads", status_code=201)
     async def create_thread(
         body: _CreateThreadBody,
-        tenant_id: UUID = Depends(get_tenant_id),
+        tenant_id: UUID = _TenantDep,
     ) -> dict[str, Any]:
         metadata = validate_thread_metadata(NotesAgent, body.metadata)
         thread = await repo.create(
