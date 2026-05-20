@@ -30,6 +30,7 @@ from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
+from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
@@ -93,7 +94,26 @@ def build_app(
     notes = notes_repo or InMemoryNoteRepository()
     resolved_agent: Agent[Any, Any] = agent if agent is not None else _LazyAgent()  # type: ignore[assignment]
 
-    engine = Engine(providers=[])
+    # Observability — ObservabilityProvider registers FIRST (spec 4H).
+    # Soft-dep on logfire: if it isn't installed nothing happens, but the
+    # framework's @traced decorators still no-op safely. With LOGFIRE_TOKEN
+    # in env (read by logfire SDK), spans flow to logfire AND pydantic-ai
+    # agent runs are instrumented end-to-end via
+    # ``logfire.instrument_pydantic_ai()``.
+    providers = []
+    if has_logfire():
+        providers.append(
+            ObservabilityProvider(
+                service_name=os.environ.get(
+                    "LOGFIRE_SERVICE_NAME", "notes-app",
+                ),
+                environment=os.environ.get("LOGFIRE_ENVIRONMENT", "dev"),
+                instrument_pydantic_ai=True,
+                instrument_httpx=True,
+            ),
+        )
+
+    engine = Engine(providers=providers)
     threads_router = build_threads_router(thread_repo=repo)
 
     async def _bind_domain_repos(app: FastAPI) -> None:
