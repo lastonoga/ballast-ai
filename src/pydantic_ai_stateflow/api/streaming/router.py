@@ -256,6 +256,25 @@ async def _durable_post_message(
     # user_msg.id) so a request retry attaches to the existing run
     # instead of spawning a duplicate. Concurrent messages for the
     # same thread queue up and run serially.
+    # ── Last-Event-ID cutoff ────────────────────────────────────────────────
+    #
+    # If the client sent ``Last-Event-ID`` (SSE reconnect), honor it —
+    # they want to catch up on events they missed since that seq.
+    #
+    # Otherwise (fresh POST) we MUST NOT replay every historical event
+    # for this thread — the event_log holds the full event history
+    # across every prior workflow run, so without a cutoff the SSE
+    # consumer would replay the previous turn's "text-delta" + "done"
+    # events first (closing the stream on stale content) before ever
+    # seeing the new workflow's output.
+    #
+    # Snapshot ``latest_seq`` BEFORE enqueueing so we don't race the
+    # workflow into emitting events between our snapshot and our
+    # enqueue call.
+    last_event_id = _parse_last_event_id(request)
+    if last_event_id == 0:
+        last_event_id = await event_log.latest_seq(thread_id)
+
     try:
         await stateflow_agent.enqueue_run(
             thread_id=thread_id,
@@ -277,8 +296,6 @@ async def _durable_post_message(
             "enqueue_run returned %s for user_msg=%s — "
             "assuming attach-to-existing", type(exc).__name__, user_msg.id,
         )
-
-    last_event_id = _parse_last_event_id(request)
 
     async def _gen() -> AsyncIterator[bytes]:
         import asyncio  # noqa: PLC0415
