@@ -132,4 +132,12 @@ def build_model_settings() -> OpenRouterModelSettings:
     turns to ``content: ""``. So this example doesn't need to route
     around any upstream.
     """
-    return OpenRouterModelSettings(temperature=DEFAULT_TEMPERATURE)
+    return OpenRouterModelSettings(
+        temperature=DEFAULT_TEMPERATURE,
+        openrouter_reasoning={
+            'effort': 'none',
+        },
+        openrouter_usage={
+            'include': True,
+        }
+    )
