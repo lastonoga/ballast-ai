@@ -45,11 +45,16 @@ async def test_two_capabilities_compose_in_one_agent() -> None:
     def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[TextPart(content="contact alice@example.com")])
 
+    from pydantic_ai_stateflow.capabilities import RegexDetector
     agent = Agent(
         model=FunctionModel(fn),
         capabilities=[
             BudgetGuard(max_iterations=5),
-            PIIGuard(patterns=[re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")]),
+            PIIGuard(
+                detector=RegexDetector(
+                    patterns=[re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")],
+                ),
+            ),
         ],
     )
     result = await agent.run("hi")

@@ -45,6 +45,7 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai_stateflow.capabilities import (
     BudgetGuard,
     PIIGuard,
+    RegexDetector,
     StateflowCapability,
 )
 from pydantic_ai_stateflow.grounded import Ref, Selector
@@ -84,11 +85,10 @@ def default_notes_capabilities() -> list[StateflowCapability]:
       hang the request or burn unbounded budget.
     - ``PIIGuard`` regex-scrubs emails / phone numbers from the model's
       text replies BEFORE they're persisted to the thread, streamed to
-      the frontend, or shipped to logs.
-
-    Apps that want different limits or patterns can subclass
-    ``NotesAgent`` and override ``build_agent`` to pass a different
-    capability list — the framework is uninvolved.
+      the frontend, or shipped to logs. The detector is pluggable —
+      apps that need DB-grounded leak detection (e.g. "is this email
+      one of OUR users in another thread?") swap ``RegexDetector`` for
+      a custom ``PIIDetector`` that hits their user repo.
     """
     return [
         BudgetGuard(
@@ -96,7 +96,14 @@ def default_notes_capabilities() -> list[StateflowCapability]:
             max_input_tokens=50_000,
             max_output_tokens=8_000,
         ),
-        PIIGuard(patterns=[_EMAIL_RE, _PHONE_RE]),
+        PIIGuard(
+            detector=RegexDetector(
+                patterns_by_category={
+                    "email": [_EMAIL_RE],
+                    "phone": [_PHONE_RE],
+                },
+            ),
+        ),
     ]
 
 
