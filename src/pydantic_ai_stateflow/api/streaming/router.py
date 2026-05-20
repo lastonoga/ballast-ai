@@ -87,6 +87,36 @@ same role.
 _DEFAULT_HISTORY_LIMIT = 200
 
 
+def _pending_tool_call_ids(history: list[Any]) -> set[str]:
+    """Tool-call ids in ``history`` that were issued but never returned.
+
+    Walks ModelResponse / ModelRequest parts: collects every
+    ``ToolCallPart.tool_call_id`` from assistant turns; subtracts
+    every ``ToolReturnPart.tool_call_id`` from subsequent request
+    turns. The remainder is the set of currently-pending deferred
+    tool calls that need an approval decision.
+    """
+    from pydantic_ai.messages import (  # noqa: PLC0415
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    called: set[str] = set()
+    returned: set[str] = set()
+    for msg in history:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart):
+                    called.add(part.tool_call_id)
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    returned.add(part.tool_call_id)
+    return called - returned
+
+
 def _trim_adapter_messages_to_last_user_prompt(adapter: Any) -> None:
     """Replace ``adapter.messages`` with a single ModelRequest holding
     just the LAST ``UserPromptPart``.
@@ -367,10 +397,18 @@ async def _durable_post_message(
             history, mode="json",
         )
 
-        # Translate DeferredToolResults.approvals (Python-typed) → wire
-        # shape for the workflow arg (JSON-safe dict).
+        # Filter approvals: body may carry approval-responded parts
+        # for tool calls that already executed in PRIOR turns (their
+        # ToolReturnPart is in history). pydantic-ai requires the
+        # ``deferred_tool_results`` keyset to EXACTLY match currently-
+        # pending tool calls — extras raise "Tool call results need to
+        # be provided for all deferred tool calls". Compute the pending
+        # set (called but never returned) and keep only those.
+        pending = _pending_tool_call_ids(history)
         approvals_dump: dict[str, bool | dict[str, Any]] = {}
         for tcid, decision in deferred.approvals.items():
+            if tcid not in pending:
+                continue
             if isinstance(decision, bool):
                 approvals_dump[tcid] = decision
             else:
