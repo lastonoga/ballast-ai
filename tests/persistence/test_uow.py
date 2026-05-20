@@ -15,7 +15,7 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         t
         for t in SQLModel.metadata.sorted_tables
         if t.name not in (
-            "threads", "messages", "outbox",
+            "threads", "messages", "outbox", "thread_events",
             "hitl_blocking_requirements", "hitl_decisions", "hitl_authz_denials",
         )
     ]

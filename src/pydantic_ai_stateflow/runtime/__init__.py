@@ -11,6 +11,15 @@ from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
 from pydantic_ai_stateflow.runtime.dbos_setup import DBOSConfig, build_dbos_config
 from pydantic_ai_stateflow.runtime.det import Det
 from pydantic_ai_stateflow.runtime.engine import Engine, EngineInvariantViolation
+from pydantic_ai_stateflow.runtime.event_stream import (
+    EventNotification,
+    EventStream,
+    InProcessEventStream,
+    thread_channel,
+)
+from pydantic_ai_stateflow.runtime.event_stream_provider import (
+    EventStreamProvider,
+)
 from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, IdempotencyValue
 from pydantic_ai_stateflow.runtime.provider import ServiceProvider
 
@@ -22,8 +31,12 @@ __all__ = [
     "Det",
     "Engine",
     "EngineInvariantViolation",
+    "EventNotification",
+    "EventStream",
+    "EventStreamProvider",
     "IdempotencyInput",
     "IdempotencyValue",
+    "InProcessEventStream",
     "ServiceProvider",
     "StateflowAgent",
     "build_dbos_config",
@@ -31,5 +44,6 @@ __all__ = [
     "get_agent",
     "list_agents",
     "register_agent",
+    "thread_channel",
     "validate_thread_metadata",
 ]

@@ -1,3 +1,8 @@
+from pydantic_ai_stateflow.persistence.events import (
+    EventLogRepository,
+    InMemoryEventLogRepository,
+    ThreadEvent,
+)
 from pydantic_ai_stateflow.persistence.hitl import (
     HITLRepository,
     InMemoryHITLRepository,
@@ -16,7 +21,9 @@ from pydantic_ai_stateflow.persistence.thread import (
 from pydantic_ai_stateflow.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
 
 __all__ = [
+    "EventLogRepository",
     "HITLRepository",
+    "InMemoryEventLogRepository",
     "InMemoryHITLRepository",
     "InMemoryOutboxRepository",
     "InMemoryThreadRepository",
@@ -25,6 +32,7 @@ __all__ = [
     "PostgresOutboxRepository",
     "PostgresThreadRepository",
     "SqlAlchemyUnitOfWork",
+    "ThreadEvent",
     "ThreadRepository",
     "UnitOfWork",
 ]
