@@ -147,6 +147,24 @@ async def _parse_body_messages(
     return [m for m in messages if isinstance(m, dict)]
 
 
+def _normalize_part_for_persist(part: dict[str, Any]) -> dict[str, Any]:
+    """Make sure text parts persist with ``state: "done"``.
+
+    assistant-ui's ``MessagePartText`` discriminator on the live useChat
+    stream looks at ``state`` to pick the right rendering branch. The
+    in-flight body sends text parts without ``state`` (useChat fills it
+    in client-side after the stream finishes), but by the time the body
+    hits us the user has CONFIRMED the message — it's semantically
+    done. Without this normalization the persisted user rows reload as
+    invisible (the discriminator picks the wrong branch and
+    ``MessagePartText`` throws "can only be used inside text or
+    reasoning message parts").
+    """
+    if part.get("type") == "text" and "state" not in part:
+        return {**part, "state": "done"}
+    return part
+
+
 async def _sync_db_with_body(
     *,
     thread_id: UUID,
@@ -201,7 +219,10 @@ async def _sync_db_with_body(
             thread_id,
             id=raw_id,
             role=role,
-            parts=[p for p in parts if isinstance(p, dict)],
+            parts=[
+                _normalize_part_for_persist(p)
+                for p in parts if isinstance(p, dict)
+            ],
         )
 
     return await thread_repo.history(thread_id, limit=history_limit)

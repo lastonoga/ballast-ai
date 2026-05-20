@@ -93,14 +93,17 @@ class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
           );
         }
         const rows = (await r.json()) as BackendMessageRow[];
-        // Backend persists parts in Vercel UIMessage shape already
-        // (assistant via VercelAIAdapter.dump_messages; user as
-        // {type:"text", text:..., state:"done"}). Linear order, no
-        // parent_id — useAISDKRuntime's format adapter consumes the
-        // flat list directly.
+        // Backend stores a flat linear list (no parent_id column).
+        // assistant-ui's MessageRepository builds a TREE keyed off
+        // ``parentId`` — if every row has ``parentId: null`` it sees N
+        // independent roots and renders only one (the active branch),
+        // hiding the rest. To represent "single linear conversation"
+        // we chain each row to the previous: row[0].parentId = null,
+        // row[i].parentId = row[i-1].id. One root, one child each →
+        // useAISDKRuntime walks all of them into useChat.
         return {
-          messages: rows.map((row) => ({
-            parentId: null,
+          messages: rows.map((row, i) => ({
+            parentId: i === 0 ? null : rows[i - 1].id,
             message: {
               id: row.id,
               role: row.role,
