@@ -396,9 +396,56 @@ def build_streaming_router(
             text reply and we'll persist that.
             """
             from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+            from pydantic_ai.messages import ModelResponse  # noqa: PLC0415
             from pydantic_ai.ui.vercel_ai import (  # noqa: PLC0415
                 VercelAIAdapter as _VercelAIAdapter,
             )
+
+            # OpenRouter returns the REAL upstream cost in
+            # ``ModelResponse.provider_details['cost']`` (when the request
+            # is sent with ``openrouter_usage={'include': True}``).
+            # pydantic-ai's built-in ``operation.cost`` span attr comes
+            # from ``response.cost()`` which calls genai-prices'
+            # ``calc_price`` — that raises ``LookupError`` for any model
+            # not in the genai-prices table (e.g. ``qwen/qwen3.6-plus``),
+            # so the attr is silently dropped. We mirror the real cost
+            # onto the active outer span as ``openrouter.cost`` so
+            # dashboards see actual dollars regardless of genai-prices
+            # coverage.
+            try:
+                from opentelemetry import trace as _otel_trace  # noqa: PLC0415
+
+                total_cost = 0.0
+                upstream_cost = 0.0
+                for msg in result.all_messages():
+                    if not isinstance(msg, ModelResponse):
+                        continue
+                    pd = msg.provider_details or {}
+                    if "cost" in pd and pd["cost"] is not None:
+                        total_cost += float(pd["cost"])
+                    if (
+                        "upstream_inference_cost" in pd
+                        and pd["upstream_inference_cost"] is not None
+                    ):
+                        upstream_cost += float(pd["upstream_inference_cost"])
+                if total_cost > 0.0:
+                    span = _otel_trace.get_current_span()
+                    span.set_attribute("openrouter.cost", total_cost)
+                    if upstream_cost > 0.0:
+                        span.set_attribute(
+                            "openrouter.upstream_inference_cost",
+                            upstream_cost,
+                        )
+                    # Mirror to ``operation.cost`` so logfire's standard
+                    # cost dashboard sees a value even when genai-prices
+                    # has no entry for this model.
+                    span.set_attribute("operation.cost", total_cost)
+                    _log.info(
+                        "on_complete: openrouter cost=$%.6f upstream=$%.6f",
+                        total_cost, upstream_cost,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("on_complete: cost-span tagging failed: %s", exc)
 
             output = result.output
             if isinstance(output, DeferredToolRequests):
