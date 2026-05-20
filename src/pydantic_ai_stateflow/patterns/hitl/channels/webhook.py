@@ -87,14 +87,14 @@ class WebhookChannel:
         self.config = config
 
     @traced(TraceName.CHANNEL_WEBHOOK, attrs=lambda self, prompt, *, request_id: {
-        "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
+        "request_id": str(request_id),
     })
     async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:
         body = self._build_outbound_body(prompt, request_id)
         signature = sign_payload(body, secret=self.config.secret)
         await post_webhook(url=str(self.config.url), body=body, signature=signature)
 
-        topic = _hitl_topic(prompt.tenant_id, request_id)
+        topic = _hitl_topic(request_id)
         timeout_seconds = (
             prompt.timeout.total_seconds() if prompt.timeout is not None else None
         )
@@ -107,7 +107,6 @@ class WebhookChannel:
     def _build_outbound_body(prompt: HITLPrompt, request_id: UUID) -> bytes:
         payload = {
             "request_id": str(request_id),
-            "tenant_id": str(prompt.tenant_id),
             "prompt": prompt.model_dump(mode="json"),
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

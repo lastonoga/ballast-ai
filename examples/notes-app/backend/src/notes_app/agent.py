@@ -36,7 +36,6 @@ codebase before (see ``project_pydantic_ai_api_quirks.md``).
 import os
 from dataclasses import dataclass
 from typing import Annotated, Any
-from uuid import UUID
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
@@ -67,14 +66,9 @@ SYSTEM_PROMPT = (
 
 @dataclass
 class NoteToolDeps:
-    """Per-request dependencies for the note tools.
-
-    ``repo`` is the shared note store; ``tenant_id`` is the requesting
-    tenant (derived from the ``X-Tenant-Id`` header).
-    """
+    """Per-request dependencies for the note tools."""
 
     repo: NoteRepository
-    tenant_id: UUID
 
 
 class NotesAgent(StateflowAgent):
@@ -129,11 +123,10 @@ class NotesAgent(StateflowAgent):
         self,
         *,
         thread: Thread,
-        tenant_id: UUID,
         message: ModelMessage | None,
     ) -> NoteToolDeps:
-        del thread, message  # unused — notes deps are tenant-scoped only
-        return NoteToolDeps(repo=self._notes_repo, tenant_id=tenant_id)
+        del thread, message
+        return NoteToolDeps(repo=self._notes_repo)
 
     def model_settings(self) -> OpenRouterModelSettings:
         """Hardcoded OpenRouter settings for the notes-app demo.
@@ -167,9 +160,7 @@ async def create_note(
     Returns the saved note (including its ``id``, which you should use
     for any follow-up edit/delete in the same turn).
     """
-    return await ctx.deps.repo.create(
-        title=title, body=body, tenant_id=ctx.deps.tenant_id,
-    )
+    return await ctx.deps.repo.create(title=title, body=body)
 
 
 @NotesAgent.tool
@@ -181,9 +172,7 @@ async def list_notes(
     Use this when the user asks "show me my notes" or wants an
     overview. Returns at most ``limit`` notes (default 20).
     """
-    return await ctx.deps.repo.list_(
-        tenant_id=ctx.deps.tenant_id, limit=limit,
-    )
+    return await ctx.deps.repo.list_(limit=limit)
 
 
 @NotesAgent.tool
@@ -195,9 +184,7 @@ async def search_notes(
     Returns matching notes newest-first, at most ``limit``. Use this
     when the user references a note by topic or keyword rather than id.
     """
-    return await ctx.deps.repo.search(
-        query, tenant_id=ctx.deps.tenant_id, limit=limit,
-    )
+    return await ctx.deps.repo.search(query, limit=limit)
 
 
 @NotesAgent.tool
@@ -205,9 +192,7 @@ async def edit_note(
     ctx: RunContext[NoteToolDeps],
     note_id: Annotated[
         Ref[Note],
-        Selector(lambda c: c.deps.repo.list_(
-            tenant_id=c.deps.tenant_id, limit=1000,
-        )),
+        Selector(lambda c: c.deps.repo.list_(limit=1000)),
     ],
     title: str | None = None,
     body: str | None = None,
@@ -219,12 +204,7 @@ async def edit_note(
     fabricate one. Returns the updated note.
     """
     nid = note_id.id if isinstance(note_id, Ref) else note_id
-    return await ctx.deps.repo.update(
-        nid,
-        title=title,
-        body=body,
-        tenant_id=ctx.deps.tenant_id,
-    )
+    return await ctx.deps.repo.update(nid, title=title, body=body)
 
 
 @NotesAgent.tool(requires_approval=True)
@@ -232,9 +212,7 @@ async def delete_note(
     ctx: RunContext[NoteToolDeps],
     note_id: Annotated[
         Ref[Note],
-        Selector(lambda c: c.deps.repo.list_(
-            tenant_id=c.deps.tenant_id, limit=1000,
-        )),
+        Selector(lambda c: c.deps.repo.list_(limit=1000)),
     ],
 ) -> str:
     """Delete the note with the given id.
@@ -251,5 +229,5 @@ async def delete_note(
     safe to call twice. Returns a short confirmation.
     """
     nid = note_id.id if isinstance(note_id, Ref) else note_id
-    await ctx.deps.repo.delete(nid, tenant_id=ctx.deps.tenant_id)
+    await ctx.deps.repo.delete(nid)
     return f"deleted {nid}"

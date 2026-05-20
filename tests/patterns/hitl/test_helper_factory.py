@@ -55,7 +55,7 @@ def _scripted_agent(tool_name: str, tool_args: dict[str, Any]) -> Agent[HelperDe
 
 def _deps(request_id: UUID) -> HelperDeps:
     return HelperDeps(
-        request_id=request_id, tenant_id=uuid4(), actor_id="founder",
+        request_id=request_id, actor_id="founder",
         turn_count=0, tools_invoked_so_far=[], toolbox=HelperToolBox(),
         autopilot_eligible=False, cached_recommendation_confidence=None,
     )

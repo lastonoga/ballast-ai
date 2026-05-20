@@ -21,10 +21,9 @@ from sqlalchemy.ext.asyncio import (
 from sqlmodel import SQLModel
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-import pydantic_ai_stateflow.persistence.hitl.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.outbox.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.tenant.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.thread.persistence  # noqa: F401
+import pydantic_ai_stateflow.persistence.hitl.domain  # noqa: F401
+import pydantic_ai_stateflow.persistence.outbox.domain  # noqa: F401
+import pydantic_ai_stateflow.persistence.thread.domain  # noqa: F401
 
 
 def _docker_available() -> bool:

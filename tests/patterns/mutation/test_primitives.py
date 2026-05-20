@@ -54,7 +54,7 @@ def test_stage_protocol_satisfied_structurally():
 
 def test_apply_transaction_protocol_satisfied_structurally():
     class MyApply:
-        async def apply(self, proposal, *, uow, tenant_id):
+        async def apply(self, proposal, *, uow):
             return uuid4()
 
     assert isinstance(MyApply(), ApplyTransaction)

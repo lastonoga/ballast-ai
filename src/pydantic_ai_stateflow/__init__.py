@@ -40,7 +40,7 @@ Sub-project #6 (HITL channels):
 
 Sub-project #7 (API + Observability + Evals):
     build_a2a_router, build_health_router, build_streaming_router,
-    build_threads_router, get_container, get_engine, get_tenant_id,
+    build_threads_router, get_container, get_engine,
     A2AAgentAdapter, AgentCard, DepsFactory, extract_text,
     messages_to_model_history,
     Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
@@ -77,7 +77,6 @@ from pydantic_ai_stateflow.api import (
     extract_text,
     get_container,
     get_engine,
-    get_tenant_id,
     messages_to_model_history,
 )
 from pydantic_ai_stateflow.capabilities import (
@@ -328,7 +327,6 @@ __all__ = [
     "get_container",
     "get_engine",
     "get_logger",
-    "get_tenant_id",
     "has_logfire",
     "list_agents",
     "make_helper_agent_with_approval_tools",

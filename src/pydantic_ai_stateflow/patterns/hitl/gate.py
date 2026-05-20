@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any, ClassVar
+import uuid as _uuid
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
@@ -29,25 +30,19 @@ _instance_counter = itertools.count()
 
 @DBOS.dbos_class()
 class HITLGate(DBOSConfiguredInstance):
-    """HITL pause + authz (spec 2C.4 + Critical Fix #2).
+    """HITL pause + authz (defense-in-depth on receive).
 
-    Authz happens at TWO points:
+    Authz is checked twice: at the responder endpoint (so unauthorized
+    replies never reach the workflow's recv topic) and again here on
+    receive. Denied attempts are persisted to ``hitl_authz_denials``.
 
-    1. ENDPOINT-side (FastAPI / Slack handler): `policy.can(...)` is checked
-       BEFORE the responder reaches the workflow's recv topic. Unauthorized
-       responses never appear here.
+    The DBOS workflow id of THIS gate run is stored as
+    ``BlockingRequirement.workflow_id`` so the endpoint can route the
+    response back via ``DBOS.send(destination_id=workflow_id, ...)``.
 
-    2. WORKFLOW-side (this Pattern, defense-in-depth): on receive, we re-run
-       `policy.can(...)`. Endpoints may be bypassed by future channels;
-       this check ensures *every* path through the gate is verified.
-
-    Denied attempts are persisted to `hitl_authz_denials` (via repo) so
-    audit trails are complete.
-
-    `name` and `run` satisfy `Pattern[HITLPrompt, HITLResponse]`. The
-    `ask` shortcut adapts to the `Asker` Protocol (spec 4A.0.4) so
-    policies like EscalateToHITLOnReject can depend on Asker instead of
-    importing HITLGate concretely.
+    Apps that need tenant/workspace scoping carry it inside their
+    ``HITLPrompt`` subclass and the ``Policy`` (which receives
+    ``resource=prompt``).
     """
 
     name: ClassVar[str] = "hitl_gate"
@@ -65,43 +60,45 @@ class HITLGate(DBOSConfiguredInstance):
         self.repo = repo
 
     @DBOS.workflow()
-    @traced(TraceName.PATTERN_HITL_GATE, attrs=lambda self, prompt, *, tenant_id: {
-        "tenant_id": str(tenant_id), "pattern": self.name,
+    @traced(TraceName.PATTERN_HITL_GATE, attrs=lambda self, prompt: {
+        "pattern": self.name,
     })
-    async def run(self, prompt: HITLPrompt, *, tenant_id: UUID) -> HITLResponse:
-        if prompt.tenant_id != tenant_id:
-            raise ValueError(
-                f"HITLGate.run: prompt.tenant_id ({prompt.tenant_id}) does not "
-                f"match tenant_id kwarg ({tenant_id})"
-            )
+    async def run(self, prompt: HITLPrompt) -> HITLResponse:
+        # Inside a @DBOS.workflow, ``DBOS.workflow_id`` is the current
+        # workflow's id — what responders need to ``DBOS.send`` back to.
+        # DBOS auto-generated nested workflow ids may not be UUIDs (they
+        # take the form ``{parent}-{ordinal}``); coerce non-UUID ids to a
+        # deterministic UUID so the BlockingRequirement column accepts them.
+        raw_id = cast(str, DBOS.workflow_id)
+        try:
+            workflow_id = UUID(raw_id)
+        except (ValueError, AttributeError, TypeError):
+            workflow_id = _uuid.uuid5(_uuid.NAMESPACE_URL, raw_id)
 
         request = await self.repo.persist_request(
             prompt=prompt.model_dump(mode="json"),
-            workflow_id=tenant_id,
+            workflow_id=workflow_id,
             gate_kind=self.name,
             purpose="approval",
-            tenant_id=tenant_id,
             timeout_at=None,
         )
 
         response = await self.channel.ask(prompt, request_id=request.id)
 
         if isinstance(response, TimeoutResponse):
-            await self.repo.persist_timeout(request.id, tenant_id=tenant_id)
+            await self.repo.persist_timeout(request.id)
             raise HITLTimedOut(request_id=request.id)
 
         verdict = await self.policy.can(
             actor=response.actor_id,
             action="decide",
             resource=prompt,
-            tenant_id=tenant_id,
         )
         if not verdict.is_grant:
             await self.repo.persist_authz_denied(
                 request_id=request.id,
                 actor_id=response.actor_id or "<anonymous>",
                 voter_votes=dict(verdict.votes),
-                tenant_id=tenant_id,
             )
             raise HITLDenied(
                 actor_id=response.actor_id or "<anonymous>",
@@ -113,12 +110,7 @@ class HITLGate(DBOSConfiguredInstance):
         helper_thread_id: UUID | None = None
         raw_verdict = getattr(response, "helper_verdict", None)
         if raw_verdict is not None:
-            # Mutable copy — `response` is frozen, but the dict itself isn't;
-            # copy for clarity and to avoid mutating shared state.
             helper_verdict_payload = dict(raw_verdict)
-            # Optional sidecar keys carried inside the helper_verdict blob
-            # (set by ConversationalChannel via the helper agent). Stripped
-            # from the persisted blob so the row's typed columns hold them.
             tid_str = helper_verdict_payload.pop("__helper_thread_id__", None)
             fqn = helper_verdict_payload.pop("__context_type_fqn__", None)
             if tid_str is not None:
@@ -131,15 +123,12 @@ class HITLGate(DBOSConfiguredInstance):
             actor_id=response.actor_id or "<anonymous>",
             verdict=_KIND_TO_VERDICT[response.kind],
             payload=response.model_dump(mode="json"),
-            tenant_id=tenant_id,
             helper_verdict_payload=helper_verdict_payload,
             helper_verdict_context_type=helper_verdict_context_type,
             helper_thread_id=helper_thread_id,
         )
         return response
 
-    async def ask(
-        self, prompt: HITLPrompt, *, purpose: str = "approval",
-    ) -> HITLResponse:
-        """Asker Protocol adapter (spec 4A.0.4)."""
-        return await self.run(prompt, tenant_id=prompt.tenant_id)
+    async def ask(self, prompt: HITLPrompt) -> HITLResponse:
+        """Asker Protocol adapter."""
+        return await self.run(prompt)

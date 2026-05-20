@@ -51,19 +51,12 @@ def test_all_sp6_symbols_visible_at_top_level() -> None:
 def test_ui_channel_router_dispatches_to_gate_topic(
     fresh_dbos_executor: None,
 ) -> None:
-    """Smoke: POSTing to /hitl/{rid}/respond fires DBOS.send to the right topic.
-
-    Full round-trip (HITLGate.run awaiting on DBOS.recv) is covered by
-    SP5 HITLGate tests + SP6 UIChannel tests separately; this just proves
-    that the router + UIChannel share a topic naming contract end-to-end.
-    """
-    tid = uuid4()
+    """Smoke: POSTing to /hitl/{rid}/respond fires DBOS.send to the right topic."""
     wf_id = uuid4()
     repo = InMemoryHITLRepository()
     req = asyncio.run(
         repo.persist_request(
             prompt={
-                "tenant_id": str(tid),
                 "title": "x",
                 "context": "y",
                 "decision_kinds": ["approved"],
@@ -71,7 +64,6 @@ def test_ui_channel_router_dispatches_to_gate_topic(
             workflow_id=wf_id,
             gate_kind="hitl_gate",
             purpose="approval",
-            tenant_id=tid,
         )
     )
     app = FastAPI()
@@ -87,7 +79,6 @@ def test_ui_channel_router_dispatches_to_gate_topic(
     ), TestClient(app) as client:
         r = client.post(
             f"/hitl/{req.id}/respond",
-            headers={"X-Tenant-Id": str(tid)},
             json={
                 "kind": "approved",
                 "actor_id": "alice",
@@ -96,7 +87,7 @@ def test_ui_channel_router_dispatches_to_gate_topic(
         )
 
     assert r.status_code == 200
-    assert sent["topic"] == _hitl_topic(tid, req.id)
+    assert sent["topic"] == _hitl_topic(req.id)
     assert sent["destination_id"] == str(wf_id)
 
 
@@ -106,7 +97,6 @@ async def test_conversational_channel_exposes_helper_verdict_to_persistence(
 ) -> None:
     """SP6 acceptance: helper verdict from ConversationalChannel's helper
     agent reaches the Decision row via HITLGate's persistence wiring (Task 9)."""
-    tid = uuid4()
     repo = InMemoryHITLRepository()
     runner = MagicMock(spec=DefaultHelperSessionRunner)
     runner.run = MagicMock()
@@ -136,9 +126,7 @@ async def test_conversational_channel_exposes_helper_verdict_to_persistence(
         helper_verdict=verdict_dict,
     ).model_dump(mode="json")
 
-    prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
     with patch(
         "pydantic_ai_stateflow.patterns.hitl.channels.conversational.start_workflow_async",
         fake_start,
@@ -146,7 +134,7 @@ async def test_conversational_channel_exposes_helper_verdict_to_persistence(
         "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=payload),
     ):
-        await gate.run(prompt, tenant_id=tid)
+        await gate.run(prompt)
 
     decision = next(iter(repo._decisions.values()))
     assert decision.helper_verdict_payload is not None

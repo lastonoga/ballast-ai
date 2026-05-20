@@ -5,7 +5,6 @@ import inspect
 import itertools
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Generic, TypeVar
-from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
 
@@ -62,10 +61,10 @@ class MapReduce(DBOSConfiguredInstance, Generic[Doc, Chunk, Item]):
         self.concurrency = concurrency
 
     @DBOS.workflow()
-    @traced(TraceName.PATTERN_MAP_REDUCE, attrs=lambda self, doc, *, tenant_id: {
-        "tenant_id": str(tenant_id), "pattern": self.name,
+    @traced(TraceName.PATTERN_MAP_REDUCE, attrs=lambda self, doc: {
+        "pattern": self.name,
     })
-    async def run(self, doc: Doc, *, tenant_id: UUID) -> list[Item]:
+    async def run(self, doc: Doc) -> list[Item]:
         chunks = await self._chunk(doc)
         if not chunks:
             return []

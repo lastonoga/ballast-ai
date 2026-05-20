@@ -1,33 +1,41 @@
+"""Outbox event — single SQLModel (no separate Row).
+
+Transactional-outbox pattern: writes go in the same DB transaction as
+business mutations; a dispatcher polls undelivered rows and publishes.
+"""
+
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Column, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, SQLModel
 
-from pydantic_ai_stateflow.persistence.outbox.persistence import OutboxRow
+
+def _now_utc() -> datetime:
+    return datetime.now(tz=UTC)
 
 
-class OutboxEvent(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class OutboxEvent(SQLModel, table=True):
+    """A pending event awaiting external delivery."""
 
-    id: UUID
-    tenant_id: UUID
+    __tablename__ = "outbox"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     event_type: str
-    payload: dict[str, Any]
-    workflow_id: UUID | None
-    delivered_at: datetime | None
-    created_at: datetime
-
-    @classmethod
-    def from_row(cls, row: OutboxRow) -> OutboxEvent:
-        return cls(
-            id=row.id,
-            tenant_id=row.tenant_id,
-            event_type=row.event_type,
-            payload=row.payload,
-            workflow_id=row.workflow_id,
-            delivered_at=row.delivered_at,
-            created_at=row.created_at,
-        )
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+    )
+    workflow_id: UUID | None = Field(default=None)
+    delivered_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+    )
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
+    )

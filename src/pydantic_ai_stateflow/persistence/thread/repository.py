@@ -21,24 +21,12 @@ def _walk_active_branch(
 ) -> list[Message]:
     """Walk the message tree picking ``max(created_at)`` at every fork.
 
-    Used by both ``InMemoryThreadRepository.history`` and
-    ``PostgresThreadRepository.history`` after their respective fetch:
-    same tree-walking semantics regardless of storage. Pure function over
-    a list of ``Message`` rows; doesn't care which thread they belong to
-    (callers pre-filter to one thread).
-
     **Mixed legacy/branched data handling.** Pre-branching data has
     every row with ``parent_id IS NULL``; new data has explicit
-    ``parent_id`` links. To make both shapes (and any combination) walk
-    cleanly we **virtually link** every NULL-parent row to the
-    previous-by-``created_at`` row before walking. So:
-
-    - all-NULL legacy thread → behaves like a linear list.
-    - all-linked new thread → strict tree walk.
-    - mixed (legacy prefix + new branches) → legacy chain is implicit,
-      explicit ``parent_id``s on newer rows override.
-
-    Returns at most ``limit`` messages along the active path.
+    ``parent_id`` links. We virtually link every NULL-parent row to
+    the previous-by-``created_at`` row before walking, so legacy
+    threads behave like a linear list and mixed threads keep both
+    semantics.
     """
     if not msgs:
         return []
@@ -72,98 +60,58 @@ def _walk_active_branch(
 class ThreadRepository(Protocol):
     """Port for thread + message persistence.
 
-    All methods require `tenant_id` — multi-tenant first-class per spec 1.12.
+    The framework does NOT presume tenancy or actor identity — those
+    are app-side concerns. Apps that need scoping put it in
+    ``Thread.metadata_`` (free-form dict, optionally validated by a
+    ``StateflowAgent.metadata_model``) and filter / authorize at their
+    own layer (custom router, repo wrapper, RLS policy, …).
 
-    Threads have a lifecycle: created OPEN, may be ARCHIVED (still readable +
-    appendable), may be CLOSED (terminal — no further messages). Adding
-    messages to a CLOSED thread raises `ThreadClosedError`; ARCHIVED threads
-    accept messages. ``delete`` is a hard delete (idempotent, cascades to
-    messages).
+    Threads have a lifecycle: created OPEN, may be ARCHIVED (still
+    readable + appendable), may be CLOSED (terminal — no further
+    messages). Adding messages to a CLOSED thread raises
+    ``ThreadClosedError``; ARCHIVED threads accept messages. ``delete``
+    is a hard delete (idempotent, cascades to messages).
     """
 
     async def create(
         self,
         *,
         agent: str,
-        metadata: dict[str, Any],
-        actor_id: str,
-        tenant_id: UUID,
+        metadata: dict[str, Any] | None = None,
     ) -> Thread:
-        """Create a new thread bound to ``agent``.
-
-        ``agent`` is the registry key (``StateflowAgent.name``) — callers
-        usually pass it as the result of
-        ``pydantic_ai_stateflow.runtime.agents._resolve_agent_name(...)``
-        so a class or instance reference also works at the call site.
-        Stored verbatim as a string in the DB.
-
-        ``metadata`` should already be validated against the agent's
-        ``metadata_model`` (see ``validate_thread_metadata``) before
-        being passed here — the repo does not re-validate.
-        """
+        """Create a new thread bound to ``agent`` with optional ``metadata``."""
         ...
-    async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None: ...
+    async def load(self, id: UUID) -> Thread | None: ...
     async def add_message(
         self,
         thread_id: UUID,
         *,
         role: str,
         parts: list[dict[str, Any]],
-        tenant_id: UUID,
         parent_id: UUID | None = None,
-    ) -> Message:
-        """Append a message to the thread tree.
-
-        ``parent_id`` is the id of the message this one replies to.
-        Pass ``None`` only for a thread's very first user turn.
-        Implementations don't validate that ``parent_id`` lives in the
-        same thread/tenant — callers are responsible. (Callers usually
-        derive it from a prior ``history()`` call, so the invariant holds
-        by construction.)
-        """
-        ...
+    ) -> Message: ...
     async def history(
-        self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
-    ) -> list[Message]:
-        """Return the **active branch** of the thread.
-
-        Walks the message tree from the root (``parent_id IS NULL``)
-        forward, picking ``max(created_at)`` at every fork. The returned
-        list is the linear conversation slice the agent should see —
-        previously regenerated branches are silently skipped (still
-        present in storage, available via ``siblings``).
-
-        Returns ``[]`` for unknown threads, foreign tenants, or empty
-        threads.
-        """
-        ...
-    async def siblings(
-        self, message_id: UUID, *, tenant_id: UUID,
-    ) -> list[Message]:
-        """Return all messages that share ``parent_id`` with ``message_id``.
-
-        Includes the queried message itself. Sorted by ``created_at`` asc
-        (oldest first). Used by the threads router to enrich each
-        message's response with branch-picker metadata.
-
-        Returns ``[]`` for unknown ids or foreign tenants.
-        """
-        ...
-    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
+        self, thread_id: UUID, *, limit: int = 100,
+    ) -> list[Message]: ...
+    async def siblings(self, message_id: UUID) -> list[Message]: ...
+    async def close(self, thread_id: UUID) -> Thread: ...
     async def list_(
         self,
         *,
-        tenant_id: UUID,
         include_archived: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Thread]: ...
-    async def rename(
-        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
-    ) -> Thread: ...
-    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
-    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread: ...
-    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None: ...
+    async def update_metadata(
+        self, thread_id: UUID, *, metadata: dict[str, Any],
+    ) -> Thread:
+        """Replace ``Thread.metadata_`` wholesale. Generic mutation hook
+        for apps that store presentation/scope data (title, tenant_id,
+        user_id, …) inside metadata."""
+        ...
+    async def archive(self, thread_id: UUID) -> Thread: ...
+    async def unarchive(self, thread_id: UUID) -> Thread: ...
+    async def delete(self, thread_id: UUID) -> None: ...
 
 
 class InMemoryThreadRepository:
@@ -175,49 +123,38 @@ class InMemoryThreadRepository:
 
     @traced(
         TraceName.THREAD_CREATE,
-        attrs=lambda _self, *, agent, tenant_id, **__: {
-            "tenant_id": str(tenant_id), "agent": agent,
-        },
+        attrs=lambda _self, *, agent, **__: {"agent": agent},
     )
     async def create(
         self,
         *,
         agent: str,
-        metadata: dict[str, Any],
-        actor_id: str,
-        tenant_id: UUID,
+        metadata: dict[str, Any] | None = None,
     ) -> Thread:
         thread = Thread(
             id=uuid4(),
-            tenant_id=tenant_id,
             agent=agent,
-            metadata=dict(metadata),
+            metadata_=dict(metadata or {}),
             workflow_id=None,
-            actor_id=actor_id,
             status=ThreadStatus.OPEN,
-            title=None,
             created_at=datetime.now(tz=UTC),
             closed_at=None,
         )
         self._threads[thread.id] = thread
         self._messages[thread.id] = []
         _log.info(
-            "InMemoryThreadRepository.create: id=%s tenant=%s agent=%s",
-            thread.id, tenant_id, agent,
+            "InMemoryThreadRepository.create: id=%s agent=%s",
+            thread.id, agent,
         )
         return thread
 
-    async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None:
-        thread = self._threads.get(id)
-        if thread is None or thread.tenant_id != tenant_id:
-            return None
-        return thread
+    async def load(self, id: UUID) -> Thread | None:
+        return self._threads.get(id)
 
     @traced(
         TraceName.THREAD_ADD_MESSAGE,
-        attrs=lambda _self, thread_id, *, role, tenant_id, **__: {
+        attrs=lambda _self, thread_id, *, role, **__: {
             "thread_id": str(thread_id),
-            "tenant_id": str(tenant_id),
             "role": role,
         },
     )
@@ -227,17 +164,17 @@ class InMemoryThreadRepository:
         *,
         role: str,
         parts: list[dict[str, Any]],
-        tenant_id: UUID,
         parent_id: UUID | None = None,
     ) -> Message:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
         if thread.status == ThreadStatus.CLOSED:
-            raise ThreadClosedError(f"Thread {thread_id} is closed; cannot add message")
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot add message",
+            )
         msg = Message(
             id=uuid4(),
-            tenant_id=tenant_id,
             thread_id=thread_id,
             role=role,
             parts=list(parts),
@@ -254,40 +191,23 @@ class InMemoryThreadRepository:
 
     @traced(
         TraceName.THREAD_HISTORY,
-        attrs=lambda _self, thread_id, *, tenant_id, limit=100, **__: {
+        attrs=lambda _self, thread_id, *, limit=100, **__: {
             "thread_id": str(thread_id),
-            "tenant_id": str(tenant_id),
             "limit": limit,
         },
     )
     async def history(
-        self, thread_id: UUID, *, tenant_id: UUID, limit: int = 100
+        self, thread_id: UUID, *, limit: int = 100,
     ) -> list[Message]:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            _log.debug(
-                "InMemoryThreadRepository.history: thread=%s missing or "
-                "wrong tenant — returning []",
-                thread_id,
-            )
+        if thread is None:
             return []
         all_msgs = self._messages[thread_id]
-        branch = _walk_active_branch(all_msgs, limit=limit)
-        _log.debug(
-            "InMemoryThreadRepository.history: thread=%s total=%d "
-            "active_branch=%d",
-            thread_id, len(all_msgs), len(branch),
-        )
-        return branch
+        return _walk_active_branch(all_msgs, limit=limit)
 
-    async def siblings(
-        self, message_id: UUID, *, tenant_id: UUID,
-    ) -> list[Message]:
-        # Search across all tenant-owned threads; the in-memory store
-        # doesn't index messages by id so we scan. Fine for tests.
+    async def siblings(self, message_id: UUID) -> list[Message]:
         for tid, msgs in self._messages.items():
-            thread = self._threads.get(tid)
-            if thread is None or thread.tenant_id != tenant_id:
+            if tid not in self._threads:
                 continue
             target = next((m for m in msgs if m.id == message_id), None)
             if target is None:
@@ -297,60 +217,50 @@ class InMemoryThreadRepository:
             return sibs
         return []
 
-    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+    async def close(self, thread_id: UUID) -> Thread:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        closed = thread.model_copy(update={
-            "status": ThreadStatus.CLOSED,
-            "closed_at": datetime.now(tz=UTC),
-        })
-        self._threads[thread_id] = closed
-        return closed
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.CLOSED
+        thread.closed_at = datetime.now(tz=UTC)
+        return thread
 
     async def list_(
         self,
         *,
-        tenant_id: UUID,
         include_archived: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Thread]:
-        threads = [t for t in self._threads.values() if t.tenant_id == tenant_id]
+        threads = list(self._threads.values())
         if not include_archived:
             threads = [t for t in threads if t.status != ThreadStatus.ARCHIVED]
         threads.sort(key=lambda t: t.created_at, reverse=True)
         return threads[offset : offset + limit]
 
-    async def rename(
-        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
+    async def update_metadata(
+        self, thread_id: UUID, *, metadata: dict[str, Any],
     ) -> Thread:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        updated = thread.model_copy(update={"title": title})
-        self._threads[thread_id] = updated
-        return updated
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.metadata_ = dict(metadata)
+        return thread
 
-    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+    async def archive(self, thread_id: UUID) -> Thread:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        updated = thread.model_copy(update={"status": ThreadStatus.ARCHIVED})
-        self._threads[thread_id] = updated
-        return updated
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.ARCHIVED
+        return thread
 
-    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
+    async def unarchive(self, thread_id: UUID) -> Thread:
         thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        updated = thread.model_copy(update={"status": ThreadStatus.OPEN})
-        self._threads[thread_id] = updated
-        return updated
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.OPEN
+        return thread
 
-    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None:
-        thread = self._threads.get(thread_id)
-        if thread is None or thread.tenant_id != tenant_id:
-            return  # idempotent: deleting an unknown thread is a no-op
+    async def delete(self, thread_id: UUID) -> None:
         self._threads.pop(thread_id, None)
         self._messages.pop(thread_id, None)

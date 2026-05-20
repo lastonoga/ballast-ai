@@ -21,25 +21,23 @@ from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 _session_counter = itertools.count()
 
 
-def _helper_msg_topic(tenant_id: UUID, request_id: UUID) -> str:
+def _helper_msg_topic(request_id: UUID) -> str:
     """Topic for *inbound founder messages* (separate from the gate topic)."""
-    return f"helper:{tenant_id}:{request_id}"
+    return f"helper:{request_id}"
 
 
 class HelperSessionInput(BaseModel):
-    """Workflow input for `DefaultHelperSessionRunner.run`.
+    """Workflow input for ``DefaultHelperSessionRunner.run``.
 
-    All fields are JSON-serializable (DBOS workflow input requirement).
-    The base agent is reconstructed at runtime via `base_agent_module`
-    + `base_agent_attr` (a module-level Agent constant) so the workflow
-    input doesn't carry the un-picklable Agent object.
+    All fields are JSON-serializable. The base agent is reconstructed
+    at runtime via ``base_agent_module`` + ``base_agent_attr`` so the
+    workflow input doesn't carry the un-picklable Agent object.
     """
 
     model_config = ConfigDict(frozen=True)
 
     prompt_payload: dict[str, Any]
     request_id: UUID
-    tenant_id: UUID
     gate_workflow_id: UUID
     base_agent_module: str
     base_agent_attr: str | None
@@ -49,24 +47,14 @@ class HelperSessionInput(BaseModel):
 
 @runtime_checkable
 class HelperSessionRunner(Protocol):
-    """Drives the helper conversation in its OWN DBOS workflow (spec 3J.1)."""
+    """Drives the helper conversation in its OWN DBOS workflow."""
 
     async def run(self, input: HelperSessionInput) -> None: ...
 
 
 @DBOS.dbos_class()
 class DefaultHelperSessionRunner(DBOSConfiguredInstance):
-    """Default helper-session driver.
-
-    Loop:
-      for turn in range(max_turns):
-        msg = await DBOS.recv(helper_msg_topic, timeout_seconds=...)
-        if msg is None: return  # timeout
-        agent.run(msg.text, deps=...)
-        if toolbox.response: DBOS.send(gate_workflow_id, response, topic=gate_topic); return
-
-    The bound on `max_turns` satisfies STATEFLOW013 (no unbounded `while`).
-    """
+    """Default helper-session driver — bounded loop on inbound messages."""
 
     name: ClassVar[str] = "helper_session"
 
@@ -86,8 +74,7 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
         self.max_turns = max_turns
         self.message_recv_timeout_seconds = message_recv_timeout_seconds
         # Test seam: tests assign a pre-built Agent here before calling run();
-        # production resolves the base agent via FQN from the workflow input
-        # (so the input remains JSON-serializable per DBOS workflow contract).
+        # production resolves the base agent via FQN from the workflow input.
         self._base_agent_for_test: Agent[HelperDeps, str] | None = None
 
     @DBOS.workflow()
@@ -98,9 +85,6 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
             if input.context_type_fqn is not None
             else None
         )
-        # Instance-attr test seam (DBOS pickles workflow args/kwargs but
-        # NOT instance state on @dbos_class instances); production resolves
-        # via FQN so workflow input stays JSON-serializable.
         base_agent = self._base_agent_for_test or _resolve_base_agent(
             input.base_agent_module, input.base_agent_attr,
         )
@@ -110,11 +94,9 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
             metadata={
                 "request_id": str(input.request_id),
                 "gate_kind": "hitl_gate",
-                "tenant_id": str(input.tenant_id),
                 "title": prompt.title,
+                "actor_id": input.actor_id,
             },
-            actor_id=input.actor_id,
-            tenant_id=input.tenant_id,
         )
 
         toolbox = HelperToolBox()
@@ -124,8 +106,8 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
             context_type=context_type,
         )
 
-        msg_topic = _helper_msg_topic(input.tenant_id, input.request_id)
-        gate_topic = _hitl_topic(input.tenant_id, input.request_id)
+        msg_topic = _helper_msg_topic(input.request_id)
+        gate_topic = _hitl_topic(input.request_id)
         tools_invoked: list[str] = []
 
         for turn in range(self.max_turns):
@@ -143,12 +125,10 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
                 thread.id,
                 role="user",
                 parts=[{"type": "text", "content": user_text}],
-                tenant_id=input.tenant_id,
             )
 
             deps = HelperDeps(
                 request_id=input.request_id,
-                tenant_id=input.tenant_id,
                 actor_id=input.actor_id,
                 turn_count=turn,
                 tools_invoked_so_far=list(tools_invoked),

@@ -26,9 +26,8 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
@@ -57,8 +56,6 @@ The streaming router itself no longer takes a ``deps_factory`` — apps
 register a ``StateflowAgent`` whose ``build_deps`` method serves the
 same role.
 """
-
-_TenantDep = Depends(get_tenant_id)
 
 
 def _last_user_text(messages: list[ModelMessage]) -> str:
@@ -200,26 +197,20 @@ def build_streaming_router(
     @router.post("/threads/{thread_id}/messages")
     @traced(
         TraceName.STREAMING_POST_MESSAGE,
-        attrs=lambda _request, thread_id, tenant_id=None, **__: {
+        attrs=lambda _request, thread_id, **__: {
             "thread_id": str(thread_id),
-            "tenant_id": str(tenant_id) if tenant_id else "<dep>",
         },
     )
     async def post_message(
         request: Request,
         thread_id: UUID,
-        tenant_id: UUID = _TenantDep,
     ) -> Response:
-        _log.info(
-            "POST /threads/%s/messages received (tenant=%s)",
-            thread_id, tenant_id,
-        )
-        thread = await thread_repo.load(thread_id, tenant_id=tenant_id)
+        _log.info("POST /threads/%s/messages received", thread_id)
+        thread = await thread_repo.load(thread_id)
         if thread is None:
             _log.warning(
-                "POST /threads/%s/messages → 404 (thread not found for "
-                "tenant=%s)",
-                thread_id, tenant_id,
+                "POST /threads/%s/messages → 404 (thread not found)",
+                thread_id,
             )
             raise HTTPException(status_code=404, detail="thread not found")
 
@@ -287,7 +278,7 @@ def build_streaming_router(
         #     New assistant becomes a sibling of the prior one (same
         #     parent_id = last user msg's id).
         active_branch_before = await thread_repo.history(
-            thread_id, tenant_id=tenant_id, limit=history_limit,
+            thread_id, limit=history_limit,
         )
 
         _log.debug(
@@ -331,7 +322,6 @@ def build_streaming_router(
                     parts=[{
                         "type": "text", "text": prompt_text, "state": "done",
                     }],
-                    tenant_id=tenant_id,
                     parent_id=new_user_parent_id,
                 )
                 new_assistant_parent_id = user_msg.id
@@ -345,9 +335,7 @@ def build_streaming_router(
                     "persist) — likely auto-resend after approval",
                 )
 
-        rows = await thread_repo.history(
-            thread_id, tenant_id=tenant_id, limit=history_limit,
-        )
+        rows = await thread_repo.history(thread_id, limit=history_limit)
         # We already persisted the current user turn AND the trimmed
         # ``adapter.messages`` will carry it back into the prompt via the
         # adapter's frontend_messages merge, so drop it from our
@@ -361,7 +349,6 @@ def build_streaming_router(
 
         resolved_deps = await stateflow_agent.build_deps(
             thread=thread,
-            tenant_id=tenant_id,
             message=last_message,
         )
 
@@ -453,7 +440,6 @@ def build_streaming_router(
                 thread_id,
                 role="assistant",
                 parts=asst_parts,
-                tenant_id=tenant_id,
                 parent_id=new_assistant_parent_id,
             )
             _log.info(

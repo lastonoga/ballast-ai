@@ -14,7 +14,6 @@ def test_sp7_exports_present():
     assert hasattr(sf, "build_health_router")
     assert hasattr(sf, "get_container")
     assert hasattr(sf, "get_engine")
-    assert hasattr(sf, "get_tenant_id")
     assert hasattr(sf, "A2AAgentAdapter")
     assert hasattr(sf, "AgentCard")
     assert hasattr(sf, "DepsFactory")

@@ -34,7 +34,7 @@ async def test_reflection_returns_first_passing_draft(
         critic_fn,
         max_iterations=3,
     )
-    result = await pattern.run("seed", tenant_id=uuid4())
+    result = await pattern.run("seed")
     assert result.body == "draft_1"
     assert write_calls["n"] == 1
 
@@ -61,7 +61,7 @@ async def test_reflection_loops_until_passed(
         critic_fn,
         max_iterations=5,
     )
-    result = await pattern.run("seed", tenant_id=uuid4())
+    result = await pattern.run("seed")
     assert result.revision == 3
     assert write_calls["n"] == 3
 
@@ -82,7 +82,7 @@ async def test_reflection_raises_exhausted_when_never_passes(
         max_iterations=2,
     )
     with pytest.raises(ReflectionExhausted) as exc:
-        await pattern.run("seed", tenant_id=uuid4())
+        await pattern.run("seed")
     assert exc.value.iterations == 2
     assert len(exc.value.last_feedback) == 2
 
@@ -124,7 +124,7 @@ async def test_reflection_invokes_loop_recovery_on_repeated_drafts(
         loop_guard=guard,
         loop_recovery=AcceptLast(),
     )
-    result = await pattern.run("seed", tenant_id=uuid4())
+    result = await pattern.run("seed")
     assert result.body == "identical"
 
 

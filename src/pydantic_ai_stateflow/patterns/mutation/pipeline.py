@@ -34,13 +34,13 @@ _instance_counter = itertools.count()
 class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
     """Stages sequentially → first reject halts → apply in one UoW transaction.
 
-    Idempotency (spec 2C.3 post-review): workflow_id is derived from
-    (pipeline_name, proposal_id, tenant_id). Retries of the same proposal
-    by a flaky parent share workflow_id; DBOS dedupes and returns the
-    cached AcceptedResult.
+    Idempotency: ``workflow_id`` is derived from
+    ``(pipeline_name, proposal_id)``. Retries of the same proposal by a
+    flaky parent share workflow_id; DBOS dedupes and returns the cached
+    ``AcceptedResult``.
 
-    The pipeline is `Pattern[Proposal[T], AcceptedResult[T] | RejectedAt]`
-    structurally.
+    Apps that need per-run scoping carry it inside the ``proposal``
+    payload — the framework's pipeline is identity-agnostic.
     """
 
     name: ClassVar[str] = "mutation_pipeline"
@@ -66,23 +66,22 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
         self.pipeline_name = pipeline_name
         self.name = pipeline_name  # type: ignore[misc]
 
-    async def derive_workflow_id(self, proposal_id: UUID, tenant_id: UUID) -> UUID:
+    async def derive_workflow_id(self, proposal_id: UUID) -> UUID:
         """Public so callers can pre-compute the id (e.g. for DBOS SetWorkflowID)."""
         return await Det.uuid_for(IdempotencyInput(
             namespace="mutation_pipeline",
             parts={
                 "pipeline_name": self.pipeline_name,
                 "proposal_id": proposal_id,
-                "tenant_id": tenant_id,
             },
         ))
 
     @DBOS.workflow()
-    @traced(TraceName.PATTERN_MUTATION_PIPELINE, attrs=lambda self, proposal, *, tenant_id: {
-        "tenant_id": str(tenant_id), "pattern": self.name,
+    @traced(TraceName.PATTERN_MUTATION_PIPELINE, attrs=lambda self, proposal: {
+        "pattern": self.name,
     })
     async def run(
-        self, proposal: Proposal[T], *, tenant_id: UUID,
+        self, proposal: Proposal[T],
     ) -> AcceptedResult[T] | RejectedAt:
         retries_so_far = 0
         current = proposal
@@ -99,16 +98,14 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
                     continue
             else:
                 current = result.proposal
-        return await self._apply_and_emit(current, tenant_id=tenant_id)
+        return await self._apply_and_emit(current)
 
     @DBOS.step()
     async def _apply_and_emit(
-        self, proposal: Proposal[T], *, tenant_id: UUID,
+        self, proposal: Proposal[T],
     ) -> AcceptedResult[T]:
         async with self.uow_factory() as uow:
-            entity_id = await self.apply.apply(
-                proposal, uow=uow, tenant_id=tenant_id,
-            )
+            entity_id = await self.apply.apply(proposal, uow=uow)
             if self.event_type is not None:
                 await self.outbox.enqueue(
                     event_type=self.event_type,
@@ -116,6 +113,5 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
                         "proposal_id": str(proposal.proposal_id),
                         "entity_id": str(entity_id),
                     },
-                    tenant_id=tenant_id,
                 )
             return AcceptedResult(proposal=proposal, entity_id=entity_id)

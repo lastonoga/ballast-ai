@@ -22,21 +22,18 @@ _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 class UIChannel:
     """HITL channel backed by a FastAPI inbound endpoint.
 
-    The endpoint (built via `build_hitl_router`) does endpoint-side
-    authz + `DBOS.send` to the gate's tenant-scoped topic. This
-    channel simply blocks on `DBOS.recv` and returns the response.
-
-    Defense-in-depth re-check happens in `HITLGate.run` (SP5) — UIChannel
-    intentionally does NOT re-check policy.
+    The endpoint (built via ``build_hitl_router``) does endpoint-side
+    authz + ``DBOS.send`` to the gate's per-request topic. This
+    channel simply blocks on ``DBOS.recv`` and returns the response.
     """
 
     name: ClassVar[str] = "ui"
 
     @traced(TraceName.CHANNEL_UI, attrs=lambda self, prompt, *, request_id: {
-        "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
+        "request_id": str(request_id),
     })
     async def ask(self, prompt: HITLPrompt, *, request_id: UUID) -> HITLResponse:
-        topic = _hitl_topic(prompt.tenant_id, request_id)
+        topic = _hitl_topic(request_id)
         timeout_seconds = (
             prompt.timeout.total_seconds() if prompt.timeout is not None else None
         )

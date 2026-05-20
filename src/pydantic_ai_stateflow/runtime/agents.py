@@ -54,7 +54,6 @@ from pydantic_ai import RunContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from uuid import UUID
 
     from pydantic import BaseModel
     from pydantic_ai import Agent
@@ -161,14 +160,14 @@ class StateflowAgent(ABC):
         self,
         *,
         thread: Thread,
-        tenant_id: UUID,
         message: ModelMessage | None,
     ) -> Any:
         """Mint per-request deps for the agent's ``deps_type``.
 
-        ``thread`` carries metadata; ``message`` is the just-arrived
-        user turn (or ``None`` for auto-resend after approval). Return
-        whatever the underlying ``Agent.deps_type`` expects.
+        ``thread`` carries metadata (any per-request scope the app needs
+        — tenant_id, user_id, workspace_id — lives there). ``message``
+        is the just-arrived user turn (or ``None`` for auto-resend
+        after approval).
         """
 
     def model_settings(self) -> ModelSettings | None:

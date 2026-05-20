@@ -38,18 +38,11 @@ class _Ctx(BaseModel):
 def _scripted_agent(
     plan: list[tuple[str, dict[str, Any]]],
 ) -> Agent[HelperDeps, str]:
-    """Returns an agent whose Nth `.run()` calls plan[N]'s tool.
-
-    The model_fn returns the planned ToolCallPart on the first invocation
-    of a turn, then a final TextPart once it sees the ToolReturnPart in
-    the message history — otherwise pydantic-ai loops until UsageLimit.
-    """
     state = {"i": 0}
 
     async def model_fn(
         messages: list[ModelMessage], info: AgentInfo,
     ) -> ModelResponse:
-        # Detect tool return in latest request: emit a TextPart to finish turn.
         for msg in reversed(messages):
             if isinstance(msg, ModelRequest):
                 if any(isinstance(p, ToolReturnPart) for p in msg.parts):
@@ -87,11 +80,8 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
     fresh_dbos_executor,
 ):
     rid = uuid4()
-    tid = uuid4()
     wf_id = uuid4()
-    prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
     base = _scripted_agent([(
         "approve",
         {"rationale": "ok", "confidence": 0.9},
@@ -125,7 +115,6 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
             HelperSessionInput(
                 prompt_payload=prompt.model_dump(mode="json"),
                 request_id=rid,
-                tenant_id=tid,
                 gate_workflow_id=wf_id,
                 base_agent_module="tests.patterns.hitl.test_helper_session",
                 base_agent_attr=None,
@@ -135,12 +124,12 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
         )
 
     assert sent["destination_id"] == str(wf_id)
-    assert sent["topic"] == _hitl_topic(tid, rid)
+    assert sent["topic"] == _hitl_topic(rid)
     assert sent["message"]["kind"] == "approved"
     assert len(runner.thread_repo._threads) == 1
     th = next(iter(runner.thread_repo._threads.values()))
     assert th.agent == "hitl"
-    assert th.metadata["request_id"] == str(rid)
+    assert th.metadata_["request_id"] == str(rid)
 
 
 @pytest.mark.asyncio
@@ -148,14 +137,9 @@ async def test_runner_loops_on_non_verdict_messages_then_completes(
     fresh_dbos_executor,
 ):
     rid = uuid4()
-    tid = uuid4()
     wf_id = uuid4()
-    prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
 
-    # A reject is itself a verdict that terminates the session; assert
-    # the runner sends once and consumes only one recv.
     base = _scripted_agent([
         ("reject", {"rationale": "need more info"}),
         ("approve", {
@@ -195,7 +179,6 @@ async def test_runner_loops_on_non_verdict_messages_then_completes(
             HelperSessionInput(
                 prompt_payload=prompt.model_dump(mode="json"),
                 request_id=rid,
-                tenant_id=tid,
                 gate_workflow_id=wf_id,
                 base_agent_module="x",
                 base_agent_attr=None,
@@ -213,11 +196,8 @@ async def test_runner_loops_on_non_verdict_messages_then_completes(
 async def test_runner_bounded_by_max_turns(fresh_dbos_executor):
     """If max_turns exhausted with no verdict, runner exits without sending."""
     rid = uuid4()
-    tid = uuid4()
     wf_id = uuid4()
-    prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
 
     async def model_fn(messages, info):
         return ModelResponse(parts=[TextPart(content="thinking...")])
@@ -255,7 +235,6 @@ async def test_runner_bounded_by_max_turns(fresh_dbos_executor):
             HelperSessionInput(
                 prompt_payload=prompt.model_dump(mode="json"),
                 request_id=rid,
-                tenant_id=tid,
                 gate_workflow_id=wf_id,
                 base_agent_module="x",
                 base_agent_attr=None,
@@ -270,12 +249,10 @@ async def test_runner_bounded_by_max_turns(fresh_dbos_executor):
 
 def test_helper_session_input_is_frozen_basemodel():
     rid = uuid4()
-    tid = uuid4()
     wf = uuid4()
     inp = HelperSessionInput(
         prompt_payload={"k": "v"},
         request_id=rid,
-        tenant_id=tid,
         gate_workflow_id=wf,
         base_agent_module="m",
         base_agent_attr=None,

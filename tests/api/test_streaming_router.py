@@ -54,11 +54,7 @@ def _clear_registry() -> Any:
 class _TestStateflowAgent(StateflowAgent):
     """Test seam: wraps a pre-built pydantic-ai ``Agent`` + optional
     ``deps_factory`` + ``model_settings`` into a ``StateflowAgent``
-    instance the registry can resolve.
-
-    Defaults the registered ``name`` to ``"conversation"`` to match what
-    the test fixtures write into ``Thread.agent``.
-    """
+    instance the registry can resolve."""
 
     name = "conversation"
 
@@ -76,15 +72,10 @@ class _TestStateflowAgent(StateflowAgent):
     def build_agent(self) -> Agent[Any, Any]:
         return self._agent
 
-    async def build_deps(
-        self, *, thread: Any, tenant_id: UUID, message: Any,
-    ) -> Any:
+    async def build_deps(self, *, thread: Any, message: Any) -> Any:
         if self._deps_factory is None:
             return None
-        result = self._deps_factory(
-            thread_id=thread.id, tenant_id=tenant_id, message=message,
-        )
-        # support async factories too
+        result = self._deps_factory(thread_id=thread.id, message=message)
         import inspect as _inspect
         if _inspect.isawaitable(result):
             return await result
@@ -95,10 +86,7 @@ class _TestStateflowAgent(StateflowAgent):
 
 
 def _ag_ui_body(*, thread_id: UUID, user_text: str) -> dict[str, Any]:
-    """Build a minimal Vercel-AI ``SubmitMessage`` body.
-
-    Name kept for diff churn; format is Vercel AI SDK v6.
-    """
+    """Build a minimal Vercel-AI ``SubmitMessage`` body."""
     return {
         "trigger": "submit-message",
         "id": str(thread_id),
@@ -146,16 +134,12 @@ async def test_returns_404_when_thread_missing() -> None:
     agent: Agent[None, str] = Agent(TestModel(), output_type=str)
     app = _build_app(repo, agent)
 
-    tenant_id = uuid4()
     missing = uuid4()
     async with _client(app) as c:
         r = await c.post(
             f"/threads/{missing}/messages",
             json=_ag_ui_body(thread_id=missing, user_text="hi"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
     assert r.status_code == 404
 
@@ -163,13 +147,7 @@ async def test_returns_404_when_thread_missing() -> None:
 @pytest.mark.asyncio
 async def test_persists_user_message_before_stream() -> None:
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     agent: Agent[None, str] = Agent(TestModel(custom_output_text="ok"), output_type=str)
     app = _build_app(repo, agent)
 
@@ -177,22 +155,15 @@ async def test_persists_user_message_before_stream() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hello world"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
         _ = r.text
 
-    msgs = await repo.history(thread.id, tenant_id=tenant_id)
+    msgs = await repo.history(thread.id)
     roles = [m.role for m in msgs]
     assert "user" in roles
     user_row = next(m for m in msgs if m.role == "user")
-    # Persisted user parts include ``state: "done"`` (Vercel UIMessage
-    # shape) so client-side restore via ``chat.setMessages`` doesn't
-    # trip useChat's discriminator. Validate content rather than the
-    # exact dict to keep the assertion future-proof.
     assert user_row.parts == [
         {"type": "text", "text": "hello world", "state": "done"},
     ]
@@ -201,13 +172,7 @@ async def test_persists_user_message_before_stream() -> None:
 @pytest.mark.asyncio
 async def test_assistant_reply_persisted_via_on_complete() -> None:
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     agent: Agent[None, str] = Agent(
         TestModel(custom_output_text="hi there"), output_type=str,
     )
@@ -217,20 +182,13 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
         _ = r.text
 
-    msgs = await repo.history(thread.id, tenant_id=tenant_id)
+    msgs = await repo.history(thread.id)
     assert [m.role for m in msgs] == ["user", "assistant"]
-    # Persisted assistant parts are Vercel UIMessage shape (dumped via
-    # VercelAIAdapter.dump_messages), so each text part includes a
-    # ``state`` field too. Verify the text content survives — we don't
-    # pin the exact shape so the upstream Vercel schema can evolve.
     text_parts = [
         p for p in msgs[1].parts if p.get("type") == "text"
     ]
@@ -243,31 +201,18 @@ async def test_message_history_reconstructed_from_repo() -> None:
     """Seed 3 prior turns; verify the agent sees them via
     ``last_model_request_parameters.messages``."""
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
-    # Seed three prior turns directly into the repo.
+    thread = await repo.create(agent="conversation", metadata={})
     await repo.add_message(
-        thread.id,
-        role="user",
+        thread.id, role="user",
         parts=[{"type": "text", "text": "turn1-user"}],
-        tenant_id=tenant_id,
     )
     await repo.add_message(
-        thread.id,
-        role="assistant",
+        thread.id, role="assistant",
         parts=[{"type": "text", "text": "turn1-assistant"}],
-        tenant_id=tenant_id,
     )
     await repo.add_message(
-        thread.id,
-        role="user",
+        thread.id, role="user",
         parts=[{"type": "text", "text": "turn2-user"}],
-        tenant_id=tenant_id,
     )
 
     seen_messages: list[list[Any]] = []
@@ -291,10 +236,7 @@ async def test_message_history_reconstructed_from_repo() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="turn3-user"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
         _ = r.text
@@ -306,8 +248,6 @@ async def test_message_history_reconstructed_from_repo() -> None:
             for p in m.parts:
                 if isinstance(p, UserPromptPart) and isinstance(p.content, str):
                     user_texts.append(p.content)
-    # All three prior user turns + the current "turn3-user" should be visible
-    # exactly once each (no duplicate of the current user turn from repo).
     assert user_texts.count("turn1-user") == 1
     assert user_texts.count("turn2-user") == 1
     assert user_texts.count("turn3-user") == 1
@@ -316,13 +256,7 @@ async def test_message_history_reconstructed_from_repo() -> None:
 @pytest.mark.asyncio
 async def test_stream_emits_canonical_vercel_ai_events() -> None:
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     agent: Agent[None, str] = Agent(
         TestModel(custom_output_text="hello"), output_type=str,
     )
@@ -332,14 +266,10 @@ async def test_stream_emits_canonical_vercel_ai_events() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         body = r.text
 
-    # Vercel AI SDK SSE: lines like `data: {"type":"start",...}`.
     types_seen: list[str] = []
     for line in body.splitlines():
         if line.startswith("data:"):
@@ -349,9 +279,6 @@ async def test_stream_emits_canonical_vercel_ai_events() -> None:
             payload = json.loads(raw)
             if isinstance(payload, dict) and "type" in payload:
                 types_seen.append(payload["type"])
-    # A successful Vercel AI stream brackets the response with `start`
-    # and `finish` chunks (lifecycle events). Don't pin specific text-*
-    # event names — they depend on TestModel internals.
     assert "start" in types_seen
     assert "finish" in types_seen
 
@@ -362,17 +289,10 @@ async def test_deps_factory_invoked_per_request() -> None:
 
     @dataclass
     class MyDeps:
-        tenant_id: UUID
         label: str
 
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     agent: Agent[MyDeps, str] = Agent(
         TestModel(custom_output_text="ok"), output_type=str, deps_type=MyDeps,
     )
@@ -382,8 +302,8 @@ async def test_deps_factory_invoked_per_request() -> None:
     def stash() -> str:
         return "noop"
 
-    async def deps_factory(*, thread_id: UUID, tenant_id: UUID, **_kw: Any) -> MyDeps:
-        deps = MyDeps(tenant_id=tenant_id, label=f"req:{thread_id}")
+    async def deps_factory(*, thread_id: UUID, **_kw: Any) -> MyDeps:
+        deps = MyDeps(label=f"req:{thread_id}")
         received.append(deps)
         return deps
 
@@ -392,16 +312,12 @@ async def test_deps_factory_invoked_per_request() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
         _ = r.text
 
     assert len(received) == 1
-    assert received[0].tenant_id == tenant_id
     assert received[0].label == f"req:{thread.id}"
 
 
@@ -411,13 +327,7 @@ async def test_model_settings_flow_through() -> None:
     from pydantic_ai.settings import ModelSettings
 
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     settings = ModelSettings(temperature=0.42)
     seen_settings: list[ModelSettings | None] = []
 
@@ -442,10 +352,7 @@ async def test_model_settings_flow_through() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200
         _ = r.text
@@ -462,23 +369,16 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
     new assistant reply becomes a sibling of the previous one (same
     ``parent_id``), so both versions are preserved in storage."""
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
-    # Seed a linear convo: user → asst_v1.
+    thread = await repo.create(agent="conversation", metadata={})
     user_msg = await repo.add_message(
         thread.id, role="user",
         parts=[{"type": "text", "text": "hi"}],
-        tenant_id=tenant_id, parent_id=None,
+        parent_id=None,
     )
     asst_v1 = await repo.add_message(
         thread.id, role="assistant",
         parts=[{"type": "text", "text": "v1"}],
-        tenant_id=tenant_id, parent_id=user_msg.id,
+        parent_id=user_msg.id,
     )
 
     agent: Agent[None, str] = Agent(
@@ -505,28 +405,19 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
         r = await c.post(
             f"/threads/{thread.id}/messages",
             json=body,
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
         )
         assert r.status_code == 200, r.text
         _ = r.text
 
-    # No new user turn — still one user msg in the repo.
-    siblings_of_user = await repo.siblings(
-        user_msg.id, tenant_id=tenant_id,
-    )
+    siblings_of_user = await repo.siblings(user_msg.id)
     assert [s.id for s in siblings_of_user] == [user_msg.id]
 
-    # Two assistant siblings under the same user msg, active = newest.
-    asst_siblings = await repo.siblings(
-        asst_v1.id, tenant_id=tenant_id,
-    )
+    asst_siblings = await repo.siblings(asst_v1.id)
     assert len(asst_siblings) == 2
     assert {s.parent_id for s in asst_siblings} == {user_msg.id}
 
-    branch = await repo.history(thread.id, tenant_id=tenant_id)
+    branch = await repo.history(thread.id)
     assert [m.role for m in branch] == ["user", "assistant"]
     assert branch[-1].id != asst_v1.id  # newer sibling wins
 
@@ -535,17 +426,7 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
 async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     """Approval responses (Vercel SDK v6 ``tool-*`` parts with approval
     decision) require the originating assistant turn — with its
-    ``tool-call`` part — to survive the message-trim step.
-
-    Otherwise pydantic-ai's deferred-tool matcher errors with
-    ``Tool call results were provided, but the message history does not
-    contain any unprocessed tool calls.``
-
-    We don't drive a real ``requires_approval=True`` tool here (no
-    pydantic-ai testing primitive for it); we verify the trim guard
-    behaves correctly by checking that ``adapter.messages`` is preserved
-    when ``deferred_tool_results`` is non-None.
-    """
+    ``tool-call`` part — to survive the message-trim step."""
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
     from pydantic_ai_stateflow.api.streaming.router import (
@@ -553,13 +434,7 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     )
 
     repo = InMemoryThreadRepository()
-    tenant_id = uuid4()
-    thread = await repo.create(
-        agent="conversation",
-        metadata={},
-        actor_id="a",
-        tenant_id=tenant_id,
-    )
+    thread = await repo.create(agent="conversation", metadata={})
     agent: Agent[None, str] = Agent(TestModel(), output_type=str)
 
     body = {
@@ -586,12 +461,9 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
         ],
     }
 
-    # Build the adapter directly to inspect its parsing logic.
     run_input = VercelAIAdapter.build_run_input(json.dumps(body).encode())
     adapter = VercelAIAdapter(agent=agent, run_input=run_input, sdk_version=6)
 
-    # The trim helper should run only when deferred_tool_results is None.
-    # Confirm the adapter extracted the approval response.
     assert adapter.deferred_tool_results is not None
 
     msgs_before = list(adapter.messages)
@@ -599,8 +471,6 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
         _trim_adapter_messages_to_last_user_turn(adapter)
     msgs_after = list(adapter.messages)
 
-    # Same shape — trim was skipped, so the assistant tool-call message
-    # is still present for pydantic-ai to match against.
     assert msgs_before == msgs_after, (
         "trim must not run when deferred_tool_results is present"
     )

@@ -4,7 +4,6 @@ import inspect
 import itertools
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Generic, TypeVar
-from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
 from pydantic import BaseModel
@@ -83,10 +82,10 @@ class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
         self.feedback_renderer = feedback_renderer
 
     @DBOS.workflow()
-    @traced(TraceName.PATTERN_REFLECTION, attrs=lambda self, task, *, tenant_id: {
-        "tenant_id": str(tenant_id), "pattern": self.name,
+    @traced(TraceName.PATTERN_REFLECTION, attrs=lambda self, task: {
+        "pattern": self.name,
     })
-    async def run(self, task: InT, *, tenant_id: UUID) -> OutT:
+    async def run(self, task: InT) -> OutT:
         feedback: list[Critique] = []
         for _ in range(self.max_iterations):
             rendered = self.feedback_renderer(task, feedback)

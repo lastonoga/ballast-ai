@@ -35,10 +35,9 @@ def test_webhook_channel_satisfies_protocol():
 
 @pytest.mark.asyncio
 async def test_webhook_channel_posts_signed_payload_then_recvs():
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c",
+        title="t", context="c",
         decision_kinds={"approved"},
         timeout=timedelta(seconds=5),
     )
@@ -71,17 +70,14 @@ async def test_webhook_channel_posts_signed_payload_then_recvs():
     assert body_json["prompt"]["title"] == "t"
     expected = hmac.new(b"sssh", posted["body"], sha256).hexdigest()
     assert posted["signature"] == expected
-    recv.assert_awaited_once_with(
-        _hitl_topic(tid, rid), timeout_seconds=5.0,
-    )
+    recv.assert_awaited_once_with(_hitl_topic(rid), timeout_seconds=5.0)
 
 
 @pytest.mark.asyncio
 async def test_webhook_channel_returns_timeout_on_none():
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c",
+        title="t", context="c",
         decision_kinds={"approved"},
         timeout=timedelta(seconds=1),
     )
@@ -102,12 +98,11 @@ async def test_webhook_channel_returns_timeout_on_none():
 @pytest.mark.asyncio
 async def test_webhook_endpoint_rejects_missing_signature():
     repo = InMemoryHITLRepository()
-    tid = uuid4()
     req = await repo.persist_request(
-        prompt={"tenant_id": str(tid), "title": "x", "context": "y",
+        prompt={"title": "x", "context": "y",
                 "decision_kinds": ["approved"]},
         workflow_id=uuid4(), gate_kind="hitl_gate",
-        purpose="approval", tenant_id=tid,
+        purpose="approval",
     )
     app = FastAPI()
     app.include_router(build_hitl_router(
@@ -116,23 +111,18 @@ async def test_webhook_endpoint_rejects_missing_signature():
     body = {"kind": "approved", "actor_id": "ext",
             "answered_at": datetime.now(tz=UTC).isoformat()}
     with TestClient(app) as client:
-        r = client.post(
-            f"/hitl/webhook/{req.id}",
-            json=body,
-            headers={"X-Tenant-Id": str(tid)},
-        )
+        r = client.post(f"/hitl/webhook/{req.id}", json=body)
     assert r.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_webhook_endpoint_rejects_bad_signature():
     repo = InMemoryHITLRepository()
-    tid = uuid4()
     req = await repo.persist_request(
-        prompt={"tenant_id": str(tid), "title": "x", "context": "y",
+        prompt={"title": "x", "context": "y",
                 "decision_kinds": ["approved"]},
         workflow_id=uuid4(), gate_kind="hitl_gate",
-        purpose="approval", tenant_id=tid,
+        purpose="approval",
     )
     app = FastAPI()
     app.include_router(build_hitl_router(
@@ -143,7 +133,6 @@ async def test_webhook_endpoint_rejects_bad_signature():
             f"/hitl/webhook/{req.id}",
             content=b'{"kind":"approved","actor_id":"ext","answered_at":"2026-01-01T00:00:00+00:00"}',
             headers={
-                "X-Tenant-Id": str(tid),
                 "Content-Type": "application/json",
                 WEBHOOK_SIGNATURE_HEADER: "deadbeef",
             },
@@ -154,13 +143,12 @@ async def test_webhook_endpoint_rejects_bad_signature():
 @pytest.mark.asyncio
 async def test_webhook_endpoint_accepts_valid_signature_and_sends():
     repo = InMemoryHITLRepository()
-    tid = uuid4()
     wf_id = uuid4()
     req = await repo.persist_request(
-        prompt={"tenant_id": str(tid), "title": "x", "context": "y",
+        prompt={"title": "x", "context": "y",
                 "decision_kinds": ["approved"]},
         workflow_id=wf_id, gate_kind="hitl_gate",
-        purpose="approval", tenant_id=tid,
+        purpose="approval",
     )
     app = FastAPI()
     app.include_router(build_hitl_router(
@@ -181,14 +169,13 @@ async def test_webhook_endpoint_accepts_valid_signature_and_sends():
             f"/hitl/webhook/{req.id}",
             content=body,
             headers={
-                "X-Tenant-Id": str(tid),
                 "Content-Type": "application/json",
                 WEBHOOK_SIGNATURE_HEADER: sig,
             },
         )
     assert r.status_code == 200
     assert sent["destination_id"] == str(wf_id)
-    assert sent["topic"] == _hitl_topic(tid, req.id)
+    assert sent["topic"] == _hitl_topic(req.id)
 
 
 @pytest.mark.asyncio

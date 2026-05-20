@@ -22,10 +22,8 @@ def test_ui_channel_satisfies_protocol():
 
 @pytest.mark.asyncio
 async def test_ui_channel_returns_received_response():
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid,
         title="t",
         context="c",
         decision_kinds={"approved", "rejected"},
@@ -42,17 +40,13 @@ async def test_ui_channel_returns_received_response():
         result = await channel.ask(prompt, request_id=rid)
     assert isinstance(result, ApprovedResponse)
     assert result.actor_id == "alice"
-    recv.assert_awaited_once_with(
-        _hitl_topic(tid, rid), timeout_seconds=5.0,
-    )
+    recv.assert_awaited_once_with(_hitl_topic(rid), timeout_seconds=5.0)
 
 
 @pytest.mark.asyncio
 async def test_ui_channel_returns_timeout_on_none():
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid,
         title="t",
         context="c",
         decision_kinds={"approved"},
@@ -69,10 +63,8 @@ async def test_ui_channel_returns_timeout_on_none():
 
 @pytest.mark.asyncio
 async def test_ui_channel_no_timeout_passes_none():
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid,
         title="t",
         context="c",
         decision_kinds={"approved"},
@@ -86,4 +78,4 @@ async def test_ui_channel_no_timeout_passes_none():
     ):
         channel = UIChannel()
         await channel.ask(prompt, request_id=rid)
-    recv.assert_awaited_once_with(_hitl_topic(tid, rid), timeout_seconds=None)
+    recv.assert_awaited_once_with(_hitl_topic(rid), timeout_seconds=None)

@@ -33,29 +33,13 @@ async def start_workflow_async(
     *,
     idempotency_key: str,
 ) -> None:
-    """Thin wrapper around `DBOS.start_workflow_async` + `SetWorkflowID`.
-
-    Extracted so tests can patch a single symbol. Production: this kicks off
-    the helper-session workflow under a deterministic workflow_id so retries
-    of the parent gate workflow re-attach to the same session instead of
-    spawning new ones.
-    """
+    """Thin wrapper around ``DBOS.start_workflow_async`` + ``SetWorkflowID``."""
     with SetWorkflowID(idempotency_key):
         await DBOS.start_workflow_async(workflow_fn, input)
 
 
 class ConversationalChannel:
-    """HITL channel backed by a helper pydantic-ai Agent in its own workflow.
-
-    Lifecycle (spec 3J.1):
-      1. `ask()` computes a deterministic idempotency key.
-      2. Starts `helper_session_runner.run` as an INDEPENDENT workflow under
-         that key — so gate-workflow replay reuses the same session instead
-         of spawning duplicates.
-      3. `DBOS.recv`s on the gate's tenant-scoped topic until the helper
-         agent invokes an approval tool (which DBOS.sends to that topic).
-      4. Returns the resulting `HITLResponse` (or `TimeoutResponse`).
-    """
+    """HITL channel backed by a helper pydantic-ai Agent in its own workflow."""
 
     name: ClassVar[str] = "conversational"
 
@@ -79,19 +63,16 @@ class ConversationalChannel:
         self.actor_id = actor_id
 
     @traced(TraceName.CHANNEL_CONVERSATIONAL, attrs=lambda self, prompt, *, request_id: {
-        "tenant_id": str(prompt.tenant_id), "request_id": str(request_id),
+        "request_id": str(request_id),
     })
     async def ask(
         self, prompt: HITLPrompt, *, request_id: UUID,
     ) -> HITLResponse:
-        idempotency_key = await self._idempotency_key(
-            prompt.tenant_id, request_id,
-        )
+        idempotency_key = await self._idempotency_key(request_id)
         gate_wf = self.gate_workflow_id_resolver()
         input = HelperSessionInput(
             prompt_payload=prompt.model_dump(mode="json"),
             request_id=request_id,
-            tenant_id=prompt.tenant_id,
             gate_workflow_id=gate_wf,
             base_agent_module=self.base_agent_module,
             base_agent_attr=self.base_agent_attr,
@@ -107,7 +88,7 @@ class ConversationalChannel:
             idempotency_key=idempotency_key,
         )
 
-        topic = _hitl_topic(prompt.tenant_id, request_id)
+        topic = _hitl_topic(request_id)
         if prompt.timeout is not None:
             payload = await DBOS.recv(
                 topic, timeout_seconds=prompt.timeout.total_seconds(),
@@ -119,14 +100,11 @@ class ConversationalChannel:
         return _RESPONSE_ADAPTER.validate_python(payload)
 
     @staticmethod
-    async def _idempotency_key(tenant_id: UUID, request_id: UUID) -> str:
+    async def _idempotency_key(request_id: UUID) -> str:
         derived = await Det.uuid_for(
             IdempotencyInput(
                 namespace="helper_session",
-                parts={
-                    "tenant_id": tenant_id,
-                    "request_id": request_id,
-                },
+                parts={"request_id": request_id},
             ),
         )
         return f"helper:{derived}"

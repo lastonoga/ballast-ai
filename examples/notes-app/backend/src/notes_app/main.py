@@ -19,13 +19,11 @@ from __future__ import annotations
 
 import os
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, FastAPI
 from pydantic import BaseModel
 from pydantic_ai_stateflow.api import CORSConfig
-from pydantic_ai_stateflow.api.deps import get_tenant_id
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider
@@ -48,11 +46,7 @@ if TYPE_CHECKING:
 load_dotenv()
 
 
-_TenantDep = Depends(get_tenant_id)
-
-
 class _CreateThreadBody(BaseModel):
-    actor_id: str = "user"
     metadata: dict[str, Any] | None = None
 
 
@@ -68,18 +62,13 @@ def _build_create_thread_router(repo: ThreadRepository) -> APIRouter:
     router = APIRouter()
 
     @router.post("/threads", status_code=201)
-    async def create_thread(
-        body: _CreateThreadBody,
-        tenant_id: UUID = _TenantDep,
-    ) -> dict[str, Any]:
+    async def create_thread(body: _CreateThreadBody) -> dict[str, Any]:
         metadata = validate_thread_metadata(NotesAgent, body.metadata)
         thread = await repo.create(
             agent=NotesAgent.name,
             metadata=metadata,
-            actor_id=body.actor_id,
-            tenant_id=tenant_id,
         )
-        return thread.model_dump(mode="json")
+        return thread.model_dump(mode="json", by_alias=True)
 
     return router
 
@@ -90,24 +79,11 @@ def build_app(
     notes_agent: NotesAgent | None = None,
     notes_repo: NoteRepository | None = None,
 ) -> FastAPI:
-    """Construct the FastAPI app.
-
-    Args:
-      thread_repo: defaults to ``InMemoryThreadRepository``.
-      notes_agent: a pre-built ``NotesAgent``. Defaults to one bound to
-        the ``notes_repo`` arg; tests inject a variant with a
-        ``TestModel``-backed pydantic-ai ``Agent`` (see
-        ``tests/test_smoke.py::_fake_notes_agent``).
-      notes_repo: ``NoteRepository`` bound into the container. Defaults
-        to a fresh ``InMemoryNoteRepository``.
-    """
+    """Construct the FastAPI app."""
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
     agent = notes_agent or NotesAgent(notes_repo=notes)
 
-    # Register the StateflowAgent so build_streaming_router can resolve it
-    # by ``Thread.agent`` per request. Registration is idempotent —
-    # re-creating the app in tests just overwrites the same name.
     register_agent(agent)
 
     engine = Engine(
@@ -120,7 +96,7 @@ def build_app(
             )
         ]
     )
-    
+
     threads_router = build_threads_router(thread_repo=repo)
     create_router = _build_create_thread_router(repo)
     streaming_router = build_streaming_router(thread_repo=repo)
@@ -131,24 +107,20 @@ def build_app(
 
     app: FastAPI = engine.fastapi_app(
         extra_routers=[create_router, threads_router, streaming_router],
-        # permissive_dev() covers assistant-ui Next.js (localhost:3000)
-        # and Vite (localhost:3003).
         cors=CORSConfig.permissive_dev(),
         on_startup=[_bind_domain_repos],
     )
 
-    # Expose for integration tests + future admin endpoints.
     app.state.notes_repo = notes
     app.state.thread_repo = repo
     app.state.notes_agent = agent
     return app
 
 
-# Module-level ASGI handle for ``uvicorn notes_app.main:app``.
 app: FastAPI = build_app()
 
 
-def main() -> None:  # pragma: no cover — convenience entry-point
+def main() -> None:  # pragma: no cover
     import uvicorn
 
     host = os.environ.get("HOST", "127.0.0.1")

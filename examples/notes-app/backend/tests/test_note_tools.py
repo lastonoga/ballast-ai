@@ -1,21 +1,10 @@
-"""Direct unit tests for the note tools + repo (no LLM involved).
-
-These exercise the ``NoteRepository`` Protocol's contract through the
-in-memory impl, and the tool functions' wiring of ``ctx.deps``. They run
-without ``OPENROUTER_API_KEY``.
-
-Tools live on ``NotesAgent`` via ``@NotesAgent.tool``; the framework
-registers them on the pydantic-ai ``Agent`` the first time
-``NotesAgent.agent`` is accessed. We construct a ``_TestNotesAgent``
-variant whose ``build_agent`` returns a ``TestModel``-backed bare Agent
-so we can introspect the registered tools without hitting OpenRouter.
-"""
+"""Direct unit tests for the note tools + repo (no LLM involved)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from pydantic_ai import Agent
@@ -28,12 +17,6 @@ from notes_app.notes.repository import InMemoryNoteRepository
 
 @dataclass
 class _FakeCtx:
-    """Minimal RunContext stand-in for direct tool invocation in tests.
-
-    pydantic-ai's ``RunContext`` is a heavier object, but the only
-    attribute our tools read is ``.deps``, so a dataclass is enough.
-    """
-
     deps: NoteToolDeps
 
 
@@ -48,31 +31,23 @@ class _TestNotesAgent(NotesAgent):
         )
 
 
-def _make_deps(repo: InMemoryNoteRepository, tenant_id: UUID) -> NoteToolDeps:
-    return NoteToolDeps(repo=repo, tenant_id=tenant_id)
+def _make_deps(repo: InMemoryNoteRepository) -> NoteToolDeps:
+    return NoteToolDeps(repo=repo)
 
 
 def _agent_with_tools(repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
-    """Build a ``NotesAgent`` and return its lazy-constructed pydantic-ai Agent.
-
-    The framework's ``StateflowAgent.agent`` cached_property registers
-    every ``@NotesAgent.tool`` and installs grounded ``prepare`` hooks
-    on the way out.
-    """
     return _TestNotesAgent(notes_repo=repo).agent
 
 
 def _bound_tool(agent: Any, name: str) -> Any:
-    """Pull a registered tool's wrapped Python function off an Agent."""
-    tool = agent._function_toolset.tools[name]  # noqa: SLF001 — test introspection
+    tool = agent._function_toolset.tools[name]  # noqa: SLF001
     return tool.function
 
 
 async def test_create_note_persists_via_repo(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
+    repo: InMemoryNoteRepository,
 ) -> None:
-    """create_note round-trips through the repo and returns the saved Note."""
-    deps = _make_deps(repo, tenant_id)
+    deps = _make_deps(repo)
     ctx = _FakeCtx(deps=deps)
 
     agent = _agent_with_tools(repo)
@@ -80,93 +55,57 @@ async def test_create_note_persists_via_repo(
 
     note = await create_note(ctx, title="grocery", body="milk, eggs")
     assert isinstance(note, Note)
-    assert note.tenant_id == tenant_id
     assert note.title == "grocery"
     assert note.body == "milk, eggs"
 
-    listed = await repo.list_(tenant_id=tenant_id)
+    listed = await repo.list_()
     assert [n.id for n in listed] == [note.id]
 
 
 async def test_search_notes_substring_match(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
+    repo: InMemoryNoteRepository,
 ) -> None:
-    """search_notes finds case-insensitive substrings across title+body."""
-    await repo.create(title="Groceries", body="milk", tenant_id=tenant_id)
-    await repo.create(title="Reading", body="Finish the milkman book", tenant_id=tenant_id)
-    await repo.create(title="Errands", body="post office", tenant_id=tenant_id)
+    await repo.create(title="Groceries", body="milk")
+    await repo.create(title="Reading", body="Finish the milkman book")
+    await repo.create(title="Errands", body="post office")
 
-    hits = await repo.search("MILK", tenant_id=tenant_id)
+    hits = await repo.search("MILK")
     titles = {n.title for n in hits}
     assert titles == {"Groceries", "Reading"}, hits
 
     # Empty query: no spurious matches.
-    assert await repo.search("   ", tenant_id=tenant_id) == []
+    assert await repo.search("   ") == []
 
 
-async def test_edit_note_raises_keyerror_for_wrong_tenant(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
+async def test_edit_note_raises_keyerror_for_unknown_id(
+    repo: InMemoryNoteRepository,
 ) -> None:
-    """update() refuses to touch another tenant's note (404-equivalent)."""
-    note = await repo.create(title="mine", body="x", tenant_id=tenant_id)
-    other_tenant = uuid4()
-
+    """update() raises on unknown ids."""
     with pytest.raises(KeyError):
-        await repo.update(
-            note.id, title="hacked", body=None, tenant_id=other_tenant,
-        )
-
-    # Unknown ids also raise even for the right tenant.
-    with pytest.raises(KeyError):
-        await repo.update(
-            uuid4(), title="x", body=None, tenant_id=tenant_id,
-        )
+        await repo.update(uuid4(), title="x", body=None)
 
 
 async def test_delete_note_idempotent(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
-) -> None:
-    """delete() silently succeeds on unknown / wrong-tenant ids."""
-    note = await repo.create(title="t", body="b", tenant_id=tenant_id)
-
-    await repo.delete(note.id, tenant_id=tenant_id)
-    assert await repo.get(note.id, tenant_id=tenant_id) is None
-
-    # Second delete on the same id: no-op.
-    await repo.delete(note.id, tenant_id=tenant_id)
-
-    # Wrong tenant: no-op.
-    other = await repo.create(title="other", body="x", tenant_id=tenant_id)
-    await repo.delete(other.id, tenant_id=uuid4())
-    assert await repo.get(other.id, tenant_id=tenant_id) is not None
-
-
-async def test_list_notes_is_tenant_scoped(
     repo: InMemoryNoteRepository,
 ) -> None:
-    """Notes from one tenant never leak into another tenant's list/search."""
-    t1, t2 = uuid4(), uuid4()
-    await repo.create(title="t1-note", body="x", tenant_id=t1)
-    await repo.create(title="t2-note", body="x", tenant_id=t2)
+    """delete() silently succeeds on unknown ids."""
+    note = await repo.create(title="t", body="b")
 
-    assert [n.title for n in await repo.list_(tenant_id=t1)] == ["t1-note"]
-    assert [n.title for n in await repo.list_(tenant_id=t2)] == ["t2-note"]
-    assert await repo.search("note", tenant_id=t1) == await repo.list_(tenant_id=t1)
+    await repo.delete(note.id)
+    assert await repo.get(note.id) is None
+
+    # Second delete on the same id: no-op.
+    await repo.delete(note.id)
 
 
 async def test_grounded_prepare_narrows_delete_note_to_real_ids(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
+    repo: InMemoryNoteRepository,
 ) -> None:
-    """``Annotated[Ref[Note], Selector(...)]`` → JSON-schema enum.
-
-    Validates that the framework's ``StateflowAgent.agent`` cached
-    property auto-installs the grounded ``prepare`` hook without the
-    user ever calling ``register_grounded_tools``.
-    """
+    """``Annotated[Ref[Note], Selector(...)]`` -> JSON-schema enum."""
     agent = _agent_with_tools(repo)
 
-    n = await repo.create(title="g", body="b", tenant_id=tenant_id)
-    deps = _make_deps(repo, tenant_id)
+    n = await repo.create(title="g", body="b")
+    deps = _make_deps(repo)
     ctx = _FakeCtx(deps=deps)
 
     delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001
@@ -177,12 +116,12 @@ async def test_grounded_prepare_narrows_delete_note_to_real_ids(
 
 
 async def test_grounded_prepare_hides_delete_note_when_empty(
-    repo: InMemoryNoteRepository, tenant_id: UUID,
+    repo: InMemoryNoteRepository,
 ) -> None:
-    """Empty repo → tool hidden so the model can't fabricate an id."""
+    """Empty repo -> tool hidden so the model can't fabricate an id."""
     agent = _agent_with_tools(repo)
 
-    deps = _make_deps(repo, tenant_id)
+    deps = _make_deps(repo)
     ctx = _FakeCtx(deps=deps)
 
     delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001

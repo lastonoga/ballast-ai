@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 
@@ -27,7 +26,7 @@ async def test_gate_returns_approved_response_when_policy_allows(
     gate = HITLGate(channel=channel, policy=AllowAll(), repo=repo)
 
     prompt = HITLPrompt(
-        tenant_id=uuid4(), title="Approve refund", context="$50",
+        title="Approve refund", context="$50",
         decision_kinds={"approved", "rejected"},
     )
     orig = repo.persist_request
@@ -42,7 +41,7 @@ async def test_gate_returns_approved_response_when_policy_allows(
 
     repo.persist_request = capture  # type: ignore[method-assign]
 
-    resp = await gate.run(prompt, tenant_id=prompt.tenant_id)
+    resp = await gate.run(prompt)
     assert isinstance(resp, ApprovedResponse)
     assert resp.actor_id == "alice"
 
@@ -56,7 +55,7 @@ async def test_gate_raises_hitl_denied_when_policy_rejects_responder(
     gate = HITLGate(channel=channel, policy=DenyAll(), repo=repo)
 
     prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"approved"},
+        title="x", context="y", decision_kinds={"approved"},
     )
     orig = repo.persist_request
 
@@ -71,7 +70,7 @@ async def test_gate_raises_hitl_denied_when_policy_rejects_responder(
     repo.persist_request = capture  # type: ignore[method-assign]
 
     with pytest.raises(HITLDenied) as exc:
-        await gate.run(prompt, tenant_id=prompt.tenant_id)
+        await gate.run(prompt)
     assert exc.value.actor_id == "mallory"
 
 
@@ -84,7 +83,7 @@ async def test_gate_persists_authz_denial_audit_row(
     gate = HITLGate(channel=channel, policy=DenyAll(), repo=repo)
 
     prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"approved"},
+        title="x", context="y", decision_kinds={"approved"},
     )
     orig = repo.persist_request
 
@@ -99,7 +98,7 @@ async def test_gate_persists_authz_denial_audit_row(
     repo.persist_request = capture  # type: ignore[method-assign]
 
     with pytest.raises(HITLDenied):
-        await gate.run(prompt, tenant_id=prompt.tenant_id)
+        await gate.run(prompt)
 
     assert len(repo._denials) == 1
     assert repo._denials[0].actor_id == "mallory"
@@ -114,7 +113,7 @@ async def test_gate_raises_timeout_when_channel_returns_timeout(
     gate = HITLGate(channel=channel, policy=AllowAll(), repo=repo)
 
     prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"approved"},
+        title="x", context="y", decision_kinds={"approved"},
     )
     orig = repo.persist_request
 
@@ -126,7 +125,7 @@ async def test_gate_raises_timeout_when_channel_returns_timeout(
     repo.persist_request = capture  # type: ignore[method-assign]
 
     with pytest.raises(HITLTimedOut):
-        await gate.run(prompt, tenant_id=prompt.tenant_id)
+        await gate.run(prompt)
 
 
 @pytest.mark.asyncio
@@ -138,7 +137,7 @@ async def test_gate_persists_response_on_grant(
     gate = HITLGate(channel=channel, policy=AllowAll(), repo=repo)
 
     prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"rejected"},
+        title="x", context="y", decision_kinds={"rejected"},
     )
     orig = repo.persist_request
 
@@ -156,7 +155,7 @@ async def test_gate_persists_response_on_grant(
 
     repo.persist_request = capture  # type: ignore[method-assign]
 
-    resp = await gate.run(prompt, tenant_id=prompt.tenant_id)
+    resp = await gate.run(prompt)
     assert isinstance(resp, RejectedResponse)
     assert len(repo._decisions) == 1
     assert next(iter(repo._decisions.values())).actor_id == "alice"

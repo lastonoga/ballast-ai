@@ -21,9 +21,7 @@ def test_in_memory_channel_satisfies_protocol() -> None:
 async def test_in_memory_channel_returns_preloaded_response() -> None:
     channel = InMemoryHITLChannel()
     request_id = uuid4()
-    prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="x", context="y", decision_kinds={"approved"})
     expected = ApprovedResponse(actor_id="alice", answered_at=datetime.now(tz=UTC))
     channel.set_response(request_id, expected)
     got = await channel.ask(prompt, request_id=request_id)
@@ -33,8 +31,6 @@ async def test_in_memory_channel_returns_preloaded_response() -> None:
 @pytest.mark.asyncio
 async def test_in_memory_channel_raises_if_no_response_set() -> None:
     channel = InMemoryHITLChannel()
-    prompt = HITLPrompt(
-        tenant_id=uuid4(), title="x", context="y", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="x", context="y", decision_kinds={"approved"})
     with pytest.raises(KeyError):
         await channel.ask(prompt, request_id=uuid4())

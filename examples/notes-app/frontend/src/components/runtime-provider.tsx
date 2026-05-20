@@ -57,7 +57,6 @@ import { buildRemoteThreadListAdapter } from "@/lib/thread-list-adapter";
 import { useNotesAppThreadHistoryAdapter } from "@/lib/thread-history-adapter";
 
 const DEFAULT_API_URL = "http://localhost:8000";
-const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * Minimal slice of `useChat`'s helpers the approval card needs.
@@ -182,12 +181,8 @@ function buildTransport(
 
 export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? DEFAULT_API_URL;
-  const tenantId = process.env.NEXT_PUBLIC_TENANT_ID ?? DEFAULT_TENANT_ID;
 
-  const headers = useMemo(
-    () => ({ "X-Tenant-Id": tenantId }),
-    [tenantId],
-  );
+  const headers = useMemo<Record<string, string>>(() => ({}), []);
 
   const adapter = useMemo(
     () => buildRemoteThreadListAdapter(apiUrl, headers),

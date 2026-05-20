@@ -19,9 +19,6 @@ class _PipeRefund(BaseModel):
     amount: int
 
 
-# Module-level instantiation registers Proposal[_PipeRefund] on the primitives
-# module so DBOS's pickle of workflow args can find it. Pydantic only registers
-# parameterized generics globally when first created at module top level.
 _RefundProposal = Proposal[_PipeRefund]
 
 
@@ -60,7 +57,7 @@ class _CountingApply:
         self.calls = 0
         self.last_proposal = None
 
-    async def apply(self, proposal, *, uow, tenant_id):
+    async def apply(self, proposal, *, uow):
         self.calls += 1
         self.last_proposal = proposal
         return uuid4()
@@ -80,11 +77,10 @@ async def test_pipeline_runs_all_stages_then_applies(fresh_dbos_executor: None):
     proposal = Proposal[_PipeRefund](
         proposal_id=uuid4(), payload=_PipeRefund(amount=10),
     )
-    tid = uuid4()
-    result = await pipeline.run(proposal, tenant_id=tid)
+    result = await pipeline.run(proposal)
     assert isinstance(result, AcceptedResult)
     assert apply.calls == 1
-    pending = await outbox.list_undelivered(tenant_id=tid)
+    pending = await outbox.list_undelivered()
     assert len(pending) == 1
     assert len(outbox._rows) == 1
     assert outbox._rows[0].event_type == "refund.applied"
@@ -104,7 +100,7 @@ async def test_pipeline_halts_on_first_rejected_and_drops_by_default(
     proposal = Proposal[_PipeRefund](
         proposal_id=uuid4(), payload=_PipeRefund(amount=10),
     )
-    result = await pipeline.run(proposal, tenant_id=uuid4())
+    result = await pipeline.run(proposal)
     assert isinstance(result, RejectedAt)
     assert result.stage == "validation"
     assert apply.calls == 0
@@ -124,13 +120,12 @@ async def test_pipeline_raises_when_raise_on_reject_policy_used(
     with pytest.raises(MutationRejected):
         await pipeline.run(
             Proposal[_PipeRefund](proposal_id=uuid4(), payload=_PipeRefund(amount=10)),
-            tenant_id=uuid4(),
         )
 
 
 @pytest.mark.asyncio
 async def test_pipeline_deterministic_workflow_id(fresh_dbos_executor: None):
-    """Same (pipeline_name, proposal_id, tenant_id) → same workflow_id."""
+    """Same (pipeline_name, proposal_id) -> same workflow_id."""
     from pydantic_ai_stateflow.runtime.det import Det
     from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
 
@@ -142,13 +137,12 @@ async def test_pipeline_deterministic_workflow_id(fresh_dbos_executor: None):
         pipeline_name="refund_pipeline",
     )
     pid = uuid4()
-    tid = uuid4()
-    wf_id_1 = await pipeline.derive_workflow_id(pid, tid)
-    wf_id_2 = await pipeline.derive_workflow_id(pid, tid)
+    wf_id_1 = await pipeline.derive_workflow_id(pid)
+    wf_id_2 = await pipeline.derive_workflow_id(pid)
     assert wf_id_1 == wf_id_2
     expected = await Det.uuid_for(IdempotencyInput(
         namespace="mutation_pipeline",
-        parts={"pipeline_name": "refund_pipeline", "proposal_id": pid, "tenant_id": tid},
+        parts={"pipeline_name": "refund_pipeline", "proposal_id": pid},
     ))
     assert wf_id_1 == expected
 
@@ -167,7 +161,6 @@ async def test_pipeline_skips_outbox_when_event_type_not_set(
     )
     await pipeline.run(
         Proposal[_PipeRefund](proposal_id=uuid4(), payload=_PipeRefund(amount=10)),
-        tenant_id=uuid4(),
     )
     assert outbox._rows == []
 

@@ -1,4 +1,11 @@
-"""PostgreSQL-backed ThreadRepository using SQLAlchemy AsyncSession."""
+"""PostgreSQL-backed ThreadRepository using SQLAlchemy AsyncSession.
+
+Operates directly on the ``Thread`` / ``Message`` SQLModel classes (no
+separate Row models — ``table=True`` SQLModels ARE the persistence row
+AND the API/domain payload). The adapter does session.add + flush +
+refresh; the caller controls the transaction boundary via
+``SqlAlchemyUnitOfWork``.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import asc, desc, select, update
+from sqlalchemy import asc, desc, select
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -15,7 +22,6 @@ from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
 from pydantic_ai_stateflow.persistence.thread.repository import (
     ThreadClosedError,
     _walk_active_branch,
@@ -25,10 +31,11 @@ _log = get_logger(__name__)
 
 
 class PostgresThreadRepository:
-    """SQLAlchemy/PostgreSQL implementation of the ThreadRepository protocol.
+    """SQLAlchemy/PostgreSQL implementation of ``ThreadRepository``.
 
-    Accepts an ``AsyncSession`` from the caller; flush()-not-commit() is used
-    so the caller controls the transaction boundary (Unit-of-Work pattern).
+    Accepts an ``AsyncSession`` from the caller; uses ``flush`` (not
+    ``commit``) so the caller owns transaction lifetimes via
+    ``SqlAlchemyUnitOfWork``.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -36,46 +43,34 @@ class PostgresThreadRepository:
 
     @traced(
         TraceName.THREAD_CREATE,
-        attrs=lambda _self, *, agent, tenant_id, **__: {
-            "tenant_id": str(tenant_id), "agent": agent,
-            "backend": "postgres",
+        attrs=lambda _self, *, agent, **__: {
+            "agent": agent, "backend": "postgres",
         },
     )
     async def create(
         self,
         *,
         agent: str,
-        metadata: dict[str, Any],
-        actor_id: str,
-        tenant_id: UUID,
+        metadata: dict[str, Any] | None = None,
     ) -> Thread:
-        row = ThreadRow(
-            tenant_id=tenant_id,
+        thread = Thread(
             agent=agent,
-            metadata_=dict(metadata),
-            actor_id=actor_id,
+            metadata_=dict(metadata or {}),
         )
-        self._session.add(row)
+        self._session.add(thread)
         await self._session.flush()
-        await self._session.refresh(row)
-        return Thread.from_row(row)
+        await self._session.refresh(thread)
+        return thread
 
-    async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None:
-        stmt = select(ThreadRow).where(
-            col(ThreadRow.id) == id,
-            col(ThreadRow.tenant_id) == tenant_id,
-        )
+    async def load(self, id: UUID) -> Thread | None:
+        stmt = select(Thread).where(col(Thread.id) == id)
         result = await self._session.execute(stmt)
-        row = result.scalar_one_or_none()
-        if row is None:
-            return None
-        return Thread.from_row(row)
+        return result.scalar_one_or_none()
 
     @traced(
         TraceName.THREAD_ADD_MESSAGE,
-        attrs=lambda _self, thread_id, *, role, tenant_id, **__: {
+        attrs=lambda _self, thread_id, *, role, **__: {
             "thread_id": str(thread_id),
-            "tenant_id": str(tenant_id),
             "role": role,
             "backend": "postgres",
         },
@@ -86,61 +81,45 @@ class PostgresThreadRepository:
         *,
         role: str,
         parts: list[dict[str, Any]],
-        tenant_id: UUID,
         parent_id: UUID | None = None,
     ) -> Message:
-        # Verify thread exists for this tenant AND is open.
-        stmt = select(ThreadRow).where(
-            col(ThreadRow.id) == thread_id,
-            col(ThreadRow.tenant_id) == tenant_id,
-        )
-        result = await self._session.execute(stmt)
-        thread_row = result.scalar_one_or_none()
-        if thread_row is None:
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        if thread_row.status == ThreadStatus.CLOSED.value:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        if thread.status == ThreadStatus.CLOSED:
             raise ThreadClosedError(
-                f"Thread {thread_id} is closed; cannot add message"
+                f"Thread {thread_id} is closed; cannot add message",
             )
-        # ARCHIVED threads remain appendable; only CLOSED is terminal.
 
-        msg_row = MessageRow(
-            tenant_id=tenant_id,
+        msg = Message(
             thread_id=thread_id,
             role=role,
             parts=list(parts),
             parent_id=parent_id,
         )
-        self._session.add(msg_row)
+        self._session.add(msg)
         await self._session.flush()
-        await self._session.refresh(msg_row)
+        await self._session.refresh(msg)
         _log.debug(
             "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
             "parent=%s parts=%d",
-            thread_id, msg_row.id, role, parent_id, len(msg_row.parts),
+            thread_id, msg.id, role, parent_id, len(msg.parts),
         )
-        return Message.from_row(msg_row)
+        return msg
 
-    async def close(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
-        now = datetime.now(tz=UTC)
-        stmt = (
-            update(ThreadRow)
-            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
-            .values(status=ThreadStatus.CLOSED.value, closed_at=now)
-        )
-        result = await self._session.execute(stmt)
-        if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        # Reload to return canonical view
-        loaded = await self.load(thread_id, tenant_id=tenant_id)
-        assert loaded is not None
-        return loaded
+    async def close(self, thread_id: UUID) -> Thread:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.CLOSED
+        thread.closed_at = datetime.now(tz=UTC)
+        await self._session.flush()
+        return thread
 
     @traced(
         TraceName.THREAD_HISTORY,
-        attrs=lambda _self, thread_id, *, tenant_id, limit=100, **__: {
+        attrs=lambda _self, thread_id, *, limit=100, **__: {
             "thread_id": str(thread_id),
-            "tenant_id": str(tenant_id),
             "limit": limit,
             "backend": "postgres",
         },
@@ -149,141 +128,92 @@ class PostgresThreadRepository:
         self,
         thread_id: UUID,
         *,
-        tenant_id: UUID,
         limit: int = 100,
     ) -> list[Message]:
-        # Fetch ALL messages for the thread (no SQL-level limit) so the
-        # tree walker can pick the active branch correctly. ``limit`` is
-        # applied after walking. For threads with thousands of branches
-        # this becomes wasteful; an iter-5 optimization is to push the
-        # walk into a recursive CTE or to keep a denormalized
-        # ``thread.active_path`` column.
         stmt = (
-            select(MessageRow)
-            .where(
-                col(MessageRow.thread_id) == thread_id,
-                col(MessageRow.tenant_id) == tenant_id,
-            )
-            .order_by(asc(col(MessageRow.created_at)))
+            select(Message)
+            .where(col(Message.thread_id) == thread_id)
+            .order_by(asc(col(Message.created_at)))
         )
         result = await self._session.execute(stmt)
-        rows = result.scalars().all()
-        msgs = [Message.from_row(r) for r in rows]
-        branch = _walk_active_branch(msgs, limit=limit)
-        _log.debug(
-            "PostgresThreadRepository.history: thread=%s total=%d "
-            "active_branch=%d",
-            thread_id, len(msgs), len(branch),
-        )
-        return branch
+        msgs = list(result.scalars().all())
+        return _walk_active_branch(msgs, limit=limit)
 
-    async def siblings(
-        self, message_id: UUID, *, tenant_id: UUID,
-    ) -> list[Message]:
-        target_stmt = select(MessageRow).where(
-            col(MessageRow.id) == message_id,
-            col(MessageRow.tenant_id) == tenant_id,
-        )
+    async def siblings(self, message_id: UUID) -> list[Message]:
+        target_stmt = select(Message).where(col(Message.id) == message_id)
         target_result = await self._session.execute(target_stmt)
         target = target_result.scalar_one_or_none()
         if target is None:
             return []
 
-        # Find rows that share parent_id (including the target itself).
-        # NULL == NULL semantics: SQL treats NULL as not-equal even to
-        # itself, so split the query on whether parent_id is NULL.
         if target.parent_id is None:
             stmt = (
-                select(MessageRow)
+                select(Message)
                 .where(
-                    col(MessageRow.thread_id) == target.thread_id,
-                    col(MessageRow.tenant_id) == tenant_id,
-                    col(MessageRow.parent_id).is_(None),
+                    col(Message.thread_id) == target.thread_id,
+                    col(Message.parent_id).is_(None),
                 )
-                .order_by(asc(col(MessageRow.created_at)))
+                .order_by(asc(col(Message.created_at)))
             )
         else:
             stmt = (
-                select(MessageRow)
+                select(Message)
                 .where(
-                    col(MessageRow.thread_id) == target.thread_id,
-                    col(MessageRow.tenant_id) == tenant_id,
-                    col(MessageRow.parent_id) == target.parent_id,
+                    col(Message.thread_id) == target.thread_id,
+                    col(Message.parent_id) == target.parent_id,
                 )
-                .order_by(asc(col(MessageRow.created_at)))
+                .order_by(asc(col(Message.created_at)))
             )
         result = await self._session.execute(stmt)
-        rows = result.scalars().all()
-        return [Message.from_row(r) for r in rows]
+        return list(result.scalars().all())
 
     async def list_(
         self,
         *,
-        tenant_id: UUID,
         include_archived: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> list[Thread]:
-        stmt = select(ThreadRow).where(col(ThreadRow.tenant_id) == tenant_id)
+        stmt = select(Thread)
         if not include_archived:
-            stmt = stmt.where(col(ThreadRow.status) != ThreadStatus.ARCHIVED.value)
-        stmt = stmt.order_by(desc(col(ThreadRow.created_at))).limit(limit).offset(offset)
+            stmt = stmt.where(col(Thread.status) != ThreadStatus.ARCHIVED)
+        stmt = stmt.order_by(desc(col(Thread.created_at))).limit(limit).offset(offset)
         result = await self._session.execute(stmt)
-        rows = result.scalars().all()
-        return [Thread.from_row(r) for r in rows]
+        return list(result.scalars().all())
 
-    async def rename(
-        self, thread_id: UUID, *, title: str | None, tenant_id: UUID
+    async def update_metadata(
+        self, thread_id: UUID, *, metadata: dict[str, Any],
     ) -> Thread:
-        stmt = (
-            update(ThreadRow)
-            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
-            .values(title=title)
-        )
-        result = await self._session.execute(stmt)
-        if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        loaded = await self.load(thread_id, tenant_id=tenant_id)
-        assert loaded is not None
-        return loaded
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.metadata_ = dict(metadata)
+        await self._session.flush()
+        return thread
 
-    async def archive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
-        stmt = (
-            update(ThreadRow)
-            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
-            .values(status=ThreadStatus.ARCHIVED.value)
-        )
-        result = await self._session.execute(stmt)
-        if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        loaded = await self.load(thread_id, tenant_id=tenant_id)
-        assert loaded is not None
-        return loaded
+    async def archive(self, thread_id: UUID) -> Thread:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.ARCHIVED
+        await self._session.flush()
+        return thread
 
-    async def unarchive(self, thread_id: UUID, *, tenant_id: UUID) -> Thread:
-        stmt = (
-            update(ThreadRow)
-            .where(col(ThreadRow.id) == thread_id, col(ThreadRow.tenant_id) == tenant_id)
-            .values(status=ThreadStatus.OPEN.value)
-        )
-        result = await self._session.execute(stmt)
-        if result.rowcount == 0:  # type: ignore[attr-defined]
-            raise KeyError(f"Thread {thread_id} not found for tenant {tenant_id}")
-        loaded = await self.load(thread_id, tenant_id=tenant_id)
-        assert loaded is not None
-        return loaded
+    async def unarchive(self, thread_id: UUID) -> Thread:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        thread.status = ThreadStatus.OPEN
+        await self._session.flush()
+        return thread
 
-    async def delete(self, thread_id: UUID, *, tenant_id: UUID) -> None:
-        # Manually delete child messages first (no DB-level CASCADE configured).
-        # Idempotent: unknown thread / wrong tenant → no-op.
-        msg_stmt = sa_delete(MessageRow).where(
-            col(MessageRow.thread_id) == thread_id,
-            col(MessageRow.tenant_id) == tenant_id,
+    async def delete(self, thread_id: UUID) -> None:
+        # Manually delete child messages first (no DB-level CASCADE).
+        # Idempotent: unknown thread → no-op.
+        await self._session.execute(
+            sa_delete(Message).where(col(Message.thread_id) == thread_id),
         )
-        await self._session.execute(msg_stmt)
-        thread_stmt = sa_delete(ThreadRow).where(
-            col(ThreadRow.id) == thread_id,
-            col(ThreadRow.tenant_id) == tenant_id,
+        await self._session.execute(
+            sa_delete(Thread).where(col(Thread.id) == thread_id),
         )
-        await self._session.execute(thread_stmt)
         await self._session.flush()

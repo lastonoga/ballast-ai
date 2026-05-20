@@ -1,4 +1,9 @@
-"""framework tables: tenants, threads, messages, outbox, hitl_*
+"""framework tables: threads, messages, outbox, hitl_*
+
+The framework intentionally does NOT model tenants, actors, or
+identity. Apps that need multi-tenancy / per-user scoping store that
+data in ``threads.metadata`` (free-form JSONB) and filter at their
+own layer.
 
 Revision ID: 0001
 Revises:
@@ -18,24 +23,10 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # 1. tenants (no FKs)
-    op.create_table(
-        "tenants",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("name", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-    )
-
-    # 2. threads (FK → tenants)
+    # 1. threads
     op.create_table(
         "threads",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column("agent", sa.String(), nullable=False),
         sa.Column(
             "metadata",
@@ -44,7 +35,6 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
         ),
         sa.Column("workflow_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("actor_id", sa.String(), nullable=False),
         sa.Column(
             "status",
             sa.String(),
@@ -54,20 +44,13 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_index("ix_threads_tenant_id", "threads", ["tenant_id"])
     op.create_index("ix_threads_workflow_id", "threads", ["workflow_id"])
     op.create_index("ix_threads_status", "threads", ["status"])
 
-    # 3. messages (FK → tenants, threads)
+    # 2. messages (FK → threads)
     op.create_table(
         "messages",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column(
             "thread_id",
             postgresql.UUID(as_uuid=True),
@@ -76,6 +59,12 @@ def upgrade() -> None:
         ),
         sa.Column("role", sa.String(), nullable=False),
         sa.Column(
+            "parent_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("messages.id"),
+            nullable=True,
+        ),
+        sa.Column(
             "parts",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
@@ -83,19 +72,13 @@ def upgrade() -> None:
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_messages_tenant_id", "messages", ["tenant_id"])
     op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
+    op.create_index("ix_messages_parent_id", "messages", ["parent_id"])
 
-    # 4. outbox (FK → tenants)
+    # 3. outbox
     op.create_table(
         "outbox",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column("event_type", sa.String(), nullable=False),
         sa.Column(
             "payload",
@@ -107,20 +90,13 @@ def upgrade() -> None:
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_outbox_tenant_id", "outbox", ["tenant_id"])
     op.create_index("ix_outbox_delivered_at", "outbox", ["delivered_at"])
     op.create_index("ix_outbox_created_at", "outbox", ["created_at"])
 
-    # 5. hitl_blocking_requirements (FK → tenants)
+    # 4. hitl_blocking_requirements
     op.create_table(
         "hitl_blocking_requirements",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column("gate_kind", sa.String(), nullable=False),
         sa.Column("workflow_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
@@ -136,11 +112,6 @@ def upgrade() -> None:
         sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index(
-        "ix_hitl_blocking_requirements_tenant_id",
-        "hitl_blocking_requirements",
-        ["tenant_id"],
-    )
-    op.create_index(
         "ix_hitl_blocking_requirements_workflow_id",
         "hitl_blocking_requirements",
         ["workflow_id"],
@@ -151,16 +122,10 @@ def upgrade() -> None:
         ["created_at"],
     )
 
-    # 6. hitl_decisions (FK → tenants, hitl_blocking_requirements, threads (nullable))
+    # 5. hitl_decisions (FK → hitl_blocking_requirements, threads (nullable))
     op.create_table(
         "hitl_decisions",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column(
             "blocking_requirement_id",
             postgresql.UUID(as_uuid=True),
@@ -189,7 +154,6 @@ def upgrade() -> None:
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_hitl_decisions_tenant_id", "hitl_decisions", ["tenant_id"])
     op.create_index(
         "ix_hitl_decisions_blocking_requirement_id",
         "hitl_decisions",
@@ -197,16 +161,10 @@ def upgrade() -> None:
     )
     op.create_index("ix_hitl_decisions_created_at", "hitl_decisions", ["created_at"])
 
-    # 7. hitl_authz_denials (FK → tenants, hitl_blocking_requirements)
+    # 6. hitl_authz_denials (FK → hitl_blocking_requirements)
     op.create_table(
         "hitl_authz_denials",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id"),
-            nullable=False,
-        ),
         sa.Column(
             "request_id",
             postgresql.UUID(as_uuid=True),
@@ -223,10 +181,9 @@ def upgrade() -> None:
         sa.Column("attempted_at", sa.DateTime(timezone=True), nullable=False),
     )
     op.create_index(
-        "ix_hitl_authz_denials_tenant_id", "hitl_authz_denials", ["tenant_id"]
-    )
-    op.create_index(
-        "ix_hitl_authz_denials_request_id", "hitl_authz_denials", ["request_id"]
+        "ix_hitl_authz_denials_request_id",
+        "hitl_authz_denials",
+        ["request_id"],
     )
 
 
@@ -237,4 +194,3 @@ def downgrade() -> None:
     op.drop_table("outbox")
     op.drop_table("messages")
     op.drop_table("threads")
-    op.drop_table("tenants")

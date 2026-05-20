@@ -1,12 +1,11 @@
 /**
  * RemoteThreadListAdapter wired against the notes-app FastAPI backend.
  *
- * Backend endpoints (all tenant-scoped via the `X-Tenant-Id` header):
+ * Backend endpoints:
  *
  *   GET    /threads?include_archived=false&limit=100&offset=0
- *   POST   /threads               { actor_id }   (notes-app endpoint)
+ *   POST   /threads               { metadata }   (notes-app endpoint)
  *   GET    /threads/{id}
- *   PATCH  /threads/{id}          { title }
  *   POST   /threads/{id}/archive
  *   POST   /threads/{id}/unarchive
  *   DELETE /threads/{id}
@@ -92,9 +91,7 @@ export function buildRemoteThreadListAdapter(
       const r = await fetch(`${apiUrl}/threads`, {
         method: "POST",
         headers: jsonHeaders,
-        body: JSON.stringify({
-          actor_id: "user",
-        }),
+        body: JSON.stringify({}),
       });
       if (!r.ok) {
         throw new Error(`POST /threads failed: ${r.status} ${r.statusText}`);
@@ -103,15 +100,9 @@ export function buildRemoteThreadListAdapter(
       return { remoteId: t.id, externalId: undefined };
     },
 
-    async rename(remoteId, newTitle) {
-      const r = await fetch(`${apiUrl}/threads/${remoteId}`, {
-        method: "PATCH",
-        headers: jsonHeaders,
-        body: JSON.stringify({ title: newTitle }),
-      });
-      if (!r.ok) {
-        throw new Error(`PATCH /threads/${remoteId} failed: ${r.status}`);
-      }
+    async rename(_remoteId, _newTitle) {
+      // Backend dropped PATCH /threads/{id} (no title column anymore).
+      // Rename is a client-only UI state for now.
     },
 
     async archive(remoteId) {

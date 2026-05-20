@@ -47,11 +47,9 @@ def test_conversational_channel_satisfies_protocol() -> None:
 
 @pytest.mark.asyncio
 async def test_ask_starts_helper_session_then_recvs(fresh_dbos_executor: Any) -> None:
-    tid = uuid4()
     rid = uuid4()
     gate_wf = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid,
         title="strategy review",
         context="c",
         decision_kinds={"approved"},
@@ -97,24 +95,22 @@ async def test_ask_starts_helper_session_then_recvs(fresh_dbos_executor: Any) ->
     assert started_with["workflow"] is runner.run
     inp: HelperSessionInput = started_with["input"]
     assert inp.request_id == rid
-    assert inp.tenant_id == tid
     assert inp.gate_workflow_id == gate_wf
     assert inp.base_agent_module == "my_app.agents"
     assert inp.base_agent_attr == "strategy_helper"
     assert inp.context_type_fqn is not None
     assert inp.context_type_fqn.endswith("test_conversational_channel._Ctx")
     assert started_with["idempotency_key"].startswith("helper:")
-    recv.assert_awaited_once_with(_hitl_topic(tid, rid), timeout_seconds=5.0)
+    recv.assert_awaited_once_with(_hitl_topic(rid), timeout_seconds=5.0)
 
 
 @pytest.mark.asyncio
 async def test_ask_returns_timeout_when_recv_returns_none(
     fresh_dbos_executor: Any,
 ) -> None:
-    tid = uuid4()
     rid = uuid4()
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
+        title="t", context="c", decision_kinds={"approved"},
         timeout=timedelta(seconds=1),
     )
     runner = MagicMock()
@@ -141,11 +137,8 @@ async def test_ask_returns_timeout_when_recv_returns_none(
 async def test_idempotency_key_stable_for_same_request(
     fresh_dbos_executor: Any,
 ) -> None:
-    tid = uuid4()
     rid = uuid4()
-    prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
-    )
+    prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
     keys: list[str] = []
 
     async def fake_start(

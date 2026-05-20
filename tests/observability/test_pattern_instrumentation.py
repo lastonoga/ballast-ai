@@ -5,8 +5,6 @@ existing pattern behaviour is unchanged after wrapping `.run` with @traced.
 """
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from pydantic_ai_stateflow.capabilities.helpers import Critique
@@ -28,6 +26,6 @@ async def test_reflection_run_still_works_after_instrumentation(
         return Critique(passed=True, feedback="ok")
 
     ref: Reflection[str, str] = Reflection(writer, critic, max_iterations=1)
-    out = await ref.run("input", tenant_id=uuid4())
+    out = await ref.run("input")
     assert out == "draft:input"
     assert calls == {"writer": 1, "critic": 1}

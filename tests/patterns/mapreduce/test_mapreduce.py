@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 
 from pydantic_ai_stateflow.patterns import MapReduce
@@ -34,7 +32,7 @@ async def test_mapreduce_processes_chunks_and_reduces(
         reducer=UniqueLowercaseReducer(),
         concurrency=2,
     )
-    result = await pattern.run("foo bar foo baz", tenant_id=uuid4())
+    result = await pattern.run("foo bar foo baz")
     assert sorted(result) == ["bar", "baz", "foo"]
 
 
@@ -50,7 +48,7 @@ async def test_mapreduce_filters_none_extractor_outputs(
         extractor=extractor,
         reducer=UniqueLowercaseReducer(),
     )
-    result = await pattern.run("apple banana avocado cherry", tenant_id=uuid4())
+    result = await pattern.run("apple banana avocado cherry")
     assert sorted(result) == ["apple", "avocado"]
 
 
@@ -66,7 +64,7 @@ async def test_mapreduce_empty_doc_returns_empty(
         extractor=extractor,
         reducer=UniqueLowercaseReducer(),
     )
-    result = await pattern.run("", tenant_id=uuid4())
+    result = await pattern.run("")
     assert result == []
 
 

@@ -14,15 +14,14 @@ class OutboxRepository(Protocol):
         *,
         event_type: str,
         payload: dict[str, Any],
-        tenant_id: UUID,
         workflow_id: UUID | None = None,
     ) -> OutboxEvent: ...
 
     async def list_undelivered(
-        self, *, tenant_id: UUID, limit: int = 100
+        self, *, limit: int = 100,
     ) -> list[OutboxEvent]: ...
 
-    async def mark_delivered(self, id: UUID, *, tenant_id: UUID) -> None: ...
+    async def mark_delivered(self, id: UUID) -> None: ...
 
 
 class InMemoryOutboxRepository:
@@ -34,12 +33,10 @@ class InMemoryOutboxRepository:
         *,
         event_type: str,
         payload: dict[str, Any],
-        tenant_id: UUID,
         workflow_id: UUID | None = None,
     ) -> OutboxEvent:
         event = OutboxEvent(
             id=uuid4(),
-            tenant_id=tenant_id,
             event_type=event_type,
             payload=dict(payload),
             workflow_id=workflow_id,
@@ -50,19 +47,13 @@ class InMemoryOutboxRepository:
         return event
 
     async def list_undelivered(
-        self, *, tenant_id: UUID, limit: int = 100
+        self, *, limit: int = 100,
     ) -> list[OutboxEvent]:
-        out = [
-            r
-            for r in self._rows
-            if r.tenant_id == tenant_id and r.delivered_at is None
-        ]
+        out = [r for r in self._rows if r.delivered_at is None]
         return out[:limit]
 
-    async def mark_delivered(self, id: UUID, *, tenant_id: UUID) -> None:
-        for i, r in enumerate(self._rows):
-            if r.id == id and r.tenant_id == tenant_id:
-                self._rows[i] = r.model_copy(
-                    update={"delivered_at": datetime.now(tz=UTC)}
-                )
+    async def mark_delivered(self, id: UUID) -> None:
+        for r in self._rows:
+            if r.id == id:
+                r.delivered_at = datetime.now(tz=UTC)
                 return

@@ -87,7 +87,7 @@ class _SmokeNoopUoW:
 
 
 class _SmokeNoopApply:
-    async def apply(self, proposal, *, uow, tenant_id):
+    async def apply(self, proposal, *, uow):
         return uuid4()
 
 
@@ -99,8 +99,6 @@ async def test_end_to_end_reflection_mapreduce_mutation_hitl_compose(
     each word becomes a Proposal that runs through MutationPipeline whose
     only stage is ApprovalStage (auto-approved by InMemoryHITLChannel)."""
 
-    tenant_id = uuid4()
-
     async def writer(task):
         return _SmokeDoc(text="alpha beta alpha gamma")
 
@@ -110,7 +108,7 @@ async def test_end_to_end_reflection_mapreduce_mutation_hitl_compose(
     refl: Pattern[str, _SmokeDoc] = Reflection[str, _SmokeDoc](
         writer=writer, critic=critic,
     )
-    doc = await refl.run("seed", tenant_id=tenant_id)
+    doc = await refl.run("seed")
     assert doc.text == "alpha beta alpha gamma"
 
     async def extractor(chunk: str) -> str | None:
@@ -121,7 +119,7 @@ async def test_end_to_end_reflection_mapreduce_mutation_hitl_compose(
         extractor=extractor,
         reducer=_SmokeUniqueReducer(),
     )
-    words = await mr.run(doc, tenant_id=tenant_id)
+    words = await mr.run(doc)
     assert words == ["alpha", "beta", "gamma"]
 
     channel = InMemoryHITLChannel()
@@ -143,7 +141,6 @@ async def test_end_to_end_reflection_mapreduce_mutation_hitl_compose(
     approval = ApprovalStage[_SmokeRefund](
         hitl=gate,
         prompt_builder=lambda p: HITLPrompt(
-            tenant_id=tenant_id,
             title=f"refund {p.payload.amount}",
             context=str(p.payload),
             decision_kinds={"approved", "rejected"},
@@ -162,7 +159,7 @@ async def test_end_to_end_reflection_mapreduce_mutation_hitl_compose(
             proposal_id=uuid4(),
             payload=_SmokeRefund(amount=len(word)),
         )
-        result = await pipeline.run(proposal, tenant_id=tenant_id)
+        result = await pipeline.run(proposal)
         if isinstance(result, AcceptedResult):
             accepted_count += 1
     assert accepted_count == len(words)

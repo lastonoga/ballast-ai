@@ -1,13 +1,40 @@
+"""Thread + Message — SQLModel domain types (single-class per entity).
+
+These classes ARE the persistence rows AND the API/domain models, per
+SQLModel's design intent. No ``ThreadRow`` / ``Thread`` dual hierarchy:
+one class with ``table=True``, used everywhere.
+
+**Framework presumption is intentionally minimal.** No ``tenant_id``,
+no ``actor_id``, no ``title`` — identity / ownership / display are
+app-side concerns. Apps that need them put structured values into
+``Thread.metadata_`` (JSON-aliased as ``"metadata"``) and (optionally)
+validate via ``StateflowAgent.metadata_model``.
+
+.. note::
+   SQLAlchemy Declarative reserves the attribute name ``metadata`` for
+   its ``MetaData`` class-attr, so the Python attribute is
+   ``metadata_`` (trailing underscore). The SQL column AND the JSON
+   field name are both ``"metadata"``, via ``sa_column=Column("metadata", ...)``
+   and Pydantic's ``alias="metadata"``. With
+   ``populate_by_name=True`` callers can construct either way; API
+   layers should ``model_dump(by_alias=True)`` to keep the wire shape
+   stable.
+"""
+
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Column, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, SQLModel
 
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+
+def _now_utc() -> datetime:
+    return datetime.now(tz=UTC)
 
 
 class ThreadStatus(StrEnum):
@@ -15,12 +42,9 @@ class ThreadStatus(StrEnum):
 
     - OPEN: default. Messages may be appended.
     - ARCHIVED: hidden from the default list view but still readable and
-      appendable (assistant-ui's "archived" pane). Apps may unarchive.
+      appendable. Apps may unarchive.
     - CLOSED: terminal. No further messages can be appended
-      (``add_message`` raises ``ThreadClosedError``). Closing reason is
-      application-specific (HITL resolved, onboarding done, etc.) — the
-      framework provides the primitive, callers decide when to call
-      ``repo.close(...)``.
+      (``add_message`` raises ``ThreadClosedError``).
     """
 
     OPEN = "open"
@@ -28,94 +52,61 @@ class ThreadStatus(StrEnum):
     CLOSED = "closed"
 
 
-class Thread(BaseModel):
+class Thread(SQLModel, table=True):
     """A conversation thread bound to one ``StateflowAgent``.
 
-    ``agent`` is the registry key (== ``StateflowAgent.name``) that
-    decides which agent runs against this thread when messages arrive.
-    Set once at create-time; the per-thread agent never changes
-    afterwards — HITL/tool-call flows rely on the tool registry being
-    stable for the same thread.
-
-    ``metadata`` is a free-form dict validated against the registered
-    agent's ``metadata_model`` (when present) at create-time. Typical
-    keys: ``"relations"`` (FKs to app-side entities) and ``"context"``
-    (per-thread settings the agent reads from ``ctx.deps``). The
-    metadata model is owned by the agent class — see
-    ``pydantic_ai_stateflow.runtime.agents``.
+    ``agent`` is the registry key (== ``StateflowAgent.name``).
+    ``metadata_`` is free-form, validated by the agent's
+    ``metadata_model`` at create-time. Apps put any per-thread scope
+    (user_id, tenant_id, title, …) here.
     """
 
-    model_config = ConfigDict(frozen=True)
-    id: UUID
-    tenant_id: UUID
+    __tablename__ = "threads"
+    model_config = {"populate_by_name": True}  # type: ignore[assignment]
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     agent: str
-    """Registry key — matches the ``name`` ClassVar of the
-    ``StateflowAgent`` subclass that handles this thread."""
-    metadata: dict[str, Any]
-    """Validated against ``agent``'s ``metadata_model``; free-form when
-    the agent declares no model."""
-    workflow_id: UUID | None
-    actor_id: str
-    status: ThreadStatus
-    title: str | None = None
-    created_at: datetime
-    closed_at: datetime | None
-
-    @classmethod
-    def from_row(cls, row: ThreadRow) -> Thread:
-        return cls(
-            id=row.id,
-            tenant_id=row.tenant_id,
-            agent=row.agent,
-            # ThreadRow uses ``metadata_`` (Python trailing-underscore)
-            # to dodge the SQLAlchemy ``metadata`` reserved-attr clash;
-            # domain Thread is Pydantic and has no such clash.
-            metadata=row.metadata_,
-            workflow_id=row.workflow_id,
-            actor_id=row.actor_id,
-            status=ThreadStatus(row.status),
-            title=row.title,
-            created_at=row.created_at,
-            closed_at=row.closed_at,
-        )
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="metadata",
+        sa_column=Column(
+            "metadata", JSONB, nullable=False, server_default="{}",
+        ),
+    )
+    workflow_id: UUID | None = Field(default=None, index=True)
+    status: ThreadStatus = Field(default=ThreadStatus.OPEN, index=True)
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    closed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
-class Message(BaseModel):
+class Message(SQLModel, table=True):
     """One message in a thread. Threads are conversation TREES, not lists.
 
     ``parent_id`` is the id of the message this one replies to:
-
-    - first user turn of a thread:           ``parent_id = None``
-    - assistant reply to a user turn:        ``parent_id = <that user's id>``
-    - follow-up user turn after assistant:   ``parent_id = <that assistant's id>``
-
-    Multiple children of the same parent are *branches* — created by
-    regenerating an assistant reply (``trigger='regenerate-message'``) or
-    by editing a user turn. The "active" branch surfaced in
-    ``ThreadRepository.history(...)`` is the one whose path picks
-    ``max(created_at)`` at every fork (i.e. the most recently created
-    sibling wins). UI branch-pickers can show all siblings, but cross-
-    reload state of which sibling the user clicked is not persisted —
-    that's an explicit MVP scope decision (see iter 4 round 2 plan).
+    NULL only for the very first user turn. Siblings share ``parent_id``
+    and represent branches — produced by ``trigger='regenerate-message'``
+    or user-message edits.
     """
 
-    model_config = ConfigDict(frozen=True)
-    id: UUID
-    tenant_id: UUID
-    thread_id: UUID
-    role: str
-    parts: list[dict[str, Any]]
-    parent_id: UUID | None = None
-    created_at: datetime
+    __tablename__ = "messages"
 
-    @classmethod
-    def from_row(cls, row: MessageRow) -> Message:
-        return cls(
-            id=row.id,
-            tenant_id=row.tenant_id,
-            thread_id=row.thread_id,
-            role=row.role,
-            parts=row.parts,
-            parent_id=row.parent_id,
-            created_at=row.created_at,
-        )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    thread_id: UUID = Field(foreign_key="threads.id", index=True)
+    role: str  # "system" / "user" / "assistant" / "tool"
+    parent_id: UUID | None = Field(
+        default=None, foreign_key="messages.id", index=True, nullable=True,
+    )
+    parts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default="[]"),
+    )
+    created_at: datetime = Field(
+        default_factory=_now_utc,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )

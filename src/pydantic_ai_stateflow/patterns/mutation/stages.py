@@ -61,7 +61,7 @@ class ApprovalStage(Generic[T]):
 
         prompt = self.prompt_builder(proposal)
         try:
-            response = await self.hitl.run(prompt, tenant_id=prompt.tenant_id)
+            response = await self.hitl.run(prompt)
         except Exception as exc:
             return RejectedAt(
                 stage=self.name,

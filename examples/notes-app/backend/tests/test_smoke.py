@@ -1,18 +1,4 @@
-"""Smoke test for the notes-app backend.
-
-We exercise the full surface via FastAPI's ``TestClient``:
-
-  1. ``POST /threads`` → 201
-  2. ``GET  /threads/{id}`` → 200
-  3. ``POST /threads/{id}/messages`` with an AG-UI ``RunAgentInput``
-     body → SSE with canonical AG-UI events
-     (``RUN_STARTED → ... → RUN_FINISHED``).
-
-The fast test wires the app with a ``TestModel``-backed pydantic-ai
-``Agent`` so we don't hit OpenRouter in CI. Two further tests exercise
-the real OpenRouter path but are skipped when ``OPENROUTER_API_KEY`` is
-absent.
-"""
+"""Smoke test for the notes-app backend."""
 
 from __future__ import annotations
 
@@ -32,15 +18,7 @@ from notes_app.notes.repository import InMemoryNoteRepository
 
 
 class _FakeNotesAgent(NotesAgent):
-    """``NotesAgent`` variant whose ``build_agent`` returns a TestModel agent.
-
-    Skips OpenRouter entirely so the CI smoke runs without
-    ``OPENROUTER_API_KEY``. The framework still auto-registers the
-    ``@NotesAgent.tool``-declared tools on top — ``TestModel`` would
-    auto-call every registered tool and bury the lifecycle ``finish``
-    chunk, so we override ``agent`` to skip the tool wiring entirely
-    when ``with_tools=False``.
-    """
+    """``NotesAgent`` variant whose ``build_agent`` returns a TestModel agent."""
 
     def __init__(
         self,
@@ -60,9 +38,6 @@ class _FakeNotesAgent(NotesAgent):
 
     @property  # type: ignore[override]
     def agent(self) -> Agent[NoteToolDeps, str]:
-        # When ``with_tools`` is False, bypass the framework's
-        # ``StateflowAgent.agent`` cached_property (which would register
-        # every ``@NotesAgent.tool``) and return a bare TestModel agent.
         cache_key = "_test_agent"
         cached = self.__dict__.get(cache_key)
         if cached is not None:
@@ -79,10 +54,6 @@ class _FakeNotesAgent(NotesAgent):
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
-    """Build a Vercel AI ``SubmitMessage`` body.
-
-    Name kept for diff churn; format is Vercel AI SDK v6.
-    """
     return {
         "trigger": "submit-message",
         "id": thread_id,
@@ -99,7 +70,6 @@ def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
 
 
 def _parse_sse_types(body: str) -> list[str]:
-    """Parse Vercel AI SSE ``data: {"type": "..."}`` frames into type tokens."""
     types: list[str] = []
     for line in body.splitlines():
         if line.startswith("data:"):
@@ -113,10 +83,6 @@ def _parse_sse_types(body: str) -> list[str]:
 
 
 def test_note_repository_is_bound_in_container() -> None:
-    """The notes repo must be reachable via ``app.state.container``
-    so the deps factory (and any future router) can resolve it without
-    a module-level singleton.
-    """
     from notes_app.notes.repository import NoteRepository
 
     notes_repo = InMemoryNoteRepository()
@@ -136,34 +102,21 @@ def test_threads_crud_and_streaming_fake() -> None:
         notes_repo=notes_repo,
         notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
     )
-    tenant_id = str(uuid4())
 
     with TestClient(app) as client:
-        # 1) Create via the notes-app's own POST /threads endpoint.
-        r = client.post(
-            "/threads",
-            headers={"X-Tenant-Id": tenant_id},
-            json={"actor_id": "alice"},
-        )
+        r = client.post("/threads", json={})
         assert r.status_code == 201, r.text
         thread = r.json()
         thread_id = thread["id"]
         assert thread["agent"] == "notes"
 
-        # 2) Get
-        r = client.get(
-            f"/threads/{thread_id}", headers={"X-Tenant-Id": tenant_id},
-        )
+        r = client.get(f"/threads/{thread_id}")
         assert r.status_code == 200, r.text
         assert r.json()["id"] == thread_id
 
-        # 3) Stream — native Vercel AI ``SubmitMessage`` body
         r = client.post(
             f"/threads/{thread_id}/messages",
-            headers={
-                "X-Tenant-Id": tenant_id,
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
             json=_ag_ui_body(thread_id, "hi"),
         )
         assert r.status_code == 200, r.text
@@ -179,25 +132,16 @@ def test_threads_crud_and_streaming_fake() -> None:
     reason="no OPENROUTER_API_KEY — skipping live OpenRouter smoke",
 )
 def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
-    """Live smoke against OpenRouter — only runs when key is present."""
-    app = build_app()  # default = lazy real agent
-    tenant_id = str(uuid4())
+    app = build_app()
 
     with TestClient(app) as client:
-        r = client.post(
-            "/threads",
-            headers={"X-Tenant-Id": tenant_id},
-            json={"actor_id": "alice"},
-        )
+        r = client.post("/threads", json={})
         assert r.status_code == 201
         thread_id = r.json()["id"]
 
         r = client.post(
             f"/threads/{thread_id}/messages",
-            headers={
-                "X-Tenant-Id": tenant_id,
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
             json=_ag_ui_body(thread_id, "Reply with the single word: pong"),
         )
         assert r.status_code == 200
@@ -211,26 +155,17 @@ def test_streaming_live_openrouter() -> None:  # pragma: no cover — network
     reason="no OPENROUTER_API_KEY — skipping live notes-tool smoke",
 )
 def test_live_create_note_tool_call() -> None:  # pragma: no cover — network
-    """Ask the LLM to create a note; assert the in-memory repo has it."""
     notes_repo = InMemoryNoteRepository()
     app = build_app(notes_repo=notes_repo)
-    tenant_id = uuid4()
 
     with TestClient(app) as client:
-        r = client.post(
-            "/threads",
-            headers={"X-Tenant-Id": str(tenant_id)},
-            json={"actor_id": "alice"},
-        )
+        r = client.post("/threads", json={})
         assert r.status_code == 201
         thread_id = r.json()["id"]
 
         r = client.post(
             f"/threads/{thread_id}/messages",
-            headers={
-                "X-Tenant-Id": str(tenant_id),
-                "Accept": "text/event-stream",
-            },
+            headers={"Accept": "text/event-stream"},
             json=_ag_ui_body(
                 thread_id,
                 "Please create a note titled 'Grocery list' "
@@ -244,7 +179,7 @@ def test_live_create_note_tool_call() -> None:  # pragma: no cover — network
         import asyncio
 
         notes = asyncio.get_event_loop().run_until_complete(
-            notes_repo.list_(tenant_id=tenant_id),
+            notes_repo.list_(),
         )
         assert notes, f"expected at least one note saved; got events={kinds}"
         assert any(

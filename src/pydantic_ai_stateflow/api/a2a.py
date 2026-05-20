@@ -1,30 +1,25 @@
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
-from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-
-from pydantic_ai_stateflow.api.deps import get_tenant_id
-
-# Module-level dependency to satisfy ruff B008 (do not call Depends in defaults).
-_TenantDep = Depends(get_tenant_id)
 
 
 @runtime_checkable
 class A2AAgentAdapter(Protocol):
     """Minimal contract for an agent exposed over A2A.
 
-    Apps may delegate to pydantic-ai's `agent.to_a2a()` from inside `run`
-    if the installed version exposes it; the framework does not require it.
+    Apps that need per-call scoping (tenant, user) carry it inside
+    ``messages`` payload or via their adapter's constructor state —
+    the framework's A2A surface is identity-agnostic.
     """
 
     name: str
     description: str
 
     async def run(
-        self, *, messages: list[dict[str, Any]], tenant_id: UUID,
+        self, *, messages: list[dict[str, Any]],
     ) -> dict[str, Any]: ...
 
 
@@ -44,7 +39,7 @@ def build_a2a_router(
     agents: dict[str, A2AAgentAdapter],
     prefix: str = "",
 ) -> APIRouter:
-    """Mount A2A discovery (`/.well-known/agent.json`) + invoke (`/a2a/{name}`)."""
+    """Mount A2A discovery (``/.well-known/agent.json``) + invoke (``/a2a/{name}``)."""
     router = APIRouter(prefix=prefix)
     registry = dict(agents)
 
@@ -65,13 +60,12 @@ def build_a2a_router(
     async def invoke(
         agent_name: str,
         body: _InvokeBody,
-        tenant_id: UUID = _TenantDep,
     ) -> dict[str, Any]:
         adapter = registry.get(agent_name)
         if adapter is None:
             raise HTTPException(
                 status_code=404, detail=f"unknown agent: {agent_name}",
             )
-        return await adapter.run(messages=body.messages, tenant_id=tenant_id)
+        return await adapter.run(messages=body.messages)
 
     return router

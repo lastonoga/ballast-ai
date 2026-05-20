@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 import pytest
 from pydantic import BaseModel
 
@@ -23,7 +21,7 @@ async def test_dataset_evaluate_returns_report_with_per_case_scores():
         EvalCase(name="c1", inputs={"x": 1}, expected={}, metadata={}),
         EvalCase(name="c2", inputs={"x": 2}, expected={}, metadata={}),
     ]
-    ds = Dataset(name="t", tenant_id=uuid4(), cases=cases)
+    ds = Dataset(name="t", cases=cases)
 
     async def runner(inputs: dict[str, int]) -> _Out:
         return _Out(text=f"hi-{inputs['x']}")
@@ -37,7 +35,7 @@ async def test_dataset_evaluate_returns_report_with_per_case_scores():
 @pytest.mark.asyncio
 async def test_dataset_report_aggregates_mean_per_scorer():
     cases = [EvalCase(name=f"c{i}", inputs={}, expected={}, metadata={}) for i in range(3)]
-    ds = Dataset(name="t", tenant_id=uuid4(), cases=cases)
+    ds = Dataset(name="t", cases=cases)
 
     async def runner(_inputs):
         return _Out(text="x")
@@ -50,7 +48,7 @@ async def test_dataset_report_aggregates_mean_per_scorer():
 @pytest.mark.asyncio
 async def test_dataset_passed_respects_thresholds():
     cases = [EvalCase(name="c1", inputs={}, expected={}, metadata={})]
-    ds = Dataset(name="t", tenant_id=uuid4(), cases=cases)
+    ds = Dataset(name="t", cases=cases)
 
     async def runner(_inputs):
         return _Out(text="x")
@@ -63,23 +61,9 @@ async def test_dataset_passed_respects_thresholds():
 
 
 @pytest.mark.asyncio
-async def test_dataset_rejects_cross_tenant_metadata():
-    """Spec 1.12: Dataset filtered by tenant_id; cross-tenant cases dropped."""
-    tid = uuid4()
-    other = uuid4()
-    cases = [
-        EvalCase(name="c1", inputs={}, expected={}, metadata={"tenant_id": str(tid)}),
-        EvalCase(name="c2", inputs={}, expected={}, metadata={"tenant_id": str(other)}),
-    ]
-    ds = Dataset(name="t", tenant_id=tid, cases=cases)
-    assert len(ds.cases) == 1
-    assert ds.cases[0].name == "c1"
-
-
-@pytest.mark.asyncio
 async def test_dataset_evaluate_captures_runner_exception_as_score_zero():
     cases = [EvalCase(name="c1", inputs={}, expected={}, metadata={})]
-    ds = Dataset(name="t", tenant_id=uuid4(), cases=cases)
+    ds = Dataset(name="t", cases=cases)
 
     async def runner(_inputs):
         raise RuntimeError("boom")

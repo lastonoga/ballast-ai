@@ -30,10 +30,9 @@ class HelperToolBox:
 
 @dataclass
 class HelperDeps:
-    """`ctx.deps` shape for the helper agent (`Agent[HelperDeps, str]`)."""
+    """``ctx.deps`` shape for the helper agent."""
 
     request_id: UUID
-    tenant_id: UUID
     actor_id: str
     turn_count: int
     tools_invoked_so_far: list[str]

@@ -65,5 +65,4 @@ class ApplyTransaction(Protocol, Generic[T]):
         proposal: Proposal[T],
         *,
         uow: UnitOfWork,
-        tenant_id: UUID,
     ) -> UUID: ...

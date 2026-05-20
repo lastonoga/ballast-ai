@@ -25,7 +25,6 @@ def test_cli_dataset_from_traces_writes_yaml(tmp_path: Path):
             "dataset-from-traces",
             "--pattern", "reflection",
             "--since", "2026-01-01",
-            "--tenant", "11111111-1111-1111-1111-111111111111",
             "--out", str(out),
             "--source", "demo",
         ],

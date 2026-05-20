@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -19,10 +18,8 @@ class _EchoAgent:
     name = "echo"
     description = "echoes the last message"
 
-    async def run(
-        self, *, messages: list[dict[str, Any]], tenant_id: UUID,
-    ) -> dict[str, Any]:
-        return {"echo": messages[-1] if messages else None, "tenant": str(tenant_id)}
+    async def run(self, *, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"echo": messages[-1] if messages else None}
 
 
 def test_well_known_agent_json_returns_cards() -> None:
@@ -49,16 +46,12 @@ def test_well_known_agent_json_card_includes_endpoint() -> None:
 async def test_a2a_invoke_routes_to_agent() -> None:
     app = FastAPI()
     app.include_router(build_a2a_router(agents={"echo": _EchoAgent()}))
-    tid = uuid4()
     body = {"messages": [{"role": "user", "text": "hi"}]}
     with TestClient(app) as c:
-        r = c.post(
-            "/a2a/echo", json=body, headers={"X-Tenant-Id": str(tid)},
-        )
+        r = c.post("/a2a/echo", json=body)
     assert r.status_code == 200
     payload = r.json()
     assert payload["echo"]["text"] == "hi"
-    assert payload["tenant"] == str(tid)
 
 
 @pytest.mark.asyncio
@@ -66,11 +59,7 @@ async def test_a2a_invoke_404_when_unknown_agent() -> None:
     app = FastAPI()
     app.include_router(build_a2a_router(agents={"echo": _EchoAgent()}))
     with TestClient(app) as c:
-        r = c.post(
-            "/a2a/ghost",
-            json={"messages": []},
-            headers={"X-Tenant-Id": str(uuid4())},
-        )
+        r = c.post("/a2a/ghost", json={"messages": []})
     assert r.status_code == 404
 
 

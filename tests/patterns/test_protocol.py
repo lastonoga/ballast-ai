@@ -1,5 +1,4 @@
 from typing import ClassVar
-from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,7 +10,7 @@ class ConcretePattern:
 
     name: ClassVar[str] = "concrete"
 
-    async def run(self, input: int, *, tenant_id: UUID) -> int:
+    async def run(self, input: int) -> int:
         return input * 2
 
 
@@ -35,5 +34,5 @@ def test_wrong_pattern_does_not_satisfy_protocol_at_runtime_when_checked():
 @pytest.mark.asyncio
 async def test_pattern_run_returns_expected():
     p = ConcretePattern()
-    result = await p.run(5, tenant_id=uuid4())
+    result = await p.run(5)
     assert result == 10

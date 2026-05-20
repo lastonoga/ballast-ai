@@ -65,7 +65,7 @@ async def test_approval_stage_passes_through_on_approved(
     stage = ApprovalStage[_StageRefund](
         hitl=gate,
         prompt_builder=lambda p: HITLPrompt(
-            tenant_id=tid, title="x", context=str(p.payload),
+            title="x", context=str(p.payload),
             decision_kinds={"approved", "rejected"},
         ),
     )
@@ -86,7 +86,7 @@ async def test_approval_stage_returns_rejected_at_on_rejected(
     stage = ApprovalStage[_StageRefund](
         hitl=gate,
         prompt_builder=lambda p: HITLPrompt(
-            tenant_id=tid, title="x", context="y",
+            title="x", context="y",
             decision_kinds={"approved", "rejected"},
         ),
     )
@@ -110,7 +110,7 @@ async def test_approval_stage_modify_requires_editable_paths(
         ApprovalStage[_StageRefund](
             hitl=gate,
             prompt_builder=lambda p: HITLPrompt(
-                tenant_id=tid, title="x", context="y", decision_kinds={"approved"},
+                title="x", context="y", decision_kinds={"approved"},
             ),
             allow_modify=True,
         )
@@ -127,7 +127,7 @@ async def test_approval_stage_applies_modification_inside_whitelist(
     stage = ApprovalStage[_StageRefund](
         hitl=gate,
         prompt_builder=lambda p: HITLPrompt(
-            tenant_id=tid, title="x", context="y",
+            title="x", context="y",
             decision_kinds={"approved", "rejected", "modified"},
         ),
         allow_modify=True,
@@ -154,7 +154,7 @@ async def test_approval_stage_rejects_modification_outside_whitelist(
     stage = ApprovalStage[_StageRefund](
         hitl=gate,
         prompt_builder=lambda p: HITLPrompt(
-            tenant_id=tid, title="x", context="y",
+            title="x", context="y",
             decision_kinds={"approved", "modified"},
         ),
         allow_modify=True,

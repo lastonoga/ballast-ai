@@ -57,9 +57,9 @@ async def test_helper_verdict_persisted_via_gate(fresh_dbos_executor: None) -> N
     repo.persist_request = capture  # type: ignore[method-assign]
 
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
+        title="t", context="c", decision_kinds={"approved"},
     )
-    await gate.run(prompt, tenant_id=tid)
+    await gate.run(prompt)
 
     assert len(repo._decisions) == 1
     decision = next(iter(repo._decisions.values()))
@@ -90,9 +90,9 @@ async def test_helper_verdict_absent_when_response_lacks_it(
     repo.persist_request = capture  # type: ignore[method-assign]
 
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
+        title="t", context="c", decision_kinds={"approved"},
     )
-    await gate.run(prompt, tenant_id=tid)
+    await gate.run(prompt)
     decision = next(iter(repo._decisions.values()))
     assert decision.helper_verdict_payload is None
     assert decision.helper_verdict_context_type is None
@@ -139,9 +139,9 @@ async def test_helper_thread_id_propagated_via_prompt_metadata(
     repo.persist_request = capture  # type: ignore[method-assign]
 
     prompt = HITLPrompt(
-        tenant_id=tid, title="t", context="c", decision_kinds={"approved"},
+        title="t", context="c", decision_kinds={"approved"},
     )
-    await gate.run(prompt, tenant_id=tid)
+    await gate.run(prompt)
     decision = next(iter(repo._decisions.values()))
     assert decision.helper_thread_id == thread_id
     assert decision.helper_verdict_context_type == "x.y.Ctx"

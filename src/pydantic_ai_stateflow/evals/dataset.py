@@ -3,7 +3,6 @@ from __future__ import annotations
 import inspect
 from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,25 +29,16 @@ class EvalReport(BaseModel):
 
 
 class Dataset:
-    """A collection of `EvalCase`s scoped to a single tenant.
-
-    Cross-tenant cases (metadata `tenant_id` mismatch) are dropped at
-    construction — spec 1.12 forbids cross-tenant eval mixing.
-    """
+    """A collection of ``EvalCase``s."""
 
     def __init__(
         self,
         *,
         name: str,
-        tenant_id: UUID,
         cases: list[EvalCase],
     ) -> None:
         self.name = name
-        self.tenant_id = tenant_id
-        self.cases: list[EvalCase] = [
-            c for c in cases
-            if c.metadata.get("tenant_id") in (None, str(tenant_id))
-        ]
+        self.cases: list[EvalCase] = list(cases)
 
     async def evaluate(
         self, runner: Runner, *, evaluators: list[Scorer],
