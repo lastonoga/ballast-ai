@@ -24,15 +24,19 @@ class PostgresHITLRepository:
         self, *, prompt: dict[str, Any], workflow_id: UUID,
         gate_kind: str, purpose: str,
         timeout_at: datetime | None = None,
+        request_id: UUID | None = None,
     ) -> BlockingRequirement:
-        req = BlockingRequirement(
-            gate_kind=gate_kind,
-            workflow_id=workflow_id,
-            payload=dict(prompt),
-            purpose=str(purpose),
-            status=BlockingRequirementStatus.PENDING,
-            timeout_at=timeout_at,
-        )
+        kwargs: dict[str, Any] = {
+            "gate_kind": gate_kind,
+            "workflow_id": workflow_id,
+            "payload": dict(prompt),
+            "purpose": str(purpose),
+            "status": BlockingRequirementStatus.PENDING,
+            "timeout_at": timeout_at,
+        }
+        if request_id is not None:
+            kwargs["id"] = request_id
+        req = BlockingRequirement(**kwargs)
         self._s.add(req)
         await self._s.flush()
         await self._s.refresh(req)

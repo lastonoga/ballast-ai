@@ -82,10 +82,12 @@ def build_app(
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
     hitl = hitl_repo or InMemoryHITLRepository()
-    hitl_gate = HITLGate(channel=UIChannel(), policy=AllowAll(), repo=hitl)
+    hitl_gate = HITLGate(
+        channel=UIChannel(), policy=AllowAll(), repo=hitl, thread_repo=repo,
+    )
 
     agent = notes_agent or NotesAgent(
-        notes_repo=notes, hitl_gate=hitl_gate, thread_repo=repo,
+        notes_repo=notes, hitl_gate=hitl_gate,
     )
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
         hitl_repo=hitl, notes_repo=notes,

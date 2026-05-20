@@ -23,7 +23,15 @@ class HITLRepository(Protocol):
         gate_kind: str,
         purpose: str,
         timeout_at: datetime | None = None,
-    ) -> BlockingRequirement: ...
+        request_id: UUID | None = None,
+    ) -> BlockingRequirement:
+        """Persist a new blocking requirement.
+
+        ``request_id`` lets the caller pre-allocate the id (e.g. so it
+        can be embedded in a child-thread's metadata BEFORE the request
+        is persisted). When ``None``, the repo generates one.
+        """
+        ...
 
     async def load_request(
         self, request_id: UUID,
@@ -63,9 +71,10 @@ class InMemoryHITLRepository:
     async def persist_request(
         self, *, prompt: Any, workflow_id: Any, gate_kind: Any,
         purpose: Any, timeout_at: Any = None,
+        request_id: UUID | None = None,
     ) -> BlockingRequirement:
         req = BlockingRequirement(
-            id=uuid4(),
+            id=request_id if request_id is not None else uuid4(),
             gate_kind=gate_kind,
             workflow_id=workflow_id,
             payload=dict(prompt),

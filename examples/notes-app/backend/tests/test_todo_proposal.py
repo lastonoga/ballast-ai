@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic_ai import Agent
@@ -53,6 +53,7 @@ from notes_app.notes.domain import Note
 from notes_app.notes.repository import InMemoryNoteRepository
 from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
+    TodoApprovalContext,
     TodoApprovalDeps,
 )
 
@@ -108,6 +109,28 @@ async def _wait_for_pending_request(
     )
 
 
+def _approval_deps(
+    *,
+    notes_repo: InMemoryNoteRepository,
+    hitl_repo: InMemoryHITLRepository,
+    request_id: UUID,
+    proposed_title: str,
+    proposed_body: str,
+    parent_thread_id: UUID | None = None,
+) -> TodoApprovalDeps:
+    """Mint ``TodoApprovalDeps`` matching what ``build_deps`` would yield."""
+    return TodoApprovalDeps(
+        notes_repo=notes_repo,
+        hitl_repo=hitl_repo,
+        request_id=request_id,
+        metadata=TodoApprovalContext(
+            proposed_title=proposed_title,
+            proposed_body=proposed_body,
+            parent_thread_id=parent_thread_id or uuid4(),
+        ),
+    )
+
+
 async def _build_propose_deps(
     *,
     notes_repo: InMemoryNoteRepository,
@@ -121,7 +144,10 @@ async def _build_propose_deps(
     """
     notes_agent = _TestNotesAgent(notes_repo=notes_repo)
     hitl_gate = HITLGate(
-        channel=UIChannel(), policy=AllowAll(), repo=hitl_repo,
+        channel=UIChannel(),
+        policy=AllowAll(),
+        repo=hitl_repo,
+        thread_repo=thread_repo,
     )
     # Make sure the tool is registered on the agent so the test agent
     # behaves like prod (not strictly needed since we call the bare
@@ -133,7 +159,6 @@ async def _build_propose_deps(
     deps = NoteToolDeps(
         repo=notes_repo,
         hitl_gate=hitl_gate,
-        thread_repo=thread_repo,
         parent_thread_id=t1.id,
     )
     return deps, t1.id
@@ -151,7 +176,7 @@ async def test_propose_todo_approved_saves_note(
     thread_repo = InMemoryThreadRepository()
     hitl_repo = InMemoryHITLRepository()
 
-    deps, _t1_id = await _build_propose_deps(
+    deps, t1_id = await _build_propose_deps(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         hitl_repo=hitl_repo,
@@ -168,15 +193,13 @@ async def test_propose_todo_approved_saves_note(
 
     async def _approver() -> None:
         req = await _wait_for_pending_request(hitl_repo)
-        # The metadata we wrote on T2 carries the title/body; the
-        # approval tool reads them out of TodoApprovalDeps the same
-        # way ``NotesTodoApprovalAgent.build_deps`` would.
-        approval_deps = TodoApprovalDeps(
+        approval_deps = _approval_deps(
             notes_repo=notes_repo,
             hitl_repo=hitl_repo,
             request_id=req.id,
             proposed_title="groceries",
             proposed_body="milk eggs",
+            parent_thread_id=t1_id,
         )
         result = await approve_fn(_FakeCtx(deps=approval_deps))
         assert "Approved" in result, result
@@ -192,18 +215,14 @@ async def test_propose_todo_approved_saves_note(
     assert isinstance(note, Note)
     assert note.title == "groceries"
     assert note.body == "milk eggs"
-    # The note made it into the repo.
     listed = await notes_repo.list_()
     assert [n.id for n in listed] == [note.id]
-    # T2 exists with the right metadata.
     threads = await thread_repo.list_()
     approval_threads = [t for t in threads if t.agent == "todo_approval"]
     assert len(approval_threads) == 1
     assert approval_threads[0].metadata_["proposed_title"] == "groceries"
-    # The HITL request resolved.
     pending = await hitl_repo.list_pending()
     assert pending == []
-    # And a decision row exists.
     assert len(hitl_repo._decisions) == 1  # noqa: SLF001
 
 
@@ -216,7 +235,7 @@ async def test_propose_todo_rejected_raises_and_skips_note(
     thread_repo = InMemoryThreadRepository()
     hitl_repo = InMemoryHITLRepository()
 
-    deps, _t1_id = await _build_propose_deps(
+    deps, t1_id = await _build_propose_deps(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         hitl_repo=hitl_repo,
@@ -233,12 +252,13 @@ async def test_propose_todo_rejected_raises_and_skips_note(
 
     async def _rejecter() -> None:
         req = await _wait_for_pending_request(hitl_repo)
-        approval_deps = TodoApprovalDeps(
+        approval_deps = _approval_deps(
             notes_repo=notes_repo,
             hitl_repo=hitl_repo,
             request_id=req.id,
             proposed_title="garbage",
             proposed_body="trash",
+            parent_thread_id=t1_id,
         )
         result = await reject_fn(
             _FakeCtx(deps=approval_deps), reason="too vague",
@@ -252,11 +272,8 @@ async def test_propose_todo_rejected_raises_and_skips_note(
     finally:
         await rejecter_task
 
-    # Nothing persisted.
     assert await notes_repo.list_() == []
-    # HITL request is still resolved (rejection IS a resolution).
     assert (await hitl_repo.list_pending()) == []
-    # The single decision row records a "reject" verdict.
     assert len(hitl_repo._decisions) == 1  # noqa: SLF001
     decision = next(iter(hitl_repo._decisions.values()))  # noqa: SLF001
     assert decision.verdict.value == "reject"
@@ -271,7 +288,7 @@ async def test_propose_todo_modified_uses_new_title_and_body(
     thread_repo = InMemoryThreadRepository()
     hitl_repo = InMemoryHITLRepository()
 
-    deps, _t1_id = await _build_propose_deps(
+    deps, t1_id = await _build_propose_deps(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         hitl_repo=hitl_repo,
@@ -288,12 +305,13 @@ async def test_propose_todo_modified_uses_new_title_and_body(
 
     async def _modifier() -> None:
         req = await _wait_for_pending_request(hitl_repo)
-        approval_deps = TodoApprovalDeps(
+        approval_deps = _approval_deps(
             notes_repo=notes_repo,
             hitl_repo=hitl_repo,
             request_id=req.id,
             proposed_title="groceries",
             proposed_body="milk",
+            parent_thread_id=t1_id,
         )
         result = await modify_fn(
             _FakeCtx(deps=approval_deps),
@@ -311,7 +329,6 @@ async def test_propose_todo_modified_uses_new_title_and_body(
     assert isinstance(note, Note)
     assert note.title == "weekly groceries"
     assert note.body == "milk, eggs, bread"
-    # The modify-branch note is the only thing in the repo.
     listed = await notes_repo.list_()
     assert [n.title for n in listed] == ["weekly groceries"]
 
@@ -330,7 +347,7 @@ async def test_approve_tool_returns_error_on_unknown_request(
     reject_fn = _bound_tool(approval_agent.agent, "reject")
     modify_fn = _bound_tool(approval_agent.agent, "modify")
 
-    bogus_deps = TodoApprovalDeps(
+    bogus_deps = _approval_deps(
         notes_repo=notes_repo,
         hitl_repo=hitl_repo,
         request_id=UUID("00000000-0000-0000-0000-000000000000"),
@@ -347,7 +364,7 @@ async def test_approve_tool_returns_error_on_unknown_request(
 async def test_propose_todo_creates_side_thread_with_metadata(
     fresh_dbos_executor: None,
 ) -> None:
-    """T2 carries the right ``TodoApprovalMetadata``-shaped JSON."""
+    """T2 carries ``TodoApprovalContext`` fields + framework-injected request_id."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     hitl_repo = InMemoryHITLRepository()
@@ -371,16 +388,16 @@ async def test_propose_todo_creates_side_thread_with_metadata(
 
     async def _approver() -> None:
         req = await _wait_for_pending_request(hitl_repo)
-        # Find the T2 thread.
         threads = await thread_repo.list_()
         t2 = next(t for t in threads if t.agent == "todo_approval")
         captured["t2_metadata"] = dict(t2.metadata_)
-        approval_deps = TodoApprovalDeps(
+        approval_deps = _approval_deps(
             notes_repo=notes_repo,
             hitl_repo=hitl_repo,
             request_id=req.id,
             proposed_title="x",
             proposed_body="y",
+            parent_thread_id=t1_id,
         )
         await approve_fn(_FakeCtx(deps=approval_deps))
 
@@ -394,7 +411,7 @@ async def test_propose_todo_creates_side_thread_with_metadata(
     assert meta["parent_thread_id"] == str(t1_id)
     assert meta["proposed_title"] == "x"
     assert meta["proposed_body"] == "y"
-    # request_id is a UUID string.
+    # ``request_id`` is the framework-injected routing key (UUID string).
     UUID(meta["request_id"])
 
 
@@ -407,7 +424,7 @@ async def test_propose_todo_seeds_opening_assistant_message_on_t2(
     thread_repo = InMemoryThreadRepository()
     hitl_repo = InMemoryHITLRepository()
 
-    deps, _t1_id = await _build_propose_deps(
+    deps, t1_id = await _build_propose_deps(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         hitl_repo=hitl_repo,
@@ -430,12 +447,13 @@ async def test_propose_todo_seeds_opening_assistant_message_on_t2(
         t2 = next(t for t in threads if t.agent == "todo_approval")
         history = await thread_repo.history(t2.id)
         captured["t2_history"] = history
-        approval_deps = TodoApprovalDeps(
+        approval_deps = _approval_deps(
             notes_repo=notes_repo,
             hitl_repo=hitl_repo,
             request_id=req.id,
             proposed_title="alpha",
             proposed_body="beta",
+            parent_thread_id=t1_id,
         )
         await approve_fn(_FakeCtx(deps=approval_deps))
 
@@ -448,7 +466,6 @@ async def test_propose_todo_seeds_opening_assistant_message_on_t2(
     history = captured["t2_history"]
     assert len(history) == 1
     assert history[0].role == "assistant"
-    # ``alpha`` and ``beta`` are in the seeded text.
     text_part = history[0].parts[0]
     assert "alpha" in text_part["text"]
     assert "beta" in text_part["text"]
@@ -461,7 +478,7 @@ async def test_propose_todo_rejects_when_deps_missing_hitl_gate() -> None:
     notes_agent = _TestNotesAgent(notes_repo=notes_repo)
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
-    deps = NoteToolDeps(repo=notes_repo)  # no hitl_gate / thread_repo
+    deps = NoteToolDeps(repo=notes_repo)  # no hitl_gate
     ctx = _FakeCtx(deps=deps)
     with pytest.raises(RuntimeError, match="propose_todo requires"):
         await propose_todo(ctx, title="x", body="y")

@@ -71,6 +71,14 @@ class _ToolEntry:
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _SystemPromptEntry:
+    """One ``@SomeAgent.system_prompt`` registration."""
+
+    fn: Callable[..., Any]
+    kwargs: dict[str, Any] = field(default_factory=dict)
+
+
 class StateflowAgent(ABC):
     """Framework-owned agent abstraction. One subclass per ``Thread.agent`` key.
 
@@ -94,10 +102,12 @@ class StateflowAgent(ABC):
     # sibling subclasses. Tools defined on a parent ARE inherited (the
     # ``agent`` cached_property walks ``__mro__`` to collect them).
     _tools: ClassVar[list[_ToolEntry]] = []
+    _system_prompts: ClassVar[list[_SystemPromptEntry]] = []
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls._tools = []
+        cls._system_prompts = []
 
     # ── tool decorator (class-level) ─────────────────────────────────────────
 
@@ -135,6 +145,44 @@ class StateflowAgent(ABC):
 
         # Bare ``@NotesAgent.tool`` (no args) → ``func`` is the function.
         # ``@NotesAgent.tool(...)`` → ``func`` is None, return ``register``.
+        if func is not None:
+            return register(func)
+        return register
+
+    @classmethod
+    def system_prompt(
+        cls,
+        func: Callable[..., Any] | None = None,
+        /,
+        **prompt_kwargs: Any,
+    ) -> Any:
+        """Decorator to register a system-prompt callback on this agent class.
+
+        Mirrors pydantic-ai's ``@agent.system_prompt`` — the function
+        runs per agent run and its returned string is appended to the
+        base system prompt. Sync or async, with or without
+        ``RunContext`` as the first argument::
+
+            @TodoApprovalAgent.system_prompt
+            def _show_context(ctx: RunContext[TodoApprovalDeps]) -> str:
+                return ctx.deps.metadata.to_system_prompt()
+
+            @TodoApprovalAgent.system_prompt(dynamic=True)
+            async def _async_prompt(ctx: RunContext[TodoApprovalDeps]) -> str:
+                ...
+
+        ``prompt_kwargs`` are forwarded verbatim to pydantic-ai's
+        ``@agent.system_prompt`` (e.g. ``dynamic=True``). Inheritance
+        works the same way as for tools — parent class system prompts
+        are collected via MRO walk in the ``agent`` cached property.
+        """
+
+        def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+            cls._system_prompts.append(
+                _SystemPromptEntry(fn=fn, kwargs=dict(prompt_kwargs)),
+            )
+            return fn
+
         if func is not None:
             return register(func)
         return register
@@ -200,6 +248,8 @@ class StateflowAgent(ABC):
                 a.tool(**entry.kwargs)(entry.fn)
             else:
                 a.tool_plain(**entry.kwargs)(entry.fn)
+        for sp in _collect_inherited_system_prompts(type(self)):
+            a.system_prompt(**sp.kwargs)(sp.fn)
         # Auto-apply grounded ``Ref[T]/Selector`` prepare hooks. Importing
         # here (not at module top) keeps ``runtime.agents`` free of a
         # hard dep on the ``grounded`` package at import time, which
@@ -230,6 +280,25 @@ def _collect_inherited_tools(cls: type[StateflowAgent]) -> list[_ToolEntry]:
         for entry in own:
             collected[entry.fn.__name__] = entry
     return list(collected.values())
+
+
+def _collect_inherited_system_prompts(
+    cls: type[StateflowAgent],
+) -> list[_SystemPromptEntry]:
+    """Walk MRO base-to-derived, gathering ``_system_prompts`` from each class.
+
+    Unlike tools, system prompts are ADDITIVE — pydantic-ai appends each
+    callback's return value to the base prompt, so duplicate function
+    names don't override. Order is base-to-derived to keep parent
+    context above subclass refinements in the final prompt.
+    """
+    collected: list[_SystemPromptEntry] = []
+    for klass in reversed(cls.__mro__):
+        own = klass.__dict__.get("_system_prompts")
+        if not own:
+            continue
+        collected.extend(own)
+    return collected
 
 
 def _takes_run_context(fn: Callable[..., Any]) -> bool:

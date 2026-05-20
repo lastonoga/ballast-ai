@@ -37,7 +37,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
@@ -53,15 +53,17 @@ from pydantic_ai_stateflow.grounded import Ref, Selector
 from pydantic_ai_stateflow.patterns.hitl import (
     ApprovedResponse,
     HITLGate,
-    HITLPrompt,
     ModifiedResponse,
 )
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
+from notes_app.todo_approval_agent import (
+    NotesTodoApprovalAgent,
+    TodoApprovalContext,
+)
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
@@ -119,15 +121,14 @@ def default_notes_capabilities() -> list[StateflowCapability]:
 class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
-    ``hitl_gate``, ``thread_repo``, and ``parent_thread_id`` are only used
-    by the HITL-gated ``propose_todo`` tool — the simpler note tools
-    ignore them. They may be ``None`` for tests that only exercise the
+    ``hitl_gate`` and ``parent_thread_id`` are only used by the
+    HITL-gated ``propose_todo`` tool — the simpler note tools ignore
+    them. They may be ``None`` for tests that only exercise the
     non-HITL tools.
     """
 
     repo: NoteRepository
     hitl_gate: HITLGate | None = None
-    thread_repo: ThreadRepository | None = None
     parent_thread_id: UUID | None = None
 
 
@@ -146,13 +147,11 @@ class NotesAgent(StateflowAgent):
         *,
         notes_repo: NoteRepository,
         hitl_gate: HITLGate | None = None,
-        thread_repo: ThreadRepository | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
     ) -> None:
         self._notes_repo = notes_repo
         self._hitl_gate = hitl_gate
-        self._thread_repo = thread_repo
         self._model_name = model_name
         self._api_key = api_key
 
@@ -194,7 +193,6 @@ class NotesAgent(StateflowAgent):
         return NoteToolDeps(
             repo=self._notes_repo,
             hitl_gate=self._hitl_gate,
-            thread_repo=self._thread_repo,
             parent_thread_id=thread.id,
         )
 
@@ -286,7 +284,9 @@ async def propose_todo(
     Use this INSTEAD of ``create_note`` when the user asks to create a
     TODO specifically (vs. a regular note). The flow:
 
-    1. A NEW thread is opened, bound to the ``todo_approval`` agent.
+    1. ``HITLGate.ask_helper`` spawns a new thread bound to the
+       ``todo_approval`` agent, with ``TodoApprovalContext`` as
+       metadata.
     2. This run BLOCKS until the user confirms / rejects / modifies the
        proposal in the side thread.
     3. On approval the note is persisted with the (possibly modified)
@@ -295,57 +295,22 @@ async def propose_todo(
 
     Both ``title`` and ``body`` are required and free-form.
     """
-    if (
-        ctx.deps.hitl_gate is None
-        or ctx.deps.thread_repo is None
-        or ctx.deps.parent_thread_id is None
-    ):
+    if ctx.deps.hitl_gate is None or ctx.deps.parent_thread_id is None:
         raise RuntimeError(
-            "propose_todo requires hitl_gate + thread_repo + parent_thread_id "
-            "on NoteToolDeps — was NotesAgent constructed without them?",
+            "propose_todo requires hitl_gate + parent_thread_id on "
+            "NoteToolDeps — was NotesAgent constructed without them?",
         )
 
-    hitl_gate = ctx.deps.hitl_gate
-    thread_repo = ctx.deps.thread_repo
-
-    prompt = HITLPrompt(
-        title="Confirm todo",
-        context=f"User wants to create a todo:\ntitle: {title!r}\nbody: {body!r}",
-        decision_kinds={"approved", "rejected", "modified"},
+    context = TodoApprovalContext(
+        proposed_title=title,
+        proposed_body=body,
+        parent_thread_id=ctx.deps.parent_thread_id,
     )
-
-    # Spawn T2 first (so the frontend sees the side thread before the
-    # gate workflow blocks on DBOS.recv). The approval agent in T2 reads
-    # title/body out of thread metadata, NOT out of the user's first
-    # message, so the model in T2 doesn't have to be told what's being
-    # approved through chat history.
-    request_id = uuid4()
-    t2 = await thread_repo.create(
-        agent="todo_approval",
-        metadata={
-            "request_id": str(request_id),
-            "parent_thread_id": str(ctx.deps.parent_thread_id),
-            "proposed_title": title,
-            "proposed_body": body,
-        },
+    response = await ctx.deps.hitl_gate.ask_helper(
+        helper_agent=NotesTodoApprovalAgent,
+        context=context,
+        opening_message=context.to_opening_message(),
     )
-    # Seed an opening assistant message so the user sees something on
-    # opening the side thread (otherwise it would look empty until they
-    # type their first reply).
-    await thread_repo.add_message(
-        t2.id,
-        role="assistant",
-        parts=[{
-            "type": "text",
-            "text": f"Confirm todo: title={title!r}, body={body!r}?",
-            "state": "done",
-        }],
-    )
-
-    # Block until the approval thread fires DBOS.send. The UIChannel
-    # simply awaits DBOS.recv("hitl:{request_id}") — whoever responds on
-    # that topic unblocks the gate.
-    response = await hitl_gate.run(prompt)
 
     if isinstance(response, ApprovedResponse):
         return await ctx.deps.repo.create(title=title, body=body)
@@ -355,7 +320,6 @@ async def propose_todo(
             title=str(mod.get("title", title)),
             body=str(mod.get("body", body)),
         )
-    # rejected
     raise RuntimeError("Todo creation rejected by user")
 
 

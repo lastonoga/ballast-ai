@@ -1,16 +1,17 @@
 """HITL approval ``StateflowAgent`` for the notes-app todo-creation flow.
 
-Threads bound to ``agent="todo_approval"`` are spawned by the
-``propose_todo`` tool on ``NotesAgent`` (see ``notes_app/agent.py``).
-The metadata they carry tells THIS agent which HITL request they're
-gating and what title/body the user proposed in the parent thread.
+Threads bound to ``agent="todo_approval"`` are spawned by
+``HITLGate.ask_helper`` when ``NotesAgent.propose_todo`` asks for a
+decision. The metadata they carry tells THIS agent which HITL request
+they're gating and what title/body the user proposed in the parent
+thread.
 
 The model running in this thread chats with the user and, when ready,
 calls one of three tools — ``approve``, ``reject``, ``modify`` —
 which forward an ``ApprovedResponse`` / ``RejectedResponse`` /
 ``ModifiedResponse`` to the gate's DBOS topic via ``DBOS.send``.
 That unblocks the original ``NotesAgent`` run (which had called
-``hitl_gate.run`` and was sitting on ``DBOS.recv``).
+``hitl_gate.ask_helper`` and was sitting on ``DBOS.recv``).
 
 This is the **UIChannel** flavour of HITL — there is no
 ``DefaultHelperSessionRunner`` here. The framework's streaming router
@@ -50,9 +51,8 @@ DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.3
 
 SYSTEM_PROMPT = (
-    "You are a confirmation helper. The user opened a side conversation "
-    "to decide whether to commit a proposed todo from their main notes "
-    "thread. Discuss any concerns they have, then call ONE of:\n"
+    "You are a confirmation helper. Discuss any concerns the user has, "
+    "then call ONE of:\n"
     "  - approve()              — accept the todo as proposed\n"
     "  - reject(reason)         — cancel; reason is optional\n"
     "  - modify(new_title, new_body) — change title and/or body, then save\n"
@@ -61,18 +61,51 @@ SYSTEM_PROMPT = (
 )
 
 
-class TodoApprovalMetadata(BaseModel):
-    """Thread metadata schema for the ``todo_approval`` agent.
+class TodoApprovalContext(BaseModel):
+    """Typed input context for the ``todo_approval`` agent.
 
-    Populated by ``NotesAgent.propose_todo`` when it spawns the side
-    thread. Validated by the framework via
-    ``StateflowAgent.metadata_model`` on thread creation.
+    Plays a dual role:
+      - ``StateflowAgent.metadata_model`` — validates ``Thread.metadata_``
+        on thread creation (so the framework rejects malformed threads
+        before they reach the agent).
+      - Input contract for ``HITLGate.ask_helper(context=...)`` — the
+        caller builds an instance and the gate puts it on the helper
+        thread's metadata.
+
+    The ``request_id`` (HITL routing key) is NOT a field here — the
+    framework injects it into thread metadata alongside this model's
+    fields when the helper thread is created. The helper agent's
+    ``build_deps`` reads it back as a separate value.
+
+    ``to_system_prompt`` projects the context into the agent's system
+    prompt — SOLID: the context owns its own prompt projection, so the
+    agent class doesn't need a separate template. The
+    ``@NotesTodoApprovalAgent.system_prompt`` decorator below wires it
+    up at module load.
     """
 
-    request_id: UUID
-    parent_thread_id: UUID
     proposed_title: str
     proposed_body: str
+    parent_thread_id: UUID
+
+    def to_system_prompt(self) -> str:
+        return (
+            "Review the proposed todo from the user's main notes thread:\n"
+            f"  title: {self.proposed_title!r}\n"
+            f"  body:  {self.proposed_body!r}"
+        )
+
+    def to_opening_message(self) -> str:
+        """Initial assistant message seeded on the side thread.
+
+        Shown to the user the moment they open the side thread, before
+        the helper agent's first model call. Kept short and structural;
+        the model writes its own follow-up on the first user turn.
+        """
+        return (
+            f"Confirm todo: title={self.proposed_title!r}, "
+            f"body={self.proposed_body!r}?"
+        )
 
 
 @dataclass
@@ -82,8 +115,7 @@ class TodoApprovalDeps:
     notes_repo: NoteRepository
     hitl_repo: HITLRepository
     request_id: UUID
-    proposed_title: str
-    proposed_body: str
+    metadata: TodoApprovalContext
 
 
 class NotesTodoApprovalAgent(StateflowAgent):
@@ -91,13 +123,14 @@ class NotesTodoApprovalAgent(StateflowAgent):
 
     Constructor-injected with the same ``HITLRepository`` instance the
     notes-side ``HITLGate`` uses, plus a (currently-unused-by-tools)
-    ``NoteRepository`` for symmetry with ``NotesAgent``. The model only
-    needs the proposed title/body — pulled out of thread metadata in
-    ``build_deps``.
+    ``NoteRepository`` for symmetry with ``NotesAgent``. The proposed
+    title/body live on ``deps.metadata`` (typed
+    ``TodoApprovalContext``); the framework injects them into the system
+    prompt via the ``@system_prompt`` decorator below.
     """
 
     name = "todo_approval"
-    metadata_model = TodoApprovalMetadata
+    metadata_model = TodoApprovalContext
 
     def __init__(
         self,
@@ -141,13 +174,17 @@ class NotesTodoApprovalAgent(StateflowAgent):
         message: ModelMessage | None,
     ) -> TodoApprovalDeps:
         del message
-        meta = TodoApprovalMetadata.model_validate(thread.metadata_)
+        # ``request_id`` is a framework-injected routing key sitting next
+        # to the user-shaped context fields. ``metadata_model`` validates
+        # the dict with ``extra="ignore"`` (pydantic v2 default), so the
+        # extra key doesn't trip validation.
+        metadata = TodoApprovalContext.model_validate(thread.metadata_)
+        request_id = UUID(thread.metadata_["request_id"])
         return TodoApprovalDeps(
             notes_repo=self._notes_repo,
             hitl_repo=self._hitl_repo,
-            request_id=meta.request_id,
-            proposed_title=meta.proposed_title,
-            proposed_body=meta.proposed_body,
+            request_id=request_id,
+            metadata=metadata,
         )
 
     def model_settings(self) -> OpenRouterModelSettings:
@@ -156,6 +193,21 @@ class NotesTodoApprovalAgent(StateflowAgent):
             openrouter_reasoning={"effort": "none"},
             openrouter_usage={"include": True},
         )
+
+
+# ── System prompt: inject the typed context ─────────────────────────────────
+#
+# The base ``SYSTEM_PROMPT`` above is generic ("you are a confirmation
+# helper, call approve/reject/modify"); the per-thread context (which
+# todo is being reviewed) lives on ``deps.metadata`` and is appended
+# here. Following the SOLID brief, the projection logic lives ON the
+# context model (``TodoApprovalContext.to_system_prompt``) — this
+# decorator just plumbs it through.
+
+
+@NotesTodoApprovalAgent.system_prompt
+def _inject_todo_context(ctx: RunContext[TodoApprovalDeps]) -> str:
+    return ctx.deps.metadata.to_system_prompt()
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
@@ -205,8 +257,8 @@ async def approve(ctx: RunContext[TodoApprovalDeps]) -> str:
     if not ok:
         return "Error: approval request not found (it may have expired)."
     return (
-        f"Approved. Todo {ctx.deps.proposed_title!r} will be saved on the "
-        "main thread."
+        f"Approved. Todo {ctx.deps.metadata.proposed_title!r} will be saved on "
+        "the main thread."
     )
 
 
@@ -242,8 +294,9 @@ async def modify(
     Missing fields fall back to the proposed defaults from the parent
     thread. Returns a short confirmation.
     """
-    final_title = new_title if new_title is not None else ctx.deps.proposed_title
-    final_body = new_body if new_body is not None else ctx.deps.proposed_body
+    meta = ctx.deps.metadata
+    final_title = new_title if new_title is not None else meta.proposed_title
+    final_body = new_body if new_body is not None else meta.proposed_body
     ok = await _send_hitl_response(
         hitl_repo=ctx.deps.hitl_repo,
         request_id=ctx.deps.request_id,
