@@ -229,7 +229,7 @@ async def test_enqueue_run_deterministic_workflow_id(
         config_name=f"durable-test-{next(_counter)}",
     )
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
-    user_msg_id = uuid4()
+    user_msg_id = str(uuid4())
 
     handle = await durable.enqueue_run(
         thread_id=thread.id, user_message_id=user_msg_id,

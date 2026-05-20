@@ -101,13 +101,17 @@ AGENT_RUN_QUEUE: Queue = Queue(
 )
 
 
-def agent_run_workflow_id(thread_id: UUID, user_message_id: UUID) -> str:
+def agent_run_workflow_id(thread_id: UUID, user_message_id: str) -> str:
     """Deterministic workflow id for one (thread, user message) pair.
 
     Re-using the same id idempotently attaches a request retry to the
     in-flight workflow instead of spawning a duplicate. The prefix
     ``"agent-run:"`` is used by ``cancel_thread_runs`` to find all
     workflows for a thread via ``list_workflows_async(workflow_id_prefix=...)``.
+
+    ``user_message_id`` is the free-form ``Message.id`` string (may be
+    a UUID, may be an assistant-ui-generated short id — we don't
+    coerce; the value is just a key for workflow-id determinism).
     """
     return f"agent-run:{thread_id}:{user_message_id}"
 
@@ -291,10 +295,10 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         self,
         *,
         thread_id: UUID,
-        user_message_id: UUID,
+        user_message_id: str,
         prompt: str,
         history_dump: list[dict[str, Any]],
-        assistant_parent_id: UUID | None = None,
+        assistant_parent_id: str | None = None,
     ) -> WorkflowHandleAsync[None]:
         """Enqueue ``self.run`` into the per-thread serialization queue.
 
@@ -324,9 +328,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 thread_id_str=str(thread_id),
                 prompt=prompt,
                 history_dump=history_dump,
-                assistant_parent_id_str=(
-                    str(assistant_parent_id) if assistant_parent_id else None
-                ),
+                assistant_parent_id_str=assistant_parent_id,
             )
 
     async def cancel_thread_runs(self, thread_id: UUID) -> int:
@@ -495,10 +497,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             await self._persist_assistant_turn(
                 thread_id=thread_id,
                 result=final_result,
-                parent_id=(
-                    UUID(assistant_parent_id_str)
-                    if assistant_parent_id_str else None
-                ),
+                parent_id=assistant_parent_id_str,
             )
 
         await self._persist_and_publish(
@@ -511,7 +510,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         *,
         thread_id: UUID,
         result: Any,
-        parent_id: UUID | None,
+        parent_id: str | None,
     ) -> None:
         """Dump the assistant's Vercel-AI UI parts and persist as one message row.
 

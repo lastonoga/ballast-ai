@@ -88,18 +88,23 @@ class Thread(SQLModel, table=True):
 class Message(SQLModel, table=True):
     """One message in a thread. Threads are conversation TREES, not lists.
 
-    ``parent_id`` is the id of the message this one replies to:
-    NULL only for the very first user turn. Siblings share ``parent_id``
-    and represent branches — produced by ``trigger='regenerate-message'``
-    or user-message edits.
+    ``id`` is a free-form string (NOT a UUID) so client-supplied ids —
+    e.g. assistant-ui's short random strings — round-trip 1:1 without
+    coercion. Backend-issued messages default to ``str(uuid4())`` for
+    uniqueness. ``parent_id`` references ``id`` and is therefore also
+    a string. NULL only for the very first message in a thread.
+    Siblings share ``parent_id`` and represent branches — produced by
+    ``trigger='regenerate-message'`` or user-message edits.
     """
 
     __tablename__ = "messages"
 
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    id: str = Field(
+        default_factory=lambda: str(uuid4()), primary_key=True,
+    )
     thread_id: UUID = Field(foreign_key="threads.id", index=True)
     role: str  # "system" / "user" / "assistant" / "tool"
-    parent_id: UUID | None = Field(
+    parent_id: str | None = Field(
         default=None, foreign_key="messages.id", index=True, nullable=True,
     )
     parts: list[dict[str, Any]] = Field(

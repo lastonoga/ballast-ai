@@ -1,10 +1,19 @@
 """Server-stateful Vercel-AI streaming endpoint.
 
-The framework owns the thread + message history (multi-tenant, persisted
-in ``ThreadRepository``). The wire encoding, body parsing, event taxonomy,
-tool-call/text streaming, and tool-approval round-trip are delegated to
-``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` — we don't reimplement any of
-that.
+The streaming router is a **pure run-trigger**: it does NOT persist
+incoming user messages. The frontend's canonical
+``ThreadHistoryAdapter.append`` flow (``POST /threads/{id}/messages``)
+is the sole persistence path for user input — assistant-ui tracks the
+message tree client-side and POSTs each new node with the right
+``parent_id`` BEFORE calling ``/runs``. The streaming router then:
+
+  1. Loads the active branch from ``thread_repo`` (source of truth).
+  2. Identifies the new user msg by its client id (matched against
+     the body's last user UIMessage) — if it isn't in the repo yet
+     (direct-curl / legacy client), auto-persist it.
+  3. Triggers the agent run; assistant turn is persisted at the end
+     of the run (durable: via ``_persist_assistant_turn`` step;
+     non-durable: via the ``on_complete`` callback).
 
 Vercel AI SDK v6 is targeted (``sdk_version=6``) so that
 ``@agent.tool(requires_approval=True)`` produces ``approval-requested`` UI
@@ -13,7 +22,7 @@ parts on the wire and incoming approval responses are extracted by
 
 Endpoint contract::
 
-    POST {prefix}/threads/{thread_id}/messages
+    POST {prefix}/threads/{thread_id}/runs
         Accept: text/event-stream
         Body  : Vercel AI ``RequestData`` JSON (parsed by VercelAIAdapter)
         404   : thread not found (no lazy-create)
@@ -46,10 +55,7 @@ from pydantic_ai_stateflow.persistence.events.repository import (
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime.agents import get_agent
 from pydantic_ai_stateflow.runtime.durable_agent import StateflowDurableAgent
-from pydantic_ai_stateflow.runtime.event_stream import (
-    EventStream,
-    thread_channel,
-)
+from pydantic_ai_stateflow.runtime.event_stream import EventStream
 
 _log = get_logger(__name__)
 
@@ -106,7 +112,7 @@ def _last_user_text(messages: list[ModelMessage]) -> str:
 
 def _find_last_role_id(
     history: list[Any], role: str,
-) -> UUID | None:
+) -> str | None:
     """Return the id of the last ``Message`` with ``role`` in history, or None.
 
     Used by the streaming router to thread the new turn's ``parent_id``
@@ -166,62 +172,46 @@ def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
 _DEFAULT_HISTORY_LIMIT = 200
 
 
-async def _last_user_client_id_from_body(request: Request) -> UUID | None:
-    """Return the client-generated id of the last user UIMessage, or None.
+async def _last_user_msg_from_body(
+    request: Request,
+) -> tuple[str | None, str]:
+    """Return ``(client_id, text)`` for the last user UIMessage in the body.
 
-    Used by the streaming router to detect whether the frontend's
-    ``ThreadHistoryAdapter.append`` flow already persisted the new
-    user turn (in which case the streaming router skips its own
-    auto-persist). Returns None when the body's last user message has
-    no id, or the id isn't a valid UUID (some clients ship short
-    client-only ids that we wouldn't be able to look up anyway).
-    """
-    body = await request.json()
-    messages = body.get("messages") or []
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        raw = msg.get("id")
-        if not isinstance(raw, str):
-            return None
-        try:
-            return UUID(raw)
-        except ValueError:
-            return None
-    return None
+    ``client_id`` is the frontend-supplied message id (free-form
+    string — assistant-ui ships short random ids like
+    ``"MbPSd9jddGfC6UAV"``). ``text`` is the concatenated text of
+    every text part on that user UIMessage.
 
-
-async def _last_user_text_from_body(request: Request) -> str:
-    """Return the text of the LAST user UIMessage in the request body.
-
-    Walks the raw Vercel-AI body — NOT ``adapter.messages`` — because
-    the adapter coalesces consecutive user messages (with no assistant
-    between) into a single ``ModelRequest`` with multiple
-    ``UserPromptPart`` entries. That coalescing is fine for prompting
-    the model with the full unbroken user input, but it corrupts our
-    "this is the NEW user turn we just received" extraction: an
-    orphaned user message from a cancelled prior turn would get
-    concatenated with the new text and we'd persist the join (``"а
-    тыты"`` instead of just ``"ты"``).
+    Walks the RAW body's ``messages`` array — NOT
+    ``adapter.messages`` — because the adapter coalesces consecutive
+    user messages (with no assistant between) into a single
+    ``ModelRequest`` with multiple ``UserPromptPart`` entries. That
+    coalescing is fine for prompting the model with the full unbroken
+    user input, but it would corrupt our "this is the NEW user turn"
+    extraction: an orphaned user message from a cancelled prior turn
+    would get concatenated with the new text and we'd persist the
+    join (``"а тыты"`` instead of just ``"ты"``).
 
     The raw body's ``messages`` array preserves one entry per
     UIMessage. The last role="user" entry is, by frontend convention
     (Vercel ``useChat.sendMessage``), the user's just-typed turn.
+    Returns ``(None, "")`` when no user message exists in the body.
     """
     body = await request.json()
     messages = body.get("messages") or []
     for msg in reversed(messages):
         if msg.get("role") != "user":
             continue
+        raw_id = msg.get("id")
+        client_id = raw_id if isinstance(raw_id, str) else None
         chunks: list[str] = []
         for part in msg.get("parts") or []:
             if part.get("type") == "text":
                 txt = part.get("text")
                 if isinstance(txt, str):
                     chunks.append(txt)
-        if chunks:
-            return "".join(chunks)
-    return ""
+        return client_id, "".join(chunks)
+    return None, ""
 
 
 def _parse_last_event_id(request: Request) -> int:
@@ -238,6 +228,67 @@ def _parse_last_event_id(request: Request) -> int:
         return 0
 
 
+async def _resolve_user_msg_id(
+    *,
+    thread_id: UUID,
+    thread_repo: ThreadRepository,
+    history_before: list[Any],
+    client_id: str | None,
+    prompt_text: str,
+) -> str:
+    """Find or persist the user message that anchors the new run.
+
+    Canonical path (assistant-ui): the frontend already POSTed the new
+    user UIMessage to ``/threads/{id}/messages`` before triggering the
+    run. We look it up by ``client_id`` — found → return its id.
+
+    Fallback (direct-curl / legacy clients): no row matches ``client_id``,
+    so we auto-persist a new user message under the last active-branch
+    msg as parent. Empty ``prompt_text`` falls back to the latest user
+    in the active branch (resume-after-approval case where the body
+    carries an empty user prompt).
+    """
+    if client_id is not None:
+        all_msgs = await thread_repo.all_messages(thread_id)
+        existing = next((m for m in all_msgs if m.id == client_id), None)
+        if existing is not None:
+            return existing.id
+
+    if not prompt_text:
+        # Approval-resume / replay: no fresh user turn — anchor on the
+        # latest user in the active branch so the assistant becomes its
+        # next sibling-or-child.
+        last_user_id = _find_last_role_id(history_before, "user")
+        if last_user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cannot start run: body has no user prompt and no "
+                    "prior user message exists in the thread."
+                ),
+            )
+        return last_user_id
+
+    new_user_parent_id = history_before[-1].id if history_before else None
+    user_msg = await thread_repo.add_message_with_id(
+        thread_id,
+        id=client_id or str(uuid4()),
+        role="user",
+        # ``state: "done"`` matches Vercel UIMessage's TextUIPart for
+        # a fully-rendered user turn. On restore via ``chat.setMessages``,
+        # parts without ``state`` slip through useChat's discriminator
+        # into a different branch and break ``MessagePartText`` rendering.
+        parts=[{"type": "text", "text": prompt_text, "state": "done"}],
+        parent_id=new_user_parent_id,
+    )
+    _log.info(
+        "submit-message: auto-persisted user msg id=%s parent=%s "
+        "(no matching client_id in repo — direct-curl fallback)",
+        user_msg.id, new_user_parent_id,
+    )
+    return user_msg.id
+
+
 async def _durable_post_message(
     *,
     request: Request,
@@ -249,63 +300,29 @@ async def _durable_post_message(
     encoder: WireEncoder,
     history_limit: int,
 ) -> Response:
-    """Durable streaming branch — starts the workflow then tails the event log.
+    """Pure run-trigger — fire the agent workflow, then tail the event log.
 
-    Flow:
-      1. Parse the request body to pull out the new user prompt
-         (mirrors the non-durable path's body shape so frontends use
-         the same client SDK).
-      2. Persist the user message to ``thread_repo`` BEFORE the
-         workflow starts. Same idempotency contract as the existing
-         path — a request retry with the same body produces the same
-         persisted user row.
-      3. Build a JSON-friendly ``history_dump`` from the active branch
-         (excluding the just-persisted prompt — pydantic-ai re-derives
-         it from the workflow argument).
-      4. Start ``stateflow_agent.run`` as a DBOS workflow with a
-         deterministic ``workflow_id`` keyed off the user message id —
-         a refresh / retry from the client reuses the same workflow
-         instead of spawning a duplicate.
-      5. Stream events from the durable log to the client: replay
-         everything ``> Last-Event-ID``, then subscribe to live
-         notifications and keep emitting until a ``done`` event lands.
+    Reads the thread's active branch from ``thread_repo`` (source of
+    truth — the frontend's canonical
+    ``ThreadHistoryAdapter.append`` flow has already persisted the new
+    user msg via ``POST /threads/{id}/messages``). Starts
+    ``stateflow_agent.run`` with a deterministic workflow id keyed off
+    the user message id — a request retry reuses the same workflow
+    instead of spawning a duplicate. Streams events from the durable
+    log (replay from Last-Event-ID then live tail), terminating on
+    ``done`` / ``cancelled``.
 
     SSE chunks come from the ``encoder`` (default VercelAI v6); swap
     via ``encoder_factory`` for AG-UI / A2A / custom wire formats.
     """
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
-    # The Vercel-AI body parser is the easiest way to extract the
-    # incoming user prompt + message id without re-implementing the
-    # client-side message shape. We don't drive ``adapter.run_stream``
-    # in this path — the workflow does that internally.
+    # Parse the Vercel-AI body purely to read ``trigger`` and the new
+    # user message id — NOT to persist a message.
     adapter = await VercelAIAdapter.from_request(
         request, agent=stateflow_agent.agent, sdk_version=6,
     )
-    # IMPORTANT: pull the new prompt from the RAW body's last user
-    # UIMessage — NOT from ``adapter.messages``. ``VercelAIAdapter``
-    # coalesces consecutive user messages (no assistant between them)
-    # into a single ``ModelRequest`` with multiple ``UserPromptPart``
-    # entries. That happens whenever a previous turn was cancelled
-    # mid-flight: the orphaned user message stays in the frontend's
-    # local state, so the next send carries BOTH the orphan and the
-    # new text. ``_last_user_text`` would then return the joined text
-    # ("a tyты" instead of just "ты"), corrupting the new prompt.
-    prompt_text = await _last_user_text_from_body(request)
-    if not prompt_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Durable agent requires a non-empty user prompt",
-        )
 
-    # ── trigger semantics ──────────────────────────────────────────────────
-    # ``submit-message`` (default): the user just typed a NEW turn — we
-    # persist it as a new user row and the assistant turn becomes its
-    # child.
-    # ``regenerate-message``: the user re-ran the LAST user turn (edit
-    # / regenerate UI). DO NOT persist a duplicate user row — the new
-    # assistant becomes a SIBLING of the prior assistant, both under
-    # the same user msg.
     trigger = getattr(adapter.run_input, "trigger", "submit-message")
     is_regenerate = trigger == "regenerate-message"
 
@@ -315,67 +332,50 @@ async def _durable_post_message(
         # Find the last user msg in the active branch — that's the
         # parent of the new (regenerated) assistant turn.
         last_user_id = _find_last_role_id(history_before, "user")
-        assistant_parent_id: UUID | None = last_user_id
-        user_msg_id: UUID = last_user_id or uuid4()
+        if last_user_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="regenerate-message with no prior user message",
+            )
+        assistant_parent_id: str = last_user_id
+        user_msg_id: str = last_user_id
+        prompt_text = ""  # don't re-derive — repo's last user IS the prompt
         _log.info(
             "regenerate-message: new assistant will sibling under user_id=%s",
             last_user_id,
         )
     else:
-        # If the frontend's canonical ``ThreadHistoryAdapter.append``
-        # flow ran first (POST /threads/{id}/messages with the new user
-        # turn's client id), the user message is already in
-        # ``thread_repo`` — find it by the body's client id and skip
-        # the auto-persist. This is the path that enables server-
-        # persisted branches: assistant-ui knows the right ``parent_id``
-        # (sibling on edit, child of last assistant on normal send) and
-        # already wrote it via ``add_message_with_id``.
-        #
-        # Fallback (auto-persist) handles direct curl / non-assistant-ui
-        # clients that POST straight to the streaming endpoint without
-        # first calling ``/messages``.
-        last_user_client_id = await _last_user_client_id_from_body(request)
-        all_msgs = await thread_repo.all_messages(thread_id, limit=history_limit)
-        already_appended = next(
-            (m for m in all_msgs if last_user_client_id and m.id == last_user_client_id),
-            None,
+        client_id, prompt_text = await _last_user_msg_from_body(request)
+        user_msg_id = await _resolve_user_msg_id(
+            thread_id=thread_id,
+            thread_repo=thread_repo,
+            history_before=history_before,
+            client_id=client_id,
+            prompt_text=prompt_text,
         )
+        assistant_parent_id = user_msg_id
 
-        if already_appended is not None:
-            user_msg_id = already_appended.id
-            assistant_parent_id = already_appended.id
-            _log.debug(
-                "submit-message: user msg %s already persisted by "
-                "frontend append; skipping auto-persist", user_msg_id,
-            )
-        else:
-            new_user_parent_id = (
-                history_before[-1].id if history_before else None
-            )
-            user_msg = await thread_repo.add_message(
-                thread_id,
-                role="user",
-                parts=[{"type": "text", "text": prompt_text, "state": "done"}],
-                parent_id=new_user_parent_id,
-            )
-            assistant_parent_id = user_msg.id
-            user_msg_id = user_msg.id
-
-    # Build history dump. ``ModelMessage`` is a TypeAdapter-backed
-    # discriminated union (not a BaseModel subclass), so per-instance
-    # ``model_dump`` doesn't exist — round-trip the whole list via
-    # ``ModelMessagesTypeAdapter`` instead.
+    # Build history dump for the workflow. ``ModelMessage`` is a
+    # TypeAdapter-backed discriminated union (not a BaseModel subclass),
+    # so per-instance ``model_dump`` doesn't exist — round-trip the whole
+    # list via ``ModelMessagesTypeAdapter`` instead.
     from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
 
     rows = await thread_repo.history(thread_id, limit=history_limit)
+    # Determine the prompt text for the agent run from the repo's
+    # current active branch (the user msg we just resolved is the
+    # latest). For regenerate, the last user in the branch IS the
+    # prompt; for submit-message, it's the row we just verified /
+    # persisted.
+    if not prompt_text:
+        prompt_text = (
+            extract_text(rows[-1].parts)
+            if rows and rows[-1].role == "user"
+            else ""
+        )
     history = messages_to_model_history(rows, drop_prompt=prompt_text)
     history_dump = ModelMessagesTypeAdapter.dump_python(history, mode="json")
 
-    # Enqueue into the per-thread serialization queue (concurrency=1
-    # per thread). Workflow id is deterministic per (thread_id,
-    # user_msg.id) so a request retry attaches to the existing run
-    # instead of spawning a duplicate. Concurrent messages for the
-    # same thread queue up and run serially.
     # ── Last-Event-ID cutoff ────────────────────────────────────────────────
     #
     # If the client sent ``Last-Event-ID`` (SSE reconnect), honor it —
@@ -395,6 +395,11 @@ async def _durable_post_message(
     if last_event_id == 0:
         last_event_id = await event_log.latest_seq(thread_id)
 
+    # Enqueue into the per-thread serialization queue (concurrency=1
+    # per thread). Workflow id is deterministic per (thread_id,
+    # user_msg.id) so a request retry attaches to the existing run
+    # instead of spawning a duplicate. Concurrent messages for the
+    # same thread queue up and run serially.
     try:
         await stateflow_agent.enqueue_run(
             thread_id=thread_id,
@@ -402,7 +407,7 @@ async def _durable_post_message(
             prompt=prompt_text,
             history_dump=history_dump,
             # Parent of the assistant turn we're about to generate:
-            # - submit-message → the user message we just persisted
+            # - submit-message → the user message we just resolved
             # - regenerate-message → the EXISTING last user message
             #   (so the new assistant becomes a sibling of the prior)
             assistant_parent_id=assistant_parent_id,
@@ -492,32 +497,32 @@ def build_streaming_router(
     prefix: str = "",
     history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> APIRouter:
-    """Mount ``POST {prefix}/threads/{id}/messages`` as a Vercel-AI stream.
+    """Mount ``POST {prefix}/threads/{id}/runs`` as a Vercel-AI stream.
 
-    Server-stateful contract: the thread MUST already exist (404 otherwise
-    — no lazy-create). Its ``agent`` field is the registry key for a
-    ``StateflowAgent`` instance the app registered at startup; the
-    framework resolves that instance via
+    Pure run-trigger contract: the user message has already been
+    persisted via the canonical ``POST /threads/{id}/messages`` flow
+    (assistant-ui's ``ThreadHistoryAdapter.append``). The thread MUST
+    already exist (404 otherwise — no lazy-create). Its ``agent`` field
+    is the registry key for a ``StateflowAgent`` instance the app
+    registered at startup; the framework resolves that instance via
     ``pydantic_ai_stateflow.runtime.agents.get_agent`` and uses its
     ``agent`` (pydantic-ai ``Agent``), ``build_deps(...)``, and
-    ``model_settings()`` to drive the run. The streaming endpoint itself
-    is agent-agnostic.
+    ``model_settings()`` to drive the run.
 
-    The just-arrived user turn is persisted via ``thread_repo.add_message``
-    BEFORE the model runs, so a client crash mid-stream still leaves the
-    thread consistent. After the agent completes the assistant reply is
-    persisted via an ``on_complete`` callback wired into
-    ``VercelAIAdapter.run_stream``.
+    For direct-curl / legacy clients that bypass the canonical append
+    flow, the router auto-persists the body's last user UIMessage if
+    no row with its client id exists in the repo — keeps the endpoint
+    usable from raw HTTP.
+
+    After the agent completes the assistant reply is persisted via an
+    ``on_complete`` callback (non-durable) or a ``@DBOS.step``
+    (durable).
 
     Tool-approval responses (Vercel AI SDK v6 ``approval-responded``
     parts) are extracted by ``VercelAIAdapter.deferred_tool_results``
     and threaded into ``run_stream`` so
     ``@agent.tool(requires_approval=True)`` tools resume after the user
     clicks Approve/Cancel.
-
-    ``message_history`` is reconstructed from ``thread_repo.history(...)``
-    (excluding the just-persisted current user turn — pydantic-ai
-    re-derives that one from the incoming body messages).
 
     Args:
       thread_repo: source of truth for thread + message persistence.
@@ -530,22 +535,22 @@ def build_streaming_router(
     router = APIRouter(prefix=prefix)
     _encoder_factory: EncoderFactory = encoder_factory or VercelAIWireEncoder
 
-    @router.post("/threads/{thread_id}/messages")
+    @router.post("/threads/{thread_id}/runs")
     @traced(
         TraceName.STREAMING_POST_MESSAGE,
         attrs=lambda _request, thread_id, **__: {
             "thread_id": str(thread_id),
         },
     )
-    async def post_message(
+    async def post_run(
         request: Request,
         thread_id: UUID,
     ) -> Response:
-        _log.info("POST /threads/%s/messages received", thread_id)
+        _log.info("POST /threads/%s/runs received", thread_id)
         thread = await thread_repo.load(thread_id)
         if thread is None:
             _log.warning(
-                "POST /threads/%s/messages → 404 (thread not found)",
+                "POST /threads/%s/runs → 404 (thread not found)",
                 thread_id,
             )
             raise HTTPException(status_code=404, detail="thread not found")
@@ -584,15 +589,8 @@ def build_streaming_router(
         )
 
         last_message = adapter.messages[-1] if adapter.messages else None
-        prompt_text = _last_user_text(adapter.messages)
         trigger = getattr(adapter.run_input, "trigger", "submit-message")
         is_regenerate = trigger == "regenerate-message"
-        _log.debug(
-            "post_message parsed: trigger=%s prompt_text=%r "
-            "adapter_messages=%d last_role=%s",
-            trigger, prompt_text, len(adapter.messages),
-            getattr(last_message, "__class__", type(None)).__name__,
-        )
         # ``deferred_tool_results`` is non-None when the body carries
         # approval responses for a paused ``requires_approval=True`` tool
         # call — VercelAIAdapter extracts them from
@@ -616,97 +614,57 @@ def build_streaming_router(
         # "Tool call results were provided, but the message history
         # does not contain any unprocessed tool calls."
         if deferred_results is None:
-            _log.debug("post_message: trimming adapter.messages to last user turn")
             _trim_adapter_messages_to_last_user_turn(adapter)
         else:
             _log.info(
-                "post_message: deferred_tool_results present "
+                "post_run: deferred_tool_results present "
                 "(approvals=%d, calls=%d) — skipping trim",
                 len(deferred_results.approvals or {}),
                 len(deferred_results.calls or {}),
             )
 
-        # Determine parent_id for the new turn so the message tree stays
-        # connected. Two flows:
-        #
-        #   submit-message: parent = last assistant in active branch
-        #     (or None for the very first turn). Persist a new user msg
-        #     under that parent; on_complete persists the assistant under
-        #     the freshly-created user msg.
-        #
-        #   regenerate-message: don't persist a new user msg — frontend
-        #     is asking for a re-run of the existing last user turn.
-        #     New assistant becomes a sibling of the prior one (same
-        #     parent_id = last user msg's id).
-        active_branch_before = await thread_repo.history(
+        history_before = await thread_repo.history(
             thread_id, limit=history_limit,
-        )
-
-        _log.debug(
-            "active_branch_before=%d msgs (last_role=%s)",
-            len(active_branch_before),
-            active_branch_before[-1].role if active_branch_before else None,
         )
 
         if is_regenerate:
             # Regenerate semantics: the assistant being regenerated is
-            # REPLACED with a sibling whose parent is the same user turn
-            # the old assistant was replying to. We skip past any trailing
-            # assistant in the active branch to find that user turn.
-            last_user_id = _find_last_role_id(active_branch_before, "user")
-            new_assistant_parent_id = last_user_id
-            _log.info(
-                "regenerate-message: new assistant will sibling under "
-                "user_id=%s",
-                last_user_id,
-            )
+            # REPLACED with a sibling whose parent is the same user
+            # turn the old assistant was replying to. The new assistant
+            # becomes a sibling of the prior one.
+            last_user_id = _find_last_role_id(history_before, "user")
+            if last_user_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="regenerate-message with no prior user message",
+                )
+            new_assistant_parent_id: str | None = last_user_id
+            prompt_text = ""
         else:
-            # Submit-message semantics: the new user msg's parent is the
-            # LAST message in the active branch (any role). If the prior
-            # run was aborted mid-stream, the active branch may end in a
-            # user msg with no assistant reply — that's still a valid
-            # parent, the new user msg simply continues the conversation.
-            new_user_parent_id = (
-                active_branch_before[-1].id if active_branch_before else None
+            client_id, prompt_text = await _last_user_msg_from_body(request)
+            user_msg_id = await _resolve_user_msg_id(
+                thread_id=thread_id,
+                thread_repo=thread_repo,
+                history_before=history_before,
+                client_id=client_id,
+                prompt_text=prompt_text,
             )
-            new_assistant_parent_id = None  # set after we persist user
-
-            if prompt_text:
-                user_msg = await thread_repo.add_message(
-                    thread_id,
-                    role="user",
-                    # ``state: "done"`` matches Vercel UIMessage's TextUIPart
-                    # for a fully-rendered user turn. On restore via
-                    # ``chat.setMessages``, parts without ``state`` slip
-                    # through useChat's discriminator into a different
-                    # branch and break ``MessagePartText`` rendering.
-                    parts=[{
-                        "type": "text", "text": prompt_text, "state": "done",
-                    }],
-                    parent_id=new_user_parent_id,
-                )
-                new_assistant_parent_id = user_msg.id
-                _log.info(
-                    "submit-message: persisted user msg id=%s parent=%s",
-                    user_msg.id, new_user_parent_id,
-                )
-            else:
-                _log.debug(
-                    "submit-message: no prompt_text (no new user turn to "
-                    "persist) — likely auto-resend after approval",
-                )
+            new_assistant_parent_id = user_msg_id
 
         rows = await thread_repo.history(thread_id, limit=history_limit)
-        # We already persisted the current user turn AND the trimmed
-        # ``adapter.messages`` will carry it back into the prompt via the
-        # adapter's frontend_messages merge, so drop it from our
-        # repo-driven history to avoid duplication. For regenerate the
-        # last user IS the prompt — drop it for the same reason.
+        # Pick the prompt text from the resolved user msg in the repo —
+        # for regenerate, that's the last user in the branch; for
+        # submit-message, it's the row we just verified/persisted.
+        if not prompt_text:
+            prompt_text = (
+                extract_text(rows[-1].parts)
+                if rows and rows[-1].role == "user"
+                else ""
+            )
+        # The adapter will append its trimmed last user turn to
+        # ``message_history`` again; drop it from our repo-driven
+        # history to avoid duplication.
         history = messages_to_model_history(rows, drop_prompt=prompt_text)
-        _log.debug(
-            "rebuilt message_history from repo: %d rows → %d ModelMessages",
-            len(rows), len(history),
-        )
 
         resolved_deps = await stateflow_agent.build_deps(
             thread=thread,
@@ -727,13 +685,6 @@ def build_streaming_router(
                 VercelAIAdapter as _VercelAIAdapter,
             )
 
-            # Real upstream cost (OpenRouter / others) shows up on the
-            # pydantic-ai-emitted ``operation.cost`` span attr via the
-            # ``ModelResponse.cost`` fallback patch installed by
-            # ``ObservabilityProvider`` — no per-route mirroring needed
-            # here. See ``observability/cost.py`` for the extractor
-            # strategy contract.
-
             output = result.output
             if isinstance(output, DeferredToolRequests):
                 _log.info(
@@ -750,12 +701,6 @@ def build_streaming_router(
             # the frontend rendered live. That way page reload restores
             # reasoning chains, tool-call cards, and approval outcomes
             # exactly as they appeared during the streaming run.
-            #
-            # We collect every assistant UIMessage emitted AFTER the
-            # latest user prompt and merge their parts into one repo row
-            # (assistant-ui groups them visually anyway). Multiple
-            # ModelResponses arise when the agent loops through
-            # tool_call → tool_return → text in one run.
             all_msgs = result.all_messages()
             ui_msgs = _VercelAIAdapter.dump_messages(
                 all_msgs, sdk_version=6,
@@ -769,18 +714,10 @@ def build_streaming_router(
                 if m.role != "assistant":
                     continue
                 for p in m.parts:
-                    # ``UIMessagePart`` is a discriminated-union of
-                    # pydantic models. ``exclude_none=True`` strips
-                    # explicit nulls (``providerMetadata``,
-                    # ``preliminary``, ``approval`` …) so the persisted
-                    # JSON matches the wire shape useChat already
-                    # parses on the live stream. Keeping the nulls
-                    # breaks the rendering side: assistant-ui's
-                    # ``MessagePartText`` throws "can only be used
-                    # inside text or reasoning message parts" because
-                    # explicit-null fields shift the part through a
-                    # different discriminator branch in
-                    # ``useAISDKRuntime``'s mapping.
+                    # ``exclude_none=True`` strips explicit nulls
+                    # (``providerMetadata``, ``preliminary``, ``approval``
+                    # …) so the persisted JSON matches the wire shape
+                    # useChat already parses on the live stream.
                     asst_parts.append(
                         p.model_dump(
                             mode="json",
@@ -810,15 +747,6 @@ def build_streaming_router(
                 [p.get("type") for p in asst_parts],
             )
 
-        # We already built the adapter (to peek at `messages` for the
-        # user-message-persist step). Drive the stream off it directly
-        # rather than re-entering ``dispatch_request`` (which would call
-        # ``from_request`` a second time and re-parse the same body).
-        # Tool-approval responses are auto-extracted from the incoming
-        # body by ``adapter.deferred_tool_results`` (called internally
-        # by ``run_stream`` when ``deferred_tool_results`` is omitted)
-        # and threaded back into the agent run so paused
-        # ``requires_approval=True`` tools resume.
         return adapter.streaming_response(
             adapter.run_stream(
                 message_history=history,

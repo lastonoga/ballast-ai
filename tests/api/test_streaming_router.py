@@ -137,7 +137,7 @@ async def test_returns_404_when_thread_missing() -> None:
     missing = uuid4()
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{missing}/messages",
+            f"/threads/{missing}/runs",
             json=_ag_ui_body(thread_id=missing, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -153,7 +153,7 @@ async def test_persists_user_message_before_stream() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="hello world"),
             headers={"Accept": "text/event-stream"},
         )
@@ -180,7 +180,7 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -234,7 +234,7 @@ async def test_message_history_reconstructed_from_repo() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="turn3-user"),
             headers={"Accept": "text/event-stream"},
         )
@@ -264,7 +264,7 @@ async def test_stream_emits_canonical_vercel_ai_events() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -310,7 +310,7 @@ async def test_deps_factory_invoked_per_request() -> None:
     app = _build_app(repo, agent, deps_factory=deps_factory)
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -350,7 +350,7 @@ async def test_model_settings_flow_through() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="hi"),
             headers={"Accept": "text/event-stream"},
         )
@@ -403,7 +403,7 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
     }
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=body,
             headers={"Accept": "text/event-stream"},
         )
@@ -517,7 +517,7 @@ async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
 
     async with _client(app) as c:
         r = await c.post(
-            f"/threads/{thread.id}/messages",
+            f"/threads/{thread.id}/runs",
             json=_ag_ui_body(thread_id=thread.id, user_text="who?"),
             headers={"Accept": "text/event-stream"},
         )

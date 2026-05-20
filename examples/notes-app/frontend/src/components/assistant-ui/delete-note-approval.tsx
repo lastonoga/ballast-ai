@@ -22,7 +22,7 @@
  * Auto-resend: the `useChat` instance is configured with
  * `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses`,
  * so as soon as the user picks Approve or Cancel the conversation is
- * re-POSTed to `/threads/{id}/messages`. The backend pulls the approval
+ * re-POSTed to `/threads/{id}/runs`. The backend pulls the approval
  * out of the incoming `messages` via
  * `VercelAIAdapter.deferred_tool_results`, threads it into the resumed
  * agent run, and we get either a real `delete_note` execution

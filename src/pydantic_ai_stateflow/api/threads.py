@@ -24,13 +24,17 @@ _OffsetQuery = Query(default=0, ge=0)
 class _AppendMessageBody(BaseModel):
     """Body for ``POST /threads/{id}/messages``.
 
-    Mirrors assistant-ui's ``ThreadHistoryAdapter.append`` payload:
-    the client supplies the message id + parent_id (computed by the
-    runtime's local tree) and the framework persists as-is.
+    Mirrors assistant-ui's ``ThreadHistoryAdapter.append`` payload.
+    ``id`` / ``parent_id`` are free-form strings — assistant-ui ships
+    short random client ids (e.g. ``"MbPSd9jddGfC6UAV"``) and we
+    persist them verbatim. ``Message.id`` is ``str`` (not UUID) so the
+    same client id round-trips back to the frontend unchanged and
+    branch siblings (which assistant-ui keys off ``parent_id``) line
+    up 1:1 with what the runtime computed locally.
     """
 
-    id: UUID
-    parent_id: UUID | None = None
+    id: str
+    parent_id: str | None = None
     role: str
     parts: list[dict[str, Any]]
 
@@ -45,6 +49,7 @@ def build_threads_router(
     - ``GET    /threads``               → list (newest-first, archive-filtered)
     - ``GET    /threads/{id}``          → load one
     - ``GET    /threads/{id}/messages`` → history
+    - ``POST   /threads/{id}/messages`` → canonical append (assistant-ui)
     - ``POST   /threads/{id}/archive``  → archive
     - ``POST   /threads/{id}/unarchive``→ unarchive
     - ``DELETE /threads/{id}``          → delete (idempotent)
@@ -106,7 +111,7 @@ def build_threads_router(
         msgs = await thread_repo.all_messages(thread_id, limit=limit)
         return [m.model_dump(mode="json") for m in msgs]
 
-    @router.post("/threads/{thread_id}/messages/append", status_code=201)
+    @router.post("/threads/{thread_id}/messages", status_code=201)
     @traced(
         TraceName.THREADS_ADD_MESSAGE,
         attrs=lambda thread_id, body, **__: {

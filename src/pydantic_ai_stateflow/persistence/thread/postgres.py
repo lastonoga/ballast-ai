@@ -81,7 +81,7 @@ class PostgresThreadRepository:
         *,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message:
         thread = await self.load(thread_id)
         if thread is None:
@@ -111,10 +111,10 @@ class PostgresThreadRepository:
         self,
         thread_id: UUID,
         *,
-        id: UUID,
+        id: str,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message:
         thread = await self.load(thread_id)
         if thread is None:
@@ -192,7 +192,7 @@ class PostgresThreadRepository:
         msgs = list(result.scalars().all())
         return _walk_active_branch(msgs, limit=limit)
 
-    async def siblings(self, message_id: UUID) -> list[Message]:
+    async def siblings(self, message_id: str) -> list[Message]:
         target_stmt = select(Message).where(col(Message.id) == message_id)
         target_result = await self._session.execute(target_stmt)
         target = target_result.scalar_one_or_none()

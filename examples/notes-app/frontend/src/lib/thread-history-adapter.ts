@@ -8,16 +8,20 @@
  *      returns ALL messages with their ``parent_id``; assistant-ui
  *      reconstructs the tree client-side and renders branch switchers
  *      automatically wherever ``parent_id`` collisions are detected).
- *   2. ``append`` — for every NEW message assistant-ui adds (normal
+ *   2. ``append`` — for every NEW user message assistant-ui adds (normal
  *      send, edit, regenerate, branch switch), POST it to the backend
- *      with the ``parent_id`` assistant-ui computed locally. Edits
- *      land as siblings under the original message's parent, so the
- *      backend persists the branch structure 1:1 with the UI state.
+ *      with the ``parent_id`` assistant-ui computed locally. Edits land
+ *      as siblings under the original message's parent, so the backend
+ *      persists the branch structure 1:1 with the UI state. Assistant
+ *      messages are persisted server-side at the end of each agent run
+ *      (durable: ``StateflowDurableAgent._persist_assistant_turn``;
+ *      non-durable: streaming-router ``on_complete``), so we don't
+ *      double-append them from the client.
  *
- * The streaming router (POST /threads/{id}/messages) reads the body's
- * last user UIMessage id; if it finds a row already persisted (via
- * the ``append`` above) it skips auto-persist and uses the existing
- * message as the assistant's parent.
+ * The streaming router (POST /threads/{id}/runs) is a pure
+ * run-trigger — it reads the active branch from the repo and assumes
+ * the new user msg is already persisted (with auto-persist fallback
+ * for direct-curl).
  */
 import { useAui } from "@assistant-ui/react";
 import type {
@@ -28,18 +32,6 @@ import type {
   MessageFormatItem,
 } from "@assistant-ui/react";
 import { useState } from "react";
-
-// UUID-shape gate for ``append``: the backend POST endpoint runs
-// FastAPI body validation with ``id: UUID`` and ``parent_id: UUID |
-// None``. assistant-ui-generated client ids (short random strings)
-// would 422 the endpoint — skipping the POST for those ids lets the
-// streaming router's auto-persist fallback handle them. Once the
-// thread round-trips through the backend, all ids become UUIDs.
-const _UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function _isUuid(s: string | undefined | null): boolean {
-  return typeof s === "string" && _UUID_RE.test(s);
-}
 
 
 type BackendMessageRow = {
@@ -98,28 +90,23 @@ class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
       async append(item: MessageFormatItem<TMessage>): Promise<void> {
         const remoteId = adapter._remoteId;
         if (!remoteId) return;
-        // ``item.message`` is the assistant-ui ThreadMessage; the
-        // format adapter knows its ``id`` and stored shape via the
-        // shape we used in ``load`` ({id, role, parts}). Extract
-        // them via the public accessor.
         const msg = item.message as unknown as {
           id: string;
           role: "user" | "assistant" | "system" | "tool";
           parts: Array<Record<string, unknown>>;
         };
-        // ``id`` may not be a UUID for assistant-ui-generated client
-        // ids (assistant-ui ships short random strings). The
-        // backend's ``add_message_with_id`` requires UUID-shaped ids
-        // (FastAPI body validation). Skip the POST in that case so
-        // the streaming router's auto-persist fallback handles it
-        // — branches won't render for those rows but normal sends
-        // still work. (assistant-ui's stable ids ARE UUIDs after
-        // first round-trip through the backend, so the affected
-        // window is just the first send before reload.)
-        if (!_isUuid(msg.id)) return;
+        // Assistant turns are persisted server-side at the end of each
+        // agent run (durable: ``_persist_assistant_turn``; non-durable:
+        // ``on_complete``). Re-POSTing them from the client would
+        // double-create rows AND race the server-side persist on
+        // parent_id — the streaming run's assistant becomes a child of
+        // the resolved user msg; an assistant POST from append would
+        // pick a different parent (assistant-ui's locally-computed one).
+        // Filter to user messages only.
+        if (msg.role !== "user") return;
         try {
           await fetch(
-            `${adapter.apiUrl}/threads/${remoteId}/messages/append`,
+            `${adapter.apiUrl}/threads/${remoteId}/messages`,
             {
               method: "POST",
               headers: {
@@ -136,7 +123,7 @@ class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
           );
         } catch (err) {
           // Best-effort: if append fails the streaming router's
-          // auto-persist path picks it up. Worst case: branches
+          // auto-persist fallback picks it up. Worst case: branches
           // won't appear for this turn on reload.
           // eslint-disable-next-line no-console
           console.warn(

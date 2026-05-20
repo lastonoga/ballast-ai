@@ -32,18 +32,18 @@ def _walk_active_branch(
         return []
 
     linear = sorted(msgs, key=lambda m: m.created_at)
-    virt_parent: dict[UUID, UUID | None] = {}
-    prev: UUID | None = None
+    virt_parent: dict[str, str | None] = {}
+    prev: str | None = None
     for m in linear:
         virt_parent[m.id] = m.parent_id if m.parent_id is not None else prev
         prev = m.id
 
-    children_by_parent: dict[UUID | None, list[Message]] = {}
+    children_by_parent: dict[str | None, list[Message]] = {}
     for m in msgs:
         children_by_parent.setdefault(virt_parent[m.id], []).append(m)
 
     path: list[Message] = []
-    current_parent: UUID | None = None
+    current_parent: str | None = None
     while True:
         candidates = children_by_parent.get(current_parent, [])
         if not candidates:
@@ -88,16 +88,16 @@ class ThreadRepository(Protocol):
         *,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message: ...
     async def add_message_with_id(
         self,
         thread_id: UUID,
         *,
-        id: UUID,
+        id: str,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message:
         """Persist a message with a caller-supplied id (idempotent).
 
@@ -126,7 +126,7 @@ class ThreadRepository(Protocol):
         active branch (e.g. building model-prompt context).
         """
         ...
-    async def siblings(self, message_id: UUID) -> list[Message]: ...
+    async def siblings(self, message_id: str) -> list[Message]: ...
     async def close(self, thread_id: UUID) -> Thread: ...
     async def list_(
         self,
@@ -197,7 +197,7 @@ class InMemoryThreadRepository:
         *,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message:
         thread = self._threads.get(thread_id)
         if thread is None:
@@ -207,7 +207,7 @@ class InMemoryThreadRepository:
                 f"Thread {thread_id} is closed; cannot add message",
             )
         msg = Message(
-            id=uuid4(),
+            id=str(uuid4()),
             thread_id=thread_id,
             role=role,
             parts=list(parts),
@@ -233,10 +233,10 @@ class InMemoryThreadRepository:
         self,
         thread_id: UUID,
         *,
-        id: UUID,
+        id: str,
         role: str,
         parts: list[dict[str, Any]],
-        parent_id: UUID | None = None,
+        parent_id: str | None = None,
     ) -> Message:
         thread = self._threads.get(thread_id)
         if thread is None:
@@ -287,7 +287,7 @@ class InMemoryThreadRepository:
         msgs = sorted(self._messages[thread_id], key=lambda m: m.created_at)
         return msgs[:limit]
 
-    async def siblings(self, message_id: UUID) -> list[Message]:
+    async def siblings(self, message_id: str) -> list[Message]:
         for tid, msgs in self._messages.items():
             if tid not in self._threads:
                 continue

@@ -18,7 +18,7 @@
  *
  * URL bridge: Vercel's `DefaultChatTransport` is built for a single
  * `/api/chat` URL. Our backend exposes a per-thread streaming endpoint
- * (`POST /threads/{threadId}/messages`), so we override `api` per
+ * (`POST /threads/{threadId}/runs`), so we override `api` per
  * request via `prepareSendMessagesRequest` using the current
  * thread-list-item's `remoteId` from `useAuiState`.
  *
@@ -94,7 +94,7 @@ export const useChatApprovalHelpers = (): ChatApprovalHelpers => {
  *
  * Two responsibilities:
  *
- * 1. Rewrites the `api` URL to `POST /threads/{remoteId}/messages` on
+ * 1. Rewrites the `api` URL to `POST /threads/{remoteId}/runs` on
  *    every send (Vercel's `DefaultChatTransport` is single-URL).
  * 2. **Lazily** awaits `aui.threadListItem().initialize()` BEFORE the
  *    first send to a draft thread. Without this, the first POST would
@@ -136,7 +136,7 @@ function buildTransport(
     {
       // `api` is required by the base type but our `prepareSendMessagesRequest`
       // overrides it on every send. Keep the template visible for error logs.
-      api: `${apiUrl}/threads/{threadId}/messages`,
+      api: `${apiUrl}/threads/{threadId}/runs`,
       headers,
       prepareSendMessagesRequest: ({
         body,
@@ -163,7 +163,7 @@ function buildTransport(
         // present; otherwise the request body is `{tools: {}}` and pydantic
         // rejects with `union_tag_not_found`.
         return {
-          api: `${apiUrl}/threads/${remoteId}/messages`,
+          api: `${apiUrl}/threads/${remoteId}/runs`,
           body: {
             ...(body ?? {}),
             id,

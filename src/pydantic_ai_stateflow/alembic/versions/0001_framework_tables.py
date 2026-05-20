@@ -48,9 +48,16 @@ def upgrade() -> None:
     op.create_index("ix_threads_status", "threads", ["status"])
 
     # 2. messages (FK → threads)
+    #
+    # ``id`` / ``parent_id`` are free-form strings (NOT UUIDs) so
+    # client-supplied ids — e.g. assistant-ui's short random strings
+    # like ``"MbPSd9jddGfC6UAV"`` — round-trip 1:1 without coercion.
+    # Backend-issued ids default to ``str(uuid4())`` for uniqueness.
+    # This keeps branch siblings (which assistant-ui keys off
+    # ``parent_id``) aligned with the frontend's local tree.
     op.create_table(
         "messages",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", sa.String(), primary_key=True),
         sa.Column(
             "thread_id",
             postgresql.UUID(as_uuid=True),
@@ -60,7 +67,7 @@ def upgrade() -> None:
         sa.Column("role", sa.String(), nullable=False),
         sa.Column(
             "parent_id",
-            postgresql.UUID(as_uuid=True),
+            sa.String(),
             sa.ForeignKey("messages.id"),
             nullable=True,
         ),
