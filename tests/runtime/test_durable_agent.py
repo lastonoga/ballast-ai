@@ -170,6 +170,63 @@ async def test_run_emits_error_event_when_thread_missing(
 
 
 @pytest.mark.asyncio
+async def test_cancel_thread_runs_emits_cancelled_event(
+    fresh_dbos_executor: None,
+) -> None:
+    """``cancel_thread_runs`` persists a ``cancelled`` event even with no active runs.
+
+    Per Q5 of the design: idempotent cancel — calling it when nothing
+    is running just emits the synthetic ``cancelled`` event so any
+    listener sees the terminal signal and closes.
+    """
+    thread_repo = InMemoryThreadRepository()
+    log = InMemoryEventLogRepository()
+    stream = InProcessEventStream()
+
+    durable = _NotesStateflowDurableAgent(
+        thread_repo=thread_repo, event_log=log, event_stream=stream,
+        config_name=f"durable-test-{next(_counter)}",
+    )
+    thread = await thread_repo.create(agent="notes-durable-test", metadata={})
+
+    cancelled = await durable.cancel_thread_runs(thread.id)
+    assert cancelled == 0  # nothing active, but call still succeeds
+
+    events = await log.read_since(thread.id)
+    assert [e.kind for e in events] == ["cancelled"]
+    assert events[0].payload["workflows_cancelled"] == 0
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_deterministic_workflow_id(
+    fresh_dbos_executor: None,
+) -> None:
+    """Same (thread_id, user_message_id) → same workflow id, no duplicates."""
+    from pydantic_ai_stateflow.runtime.durable_agent import (
+        agent_run_workflow_id,
+    )
+
+    thread_repo = InMemoryThreadRepository()
+    log = InMemoryEventLogRepository()
+    stream = InProcessEventStream()
+
+    durable = _NotesStateflowDurableAgent(
+        thread_repo=thread_repo, event_log=log, event_stream=stream,
+        config_name=f"durable-test-{next(_counter)}",
+    )
+    thread = await thread_repo.create(agent="notes-durable-test", metadata={})
+    user_msg_id = uuid4()
+
+    handle = await durable.enqueue_run(
+        thread_id=thread.id, user_message_id=user_msg_id,
+        prompt="hi", history_dump=[],
+    )
+    expected = agent_run_workflow_id(thread.id, user_msg_id)
+    assert handle.workflow_id == expected
+    await handle.get_result()  # let the workflow finish so it doesn't leak
+
+
+@pytest.mark.asyncio
 async def test_subclass_inherits_stateflow_agent_machinery() -> None:
     """``StateflowDurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools.
 

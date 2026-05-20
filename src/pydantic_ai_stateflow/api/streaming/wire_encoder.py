@@ -133,6 +133,23 @@ class VercelAIWireEncoder:
                 }),
                 event_id=event.seq,
             )
+        elif event.kind == "cancelled":
+            # Vercel AI SDK v6 has no native ``abort`` event — closest
+            # standard terminal pair is ``error`` + ``finish``. Apps
+            # that need a different mapping (e.g. AG-UI's ``run_error``
+            # with a ``code: "cancelled"`` field) plug in their own
+            # ``WireEncoder`` via ``encoder_factory`` on the router.
+            yield _sse(
+                json.dumps({
+                    "type": "error",
+                    "errorText": "cancelled by user",
+                }),
+                event_id=event.seq,
+            )
+            yield _sse(
+                json.dumps({"type": "finish"}),
+                event_id=event.seq,
+            )
         elif event.kind == "done":
             yield _sse(
                 json.dumps({"type": "finish"}),

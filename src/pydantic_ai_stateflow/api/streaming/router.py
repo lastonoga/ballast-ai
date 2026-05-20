@@ -26,7 +26,6 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID, uuid4
 
-from dbos import DBOS, SetWorkflowID
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
@@ -249,29 +248,27 @@ async def _durable_post_message(
     history = messages_to_model_history(rows, drop_prompt=prompt_text)
     history_dump = [m.model_dump(mode="json") for m in history]
 
-    # Deterministic workflow id keyed off the just-persisted user msg —
-    # SetWorkflowID is idempotent so a retry of the same request body
-    # (same user_msg.id) attaches to the existing workflow instead of
-    # spawning a duplicate.
-    workflow_id = f"agent-run:{thread_id}:{user_msg.id}"
-
+    # Enqueue into the per-thread serialization queue (concurrency=1
+    # per thread). Workflow id is deterministic per (thread_id,
+    # user_msg.id) so a request retry attaches to the existing run
+    # instead of spawning a duplicate. Concurrent messages for the
+    # same thread queue up and run serially.
     try:
-        with SetWorkflowID(workflow_id):
-            await DBOS.start_workflow_async(
-                stateflow_agent.run,
-                thread_id_str=str(thread_id),
-                prompt=prompt_text,
-                history_dump=history_dump,
-            )
+        await stateflow_agent.enqueue_run(
+            thread_id=thread_id,
+            user_message_id=user_msg.id,
+            prompt=prompt_text,
+            history_dump=history_dump,
+        )
     except Exception as exc:  # pragma: no cover — DBOS errors caught wholesale
-        # SetWorkflowID raises if the id collides AND the existing
-        # workflow is in a different state. For our deterministic key
-        # case the typical "collision" outcome is "already running" —
-        # which is what we want; the SSE stream will tail the existing
+        # Enqueue raises if the workflow id collides with one in a
+        # terminal state. For our deterministic key case the typical
+        # "collision" outcome is "already enqueued/running" — which
+        # is what we want; the SSE stream will tail the existing
         # workflow's events. Log and continue.
         _log.info(
-            "start_workflow_async returned %s for workflow_id=%s — "
-            "assuming attach-to-existing", type(exc).__name__, workflow_id,
+            "enqueue_run returned %s for user_msg=%s — "
+            "assuming attach-to-existing", type(exc).__name__, user_msg.id,
         )
 
     last_event_id = _parse_last_event_id(request)
@@ -305,7 +302,7 @@ async def _durable_post_message(
                     for chunk in encoder.encode_event(ev):
                         yield chunk
                     last_seq = ev.seq
-                    if ev.kind == "done":
+                    if ev.kind in {"done", "cancelled"}:
                         for chunk in encoder.finalize():
                             yield chunk
                         return
@@ -685,6 +682,49 @@ def build_streaming_router(
                 on_complete=on_complete,
             ),
         )
+
+    @router.post("/threads/{thread_id}/cancel", status_code=200)
+    @traced(
+        TraceName.STREAMING_POST_MESSAGE,
+        attrs=lambda _request, thread_id, **__: {
+            "thread_id": str(thread_id),
+            "op": "cancel",
+        },
+    )
+    async def cancel_thread(
+        request: Request,
+        thread_id: UUID,
+    ) -> dict[str, Any]:
+        """Cancel every active workflow for ``thread_id``.
+
+        Per Q1 from the design discussion: cancels the WHOLE queue for
+        the thread (current + queued messages), not just the in-flight
+        one. Per Q5: idempotent — already-finished workflows are
+        no-ops.
+
+        The SSE consumer attached to this thread sees a
+        ``kind="cancelled"`` event land in the event log and closes
+        the stream. The WireEncoder decides how that maps to the wire
+        (default ``VercelAIWireEncoder`` emits an ``error`` + ``finish``
+        pair since Vercel AI SDK v6 has no native abort event).
+        """
+        del request
+        thread = await thread_repo.load(thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="thread not found")
+
+        stateflow_agent = get_agent(thread.agent)
+        if not isinstance(stateflow_agent, StateflowDurableAgent):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "cancel is only meaningful for StateflowDurableAgent "
+                    "threads; non-durable agents don't have cancellable "
+                    "workflows"
+                ),
+            )
+        cancelled = await stateflow_agent.cancel_thread_runs(thread_id)
+        return {"cancelled": cancelled}
 
     return router
 

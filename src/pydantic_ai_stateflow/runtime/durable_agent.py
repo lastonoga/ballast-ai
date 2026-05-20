@@ -52,7 +52,13 @@ import itertools
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from dbos import DBOS, DBOSConfiguredInstance
+from dbos import (
+    DBOS,
+    DBOSConfiguredInstance,
+    Queue,
+    SetEnqueueOptions,
+    SetWorkflowID,
+)
 
 from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
@@ -67,11 +73,47 @@ from pydantic_ai_stateflow.runtime.event_stream import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from dbos._dbos import WorkflowHandleAsync
+
     from pydantic_ai_stateflow.persistence.thread.repository import (
         ThreadRepository,
     )
 
 _instance_counter = itertools.count()
+
+
+# Per-thread serialization queue.
+#
+# Single global DBOS queue with ``partition_queue=True`` + ``concurrency=1``.
+# Each ``thread_id`` acts as a partition key — at most ONE workflow runs at
+# a time per thread, but different threads run concurrently. This prevents
+# the race where two user messages in the same thread spawn parallel agent
+# runs that interleave writes / step on each other's message history /
+# duplicate side effects.
+#
+# Module-level so DBOS sees the registration BEFORE ``DBOS.launch()`` runs
+# in apps that import this module at boot.
+AGENT_RUN_QUEUE: Queue = Queue(
+    name="stateflow-agent-runs",
+    concurrency=1,
+    partition_queue=True,
+)
+
+
+def agent_run_workflow_id(thread_id: UUID, user_message_id: UUID) -> str:
+    """Deterministic workflow id for one (thread, user message) pair.
+
+    Re-using the same id idempotently attaches a request retry to the
+    in-flight workflow instead of spawning a duplicate. The prefix
+    ``"agent-run:"`` is used by ``cancel_thread_runs`` to find all
+    workflows for a thread via ``list_workflows_async(workflow_id_prefix=...)``.
+    """
+    return f"agent-run:{thread_id}:{user_message_id}"
+
+
+def _agent_run_prefix(thread_id: UUID) -> str:
+    """All workflow ids for ``thread_id`` start with this prefix."""
+    return f"agent-run:{thread_id}:"
 
 
 @DBOS.dbos_class()
@@ -198,6 +240,86 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             EventNotification(thread_id=thread_id, seq=ev.seq),
         )
         return ev.seq
+
+    async def enqueue_run(
+        self,
+        *,
+        thread_id: UUID,
+        user_message_id: UUID,
+        prompt: str,
+        history_dump: list[dict[str, Any]],
+    ) -> WorkflowHandleAsync[None]:
+        """Enqueue ``self.run`` into the per-thread serialization queue.
+
+        Returns the DBOS handle for the enqueued workflow. The workflow
+        id is deterministic per (thread_id, user_message_id) so a
+        retried request attaches to the existing run instead of
+        spawning a duplicate.
+
+        The partition key is the stringified ``thread_id`` —
+        ``AGENT_RUN_QUEUE`` is configured with ``concurrency=1``, so at
+        most one workflow runs per thread at a time. Other messages
+        for the SAME thread wait in the queue; other threads run
+        concurrently.
+        """
+        workflow_id = agent_run_workflow_id(thread_id, user_message_id)
+        # ``SetWorkflowID`` pre-allocates the id; ``SetEnqueueOptions``
+        # routes the enqueue into the right partition. Both are
+        # context-managers that stack on the per-task DBOS context.
+        # ``enqueue_async`` (not ``enqueue``) is required in async code —
+        # the sync variant returns a ``WorkflowHandle`` that can't be
+        # awaited.
+        with SetWorkflowID(workflow_id), SetEnqueueOptions(
+            queue_partition_key=str(thread_id),
+        ):
+            return await AGENT_RUN_QUEUE.enqueue_async(
+                self.run,
+                thread_id_str=str(thread_id),
+                prompt=prompt,
+                history_dump=history_dump,
+            )
+
+    async def cancel_thread_runs(self, thread_id: UUID) -> int:
+        """Cancel every active workflow for ``thread_id`` + emit a ``cancelled`` event.
+
+        Active = ``ENQUEUED`` or ``PENDING`` (i.e. waiting in queue
+        or already running). ``SUCCESS`` / ``ERROR`` / ``CANCELLED``
+        workflows are left alone — calling cancel on a finished
+        workflow is a no-op (we follow Q5: idempotent cancel).
+
+        Returns the number of workflows that were actually cancelled
+        so callers can surface "nothing to cancel" vs "1 cancelled"
+        in their HTTP response.
+        """
+        # Both ENQUEUED (queued, not yet running) and PENDING (running)
+        # are cancellable. DELAYED is a future-timer state we don't
+        # emit but check defensively.
+        active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
+        prefix = _agent_run_prefix(thread_id)
+        workflows = await DBOS.list_workflows_async(
+            workflow_id_prefix=prefix,
+            status=active_statuses,
+            limit=100,
+        )
+        cancelled = 0
+        for wf in workflows:
+            await DBOS.cancel_workflow_async(wf.workflow_id)
+            cancelled += 1
+
+        # Synthetic terminal event so the SSE consumer sees something
+        # in the log and closes — the cancelled workflow itself may
+        # not get a chance to emit anything (DBOS cancellation just
+        # marks the row + interrupts the task).
+        await self._event_log.append(
+            thread_id=thread_id,
+            kind="cancelled",
+            payload={"workflows_cancelled": cancelled},
+        )
+        await self._event_stream.publish(
+            thread_channel(thread_id),
+            EventNotification(thread_id=thread_id, seq=0),
+        )
+        return cancelled
 
     @DBOS.workflow()
     async def run(
