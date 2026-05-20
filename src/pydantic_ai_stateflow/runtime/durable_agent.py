@@ -496,6 +496,28 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 result=final_result,
             )
 
+        # HITL: if the agent paused waiting for tool approval, emit an
+        # ``approval-request`` event per deferred call so the wire
+        # encoder can ship ``tool-approval-request`` chunks and the
+        # frontend renders Approve/Reject UI. Without these the SSE
+        # stream just ends after ``tool-input-available`` and
+        # assistant-ui shows a generic "1 tool call" placeholder
+        # instead of the approval card.
+        from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+
+        if final_result is not None and isinstance(
+            final_result.output, DeferredToolRequests,
+        ):
+            for tc in final_result.output.approvals:
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="approval-request",
+                    payload={
+                        "tool_call_id": tc.tool_call_id,
+                        "tool_name": tc.tool_name,
+                    },
+                )
+
         await self._persist_and_publish(
             thread_id=thread_id, kind="done", payload={},
         )

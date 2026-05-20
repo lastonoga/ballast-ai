@@ -203,6 +203,19 @@ class VercelAIWireEncoder:
                 }),
                 event_id=event.seq,
             )
+        elif kind == "approval-request":
+            # Vercel AI SDK v6 HITL: assistant-ui's tool-approval card
+            # subscribes to ``tool-approval-request`` chunks. ``approvalId``
+            # and ``toolCallId`` MUST match the originating ``tool-input-*``
+            # toolCallId so the approve/reject response correlates back.
+            yield _sse(
+                json.dumps({
+                    "type": "tool-approval-request",
+                    "approvalId": str(p.get("tool_call_id", "")),
+                    "toolCallId": str(p.get("tool_call_id", "")),
+                }),
+                event_id=event.seq,
+            )
         elif kind == "tool-result":
             # Vercel AI SDK v6 ``tool-output-available`` schema:
             # ``{type, toolCallId, output}`` — NO ``toolName`` (unlike
