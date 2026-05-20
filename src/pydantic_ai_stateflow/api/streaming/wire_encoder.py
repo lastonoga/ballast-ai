@@ -204,11 +204,15 @@ class VercelAIWireEncoder:
                 event_id=event.seq,
             )
         elif kind == "tool-result":
+            # Vercel AI SDK v6 ``tool-output-available`` schema:
+            # ``{type, toolCallId, output}`` — NO ``toolName`` (unlike
+            # ``tool-input-available``, where toolName IS required).
+            # The client already knows which tool by the toolCallId
+            # correlation with the preceding tool-input-* events.
             yield _sse(
                 json.dumps({
                     "type": "tool-output-available",
                     "toolCallId": str(p.get("tool_call_id", "")),
-                    "toolName": str(p.get("tool_name", "")),
                     "output": p.get("output"),
                 }),
                 event_id=event.seq,
