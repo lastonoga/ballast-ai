@@ -57,10 +57,15 @@ class _NotesStateflowDurableAgent(StateflowDurableAgent):
 
 
 @pytest.mark.asyncio
-async def test_run_persists_start_textdelta_done_events(
+async def test_run_persists_streaming_event_taxonomy(
     fresh_dbos_executor: None,
 ) -> None:
-    """One run → log gets ``start``, ``text-delta``, ``done`` in order."""
+    """One run → log gets ``start`` → text-part lifecycle → ``done`` in order.
+
+    With ``agent.iter()``-based streaming the taxonomy is:
+      start, text-start, text-delta(+), text-end, done.
+    TestModel emits a single text part with content ``"ok"``.
+    """
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
@@ -80,9 +85,6 @@ async def test_run_persists_start_textdelta_done_events(
             history_dump=[],
         )
 
-    # Wait for workflow completion via the most recent handle.
-    # ``start_workflow_async`` returns the handle inline; we don't
-    # need to capture it here because we can poll the log instead.
     for _ in range(200):
         events = await log.read_since(thread.id)
         if events and events[-1].kind == "done":
@@ -92,9 +94,21 @@ async def test_run_persists_start_textdelta_done_events(
         pytest.fail("Workflow did not produce a 'done' event in time")
 
     kinds = [e.kind for e in events]
-    assert kinds == ["start", "text-delta", "done"]
+    # First + last are fixed; middle is text-part lifecycle.
+    assert kinds[0] == "start"
+    assert kinds[-1] == "done"
     assert events[0].payload["prompt"] == "hi"
-    assert events[1].payload["text"] == "ok"
+    # TestModel ships the response as a streamed TextPart, so we get
+    # at least a text-start + one or more text-delta + text-end.
+    text_kinds = kinds[1:-1]
+    assert "text-start" in text_kinds
+    assert "text-end" in text_kinds
+    assert any(k == "text-delta" for k in text_kinds)
+    # The concatenated deltas reconstruct the TestModel output.
+    deltas = "".join(
+        e.payload["text"] for e in events if e.kind == "text-delta"
+    )
+    assert deltas == "ok"
 
 
 @pytest.mark.asyncio

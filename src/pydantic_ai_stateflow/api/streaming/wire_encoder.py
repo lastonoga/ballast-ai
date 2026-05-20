@@ -83,6 +83,16 @@ class WireEncoder(Protocol):
         ...
 
 
+def _text_id(part_index: int) -> str:
+    """Vercel AI SDK part id convention — stable per ``(stream, index)``.
+
+    Used to correlate ``text-start`` / ``text-delta`` / ``text-end``
+    on the client so the assistant UI groups them into one message
+    bubble.
+    """
+    return f"txt-{part_index}"
+
+
 def _sse(data: str, *, event_id: int | None = None) -> bytes:
     """Format a single SSE chunk.
 
@@ -119,21 +129,99 @@ class VercelAIWireEncoder:
         }))
 
     def encode_event(self, event: ThreadEvent) -> Iterable[bytes]:
-        if event.kind == "text-delta":
-            text = str(event.payload.get("text", ""))
-            yield _sse(
-                json.dumps({"type": "text-delta", "delta": text}),
-                event_id=event.seq,
-            )
-        elif event.kind == "error":
+        p = event.payload
+        kind = event.kind
+
+        # ── text streaming ───────────────────────────────────────────────
+        if kind == "text-start":
             yield _sse(
                 json.dumps({
-                    "type": "error",
-                    "errorText": str(event.payload.get("message", "error")),
+                    "type": "text-start",
+                    "id": _text_id(p.get("part_index", 0)),
                 }),
                 event_id=event.seq,
             )
-        elif event.kind == "cancelled":
+        elif kind == "text-delta":
+            yield _sse(
+                json.dumps({
+                    "type": "text-delta",
+                    "id": _text_id(p.get("part_index", 0)),
+                    "delta": str(p.get("text", "")),
+                }),
+                event_id=event.seq,
+            )
+        elif kind == "text-end":
+            yield _sse(
+                json.dumps({
+                    "type": "text-end",
+                    "id": _text_id(p.get("part_index", 0)),
+                }),
+                event_id=event.seq,
+            )
+
+        # ── tool call streaming ──────────────────────────────────────────
+        elif kind == "tool-call-start":
+            yield _sse(
+                json.dumps({
+                    "type": "tool-input-start",
+                    "toolCallId": str(p.get("tool_call_id", "")),
+                    "toolName": str(p.get("tool_name", "")),
+                }),
+                event_id=event.seq,
+            )
+            # Some providers ship the FULL args in the start event —
+            # emit them as an immediate ``tool-input-available`` so the
+            # frontend can render the call card without waiting for the
+            # nonexistent delta stream.
+            if p.get("args"):
+                yield _sse(
+                    json.dumps({
+                        "type": "tool-input-available",
+                        "toolCallId": str(p.get("tool_call_id", "")),
+                        "toolName": str(p.get("tool_name", "")),
+                        "input": p["args"],
+                    }),
+                    event_id=event.seq,
+                )
+        elif kind == "tool-call-delta":
+            if p.get("args_delta") is not None:
+                yield _sse(
+                    json.dumps({
+                        "type": "tool-input-delta",
+                        "toolCallId": str(p.get("tool_call_id", "")),
+                        "inputTextDelta": str(p["args_delta"]),
+                    }),
+                    event_id=event.seq,
+                )
+        elif kind == "tool-call-end":
+            yield _sse(
+                json.dumps({
+                    "type": "tool-input-available",
+                    "toolCallId": str(p.get("tool_call_id", "")),
+                    "input": p.get("args", {}),
+                }),
+                event_id=event.seq,
+            )
+        elif kind == "tool-result":
+            yield _sse(
+                json.dumps({
+                    "type": "tool-output-available",
+                    "toolCallId": str(p.get("tool_call_id", "")),
+                    "output": p.get("output"),
+                }),
+                event_id=event.seq,
+            )
+
+        # ── terminal events ──────────────────────────────────────────────
+        elif kind == "error":
+            yield _sse(
+                json.dumps({
+                    "type": "error",
+                    "errorText": str(p.get("message", "error")),
+                }),
+                event_id=event.seq,
+            )
+        elif kind == "cancelled":
             # Vercel AI SDK v6 has no native ``abort`` event — closest
             # standard terminal pair is ``error`` + ``finish``. Apps
             # that need a different mapping (e.g. AG-UI's ``run_error``
@@ -150,7 +238,7 @@ class VercelAIWireEncoder:
                 json.dumps({"type": "finish"}),
                 event_id=event.seq,
             )
-        elif event.kind == "done":
+        elif kind == "done":
             yield _sse(
                 json.dumps({"type": "finish"}),
                 event_id=event.seq,

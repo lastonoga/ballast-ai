@@ -329,7 +329,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         prompt: str,
         history_dump: list[dict[str, Any]],
     ) -> None:
-        """Durable agent run — replaces ``agent.run_stream`` in the request handler.
+        """Durable agent run — drives ``agent.iter()`` and persists every event.
 
         Args are JSON-friendly primitives so DBOS workflow
         serialization is robust across pydantic / pickle version
@@ -341,18 +341,35 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
           - ``history_dump``: ``[m.model_dump(mode="json") for m in
             messages_to_model_history(...)]`` — replay-safe.
 
-        The model output is currently persisted as a single
-        ``text-delta`` event followed by a ``done`` marker. Token-
-        level streaming + tool-call events arrive in task #127 when
-        the streaming router is rewired to drive this workflow and
-        consume the live ``agent.iter()`` graph.
+        Event taxonomy (persisted to ``EventLogRepository``,
+        consumed by ``WireEncoder``):
+
+          - ``start``                — workflow began
+          - ``text-start``           — model emitted a new TextPart
+          - ``text-delta``           — token-level delta on a TextPart
+          - ``text-end``             — TextPart finalized
+          - ``tool-call-start``      — model decided to call a tool
+          - ``tool-call-delta``      — tool-call args streamed in
+          - ``tool-call-end``        — tool-call args complete
+          - ``tool-result``          — tool body returned (post-execution)
+          - ``done`` | ``error``     — terminal (see also ``cancelled``)
+
+        Each event carries enough id-correlation in ``payload`` for
+        the wire encoder to group/order them (``part_index``,
+        ``tool_call_id``).
         """
         from pydantic_ai.messages import (  # noqa: PLC0415
+            FunctionToolResultEvent,
             ModelMessage,
             ModelMessagesTypeAdapter,
+            PartDeltaEvent,
+            PartEndEvent,
+            PartStartEvent,
+            TextPart,
+            TextPartDelta,
+            ToolCallPart,
+            ToolCallPartDelta,
         )
-        from pydantic_ai.usage import UsageLimits  # noqa: PLC0415
-        del UsageLimits  # placeholder import — wired in #127
 
         thread_id = UUID(thread_id_str)
         thread = await self._thread_repo.load(thread_id)
@@ -380,12 +397,32 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         )
 
         try:
-            result = await self.agent.run(
+            async with self.agent.iter(
                 prompt,
                 message_history=history,
                 deps=deps,
                 model_settings=model_settings,
-            )
+            ) as agent_run:
+                async for node in agent_run:
+                    # Only ModelRequest + CallTools nodes have a
+                    # ``stream`` method — User/End nodes are inert
+                    # transitions we don't surface as wire events.
+                    if not hasattr(node, "stream"):
+                        continue
+                    async with node.stream(agent_run.ctx) as event_stream:
+                        async for event in event_stream:
+                            await self._encode_and_persist(
+                                thread_id=thread_id,
+                                event=event,
+                                TextPart=TextPart,
+                                TextPartDelta=TextPartDelta,
+                                ToolCallPart=ToolCallPart,
+                                ToolCallPartDelta=ToolCallPartDelta,
+                                PartStartEvent=PartStartEvent,
+                                PartDeltaEvent=PartDeltaEvent,
+                                PartEndEvent=PartEndEvent,
+                                FunctionToolResultEvent=FunctionToolResultEvent,
+                            )
         except Exception as exc:
             await self._persist_and_publish(
                 thread_id=thread_id,
@@ -394,16 +431,149 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             )
             raise
 
-        output = result.output
-        output_text = output if isinstance(output, str) else str(output)
-        await self._persist_and_publish(
-            thread_id=thread_id,
-            kind="text-delta",
-            payload={"text": output_text},
-        )
         await self._persist_and_publish(
             thread_id=thread_id, kind="done", payload={},
         )
+
+    async def _encode_and_persist(
+        self,
+        *,
+        thread_id: UUID,
+        event: Any,
+        TextPart: type,
+        TextPartDelta: type,
+        ToolCallPart: type,
+        ToolCallPartDelta: type,
+        PartStartEvent: type,
+        PartDeltaEvent: type,
+        PartEndEvent: type,
+        FunctionToolResultEvent: type,
+    ) -> None:
+        """Map one pydantic-ai stream event to a ``ThreadEvent`` row.
+
+        Unrecognised events are silently skipped — forward-compat for
+        future pydantic-ai event types (Thinking, BuiltinTool,
+        Provider…).
+        """
+        # PartStart — new top-level part begins.
+        if isinstance(event, PartStartEvent):
+            part = event.part
+            if isinstance(part, TextPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="text-start",
+                    payload={"part_index": event.index},
+                )
+                # Some providers ship the FULL text in PartStart instead
+                # of streaming deltas — emit it as a delta so downstream
+                # encoders don't lose it.
+                if part.content:
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="text-delta",
+                        payload={"part_index": event.index, "text": part.content},
+                    )
+            elif isinstance(part, ToolCallPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="tool-call-start",
+                    payload={
+                        "part_index": event.index,
+                        "tool_call_id": part.tool_call_id,
+                        "tool_name": part.tool_name,
+                        "args": part.args_as_dict() if part.args else {},
+                    },
+                )
+            return
+
+        # PartDelta — incremental update to an existing part.
+        if isinstance(event, PartDeltaEvent):
+            delta = event.delta
+            if isinstance(delta, TextPartDelta):
+                if delta.content_delta:
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="text-delta",
+                        payload={
+                            "part_index": event.index,
+                            "text": delta.content_delta,
+                        },
+                    )
+            elif isinstance(delta, ToolCallPartDelta):
+                payload: dict[str, Any] = {"part_index": event.index}
+                if delta.args_delta is not None:
+                    payload["args_delta"] = delta.args_delta
+                if delta.tool_name_delta is not None:
+                    payload["tool_name_delta"] = delta.tool_name_delta
+                if delta.tool_call_id is not None:
+                    payload["tool_call_id"] = delta.tool_call_id
+                if len(payload) > 1:
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="tool-call-delta",
+                        payload=payload,
+                    )
+            return
+
+        # PartEnd — terminal event for one part.
+        if isinstance(event, PartEndEvent):
+            part = event.part
+            if isinstance(part, TextPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="text-end",
+                    payload={"part_index": event.index},
+                )
+            elif isinstance(part, ToolCallPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="tool-call-end",
+                    payload={
+                        "part_index": event.index,
+                        "tool_call_id": part.tool_call_id,
+                        "args": part.args_as_dict() if part.args else {},
+                    },
+                )
+            return
+
+        # FunctionToolResultEvent — tool body returned.
+        if isinstance(event, FunctionToolResultEvent):
+            result = event.result
+            await self._persist_and_publish(
+                thread_id=thread_id,
+                kind="tool-result",
+                payload={
+                    "tool_call_id": result.tool_call_id,
+                    "tool_name": result.tool_name,
+                    # ``result.content`` may be any python value — coerce
+                    # to JSON-friendly via str() if pydantic dump fails.
+                    "output": _safe_jsonify(result.content),
+                },
+            )
+            return
+
+        # FinalResultEvent + others → no wire-level emission (terminal
+        # ``done`` event fires after the agent loop exits in run()).
+
+
+def _safe_jsonify(value: Any) -> Any:
+    """Best-effort JSON-friendly representation of a tool return value.
+
+    Tool results land in the event log as JSON payloads; pydantic
+    models, dataclasses, and primitives serialize naturally, but
+    arbitrary objects (file handles, ORM rows, custom classes) fall
+    back to ``str()`` so persistence never fails on a stringifiable
+    type. Apps that care about precise serialization should return
+    pydantic models / dicts from their tools.
+    """
+    try:
+        from pydantic import TypeAdapter  # noqa: PLC0415
+
+        TypeAdapter(type(value)).dump_python(value, mode="json")
+    except Exception:
+        return str(value)
+    else:
+        return TypeAdapter(type(value)).dump_python(value, mode="json")
 
 
 __all__ = ["StateflowDurableAgent"]
