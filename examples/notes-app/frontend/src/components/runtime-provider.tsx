@@ -30,7 +30,6 @@
 
 import {
   AssistantRuntimeProvider,
-  RuntimeAdapterProvider,
   useAui,
   useAuiState,
   useRemoteThreadListRuntime,
@@ -296,7 +295,21 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
             lastAssistantMessageIsCompleteWithApprovalResponses,
         });
 
-        const runtime = useAISDKRuntime(chat);
+        // History adapter MUST be built inside PerThreadRuntime (not in
+        // an outer provider): ``useNotesAppThreadHistoryAdapter`` calls
+        // ``useAui()`` which is only available once the
+        // ``useRemoteThreadListRuntime``/``AssistantRuntimeProvider``
+        // chain has set up the AUI store context — and that context IS
+        // available inside the per-thread runtimeHook. Passing the
+        // adapter directly to ``useAISDKRuntime`` is the canonical
+        // ai-sdk/v6 wiring (the cloud variant ``useChatRuntime`` does
+        // the same internally via ``useChatThreadRuntime``).
+        const historyAdapter = useNotesAppThreadHistoryAdapter(
+          apiUrl, headers,
+        );
+        const runtime = useAISDKRuntime(chat, {
+          adapters: { history: historyAdapter },
+        });
 
         // History persistence flows through the canonical
         // ThreadHistoryAdapter wired via <RuntimeAdapterProvider>
@@ -348,31 +361,9 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <RuntimeAdaptersBridge apiUrl={apiUrl} headers={headers}>
-        <ChatHelpersContext.Provider value={helpersProxy}>
-          {children}
-        </ChatHelpersContext.Provider>
-      </RuntimeAdaptersBridge>
+      <ChatHelpersContext.Provider value={helpersProxy}>
+        {children}
+      </ChatHelpersContext.Provider>
     </AssistantRuntimeProvider>
-  );
-};
-
-/**
- * Inner provider that builds the ThreadHistoryAdapter (requires
- * ``useAui`` to be available, which only works inside
- * ``AssistantRuntimeProvider``) and exposes it via
- * ``RuntimeAdapterProvider`` so ``useAISDKRuntime``'s
- * ``useExternalHistory`` picks it up at the per-thread runtime layer.
- */
-const RuntimeAdaptersBridge: FC<{
-  apiUrl: string;
-  headers: Record<string, string>;
-  children: React.ReactNode;
-}> = ({ apiUrl, headers, children }) => {
-  const historyAdapter = useNotesAppThreadHistoryAdapter(apiUrl, headers);
-  return (
-    <RuntimeAdapterProvider adapters={{ history: historyAdapter }}>
-      {children}
-    </RuntimeAdapterProvider>
   );
 };
