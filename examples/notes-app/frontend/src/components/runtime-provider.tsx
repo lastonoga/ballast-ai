@@ -54,7 +54,10 @@ import {
   type PropsWithChildren,
 } from "react";
 import { buildRemoteThreadListAdapter } from "@/lib/thread-list-adapter";
-import { useNotesAppThreadHistoryAdapter } from "@/lib/thread-history-adapter";
+import {
+  createJustInitializedSink,
+  useNotesAppThreadHistoryAdapter,
+} from "@/lib/thread-history-adapter";
 
 const DEFAULT_API_URL = "http://localhost:8000";
 
@@ -204,6 +207,12 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   // making "(runtime as any).__chatApprovalHelpers" always undefined.
   const helpersRef = useRef<ChatApprovalHelpers | null>(null);
 
+  // Shared between the per-thread initialize() path and the per-thread
+  // history adapter so that the redundant first load() right after
+  // initialize() can be skipped — see the JustInitializedSink docstring
+  // for why (UI duplicate prevention).
+  const justInitialized = useMemo(() => createJustInitializedSink(), []);
+
   // assistant-ui's `useRemoteThreadListRuntime` re-invokes `runtimeHook`
   // for each thread. To pass `apiUrl`/`headers` in without closing over
   // stale references, we curry them via a factory.
@@ -251,6 +260,12 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               : undefined;
             if (newId) {
               remoteIdRef.current = newId;
+              // Tell the history adapter to skip its next load() for
+              // this remoteId — useChat already has the optimistic
+              // user message that triggered initialize() in the first
+              // place, and re-importing the same row from the backend
+              // would render it twice.
+              justInitialized.mark(newId);
               return newId;
             }
             if (remoteIdRef.current) return remoteIdRef.current;
@@ -347,7 +362,7 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         // ai-sdk/v6 wiring (the cloud variant ``useChatRuntime`` does
         // the same internally via ``useChatThreadRuntime``).
         const historyAdapter = useNotesAppThreadHistoryAdapter(
-          apiUrl, headers,
+          apiUrl, headers, justInitialized,
         );
         const runtime = useAISDKRuntime(chat, {
           adapters: { history: historyAdapter },

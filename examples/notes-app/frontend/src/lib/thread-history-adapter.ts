@@ -41,11 +41,53 @@ type BackendMessageRow = {
   parts: Array<Record<string, unknown>>;
 };
 
+/**
+ * Shared signal between the runtime-provider's ``initialize()`` path
+ * and ``historyAdapter.load()`` — used to suppress the redundant
+ * first ``load()`` that ``useExternalHistory`` fires the instant
+ * ``initialize()`` flips ``remoteId`` from undefined → real-UUID
+ * mid-session.
+ *
+ * Without this suppression we get a classic UI duplicate: useChat
+ * has already added the user's "привет" to its local state
+ * optimistically (the act that triggered ``initialize()`` in the
+ * first place is ``sendMessages``), then the brand-new remoteId
+ * unblocks ``useExternalHistory``, which calls ``load()`` →
+ * backend returns the same row (just persisted via ``append`` or
+ * the streaming-router auto-persist fallback) → ``runtime.thread.import``
+ * adds it AGAIN on top of the optimistic state, so the message
+ * renders twice. By marking the freshly-initialized remoteId here
+ * and consuming the marker on first ``load()``, we skip exactly one
+ * load — subsequent loads (thread switch, page reload) work as
+ * normal because useChat for the active thread is empty then.
+ */
+export type JustInitializedSink = {
+  /** Mark a remoteId as freshly produced by initialize() this session. */
+  mark(remoteId: string): void;
+  /** Consume + return whether ``load()`` should skip for this id. */
+  consume(remoteId: string): boolean;
+};
+
+export function createJustInitializedSink(): JustInitializedSink {
+  const ids = new Set<string>();
+  return {
+    mark(remoteId) {
+      ids.add(remoteId);
+    },
+    consume(remoteId) {
+      if (!ids.has(remoteId)) return false;
+      ids.delete(remoteId);
+      return true;
+    },
+  };
+}
+
 class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
   constructor(
     private readonly apiUrl: string,
     private readonly headers: Record<string, string>,
     private readonly aui: ReturnType<typeof useAui>,
+    private readonly justInitialized: JustInitializedSink,
   ) {}
 
   private get _remoteId(): string | undefined {
@@ -60,6 +102,13 @@ class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
       async load(): Promise<MessageFormatRepository<TMessage>> {
         const remoteId = adapter._remoteId;
         if (!remoteId) return { messages: [] };
+        // Skip exactly one load() right after initialize() — useChat
+        // already holds the user's just-sent message optimistically;
+        // re-hydrating from the backend would render it twice. See
+        // ``JustInitializedSink`` docstring for the full rationale.
+        if (adapter.justInitialized.consume(remoteId)) {
+          return { messages: [] };
+        }
         const r = await fetch(
           `${adapter.apiUrl}/threads/${remoteId}/messages`,
           { headers: adapter.headers },
@@ -155,10 +204,11 @@ class NotesAppThreadHistoryAdapter implements ThreadHistoryAdapter {
 export function useNotesAppThreadHistoryAdapter(
   apiUrl: string,
   headers: Record<string, string>,
+  justInitialized: JustInitializedSink,
 ): ThreadHistoryAdapter {
   const aui = useAui();
   const [adapter] = useState(
-    () => new NotesAppThreadHistoryAdapter(apiUrl, headers, aui),
+    () => new NotesAppThreadHistoryAdapter(apiUrl, headers, aui, justInitialized),
   );
   return adapter;
 }
