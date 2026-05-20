@@ -361,49 +361,35 @@ async def _durable_post_message(
     deferred = adapter.deferred_tool_results
 
     if deferred is not None and deferred.approvals:
-        # Approval resume path. Don't sync body → DB (the body carries
-        # the assistant turn with approval state baked into parts; we
-        # don't want to persist that as a new assistant row — the
-        # resumed agent run will produce the real tool-output assistant).
+        # Approval resume path. Use **body's parsed messages** as
+        # message_history (NOT the repo). Reasons:
         #
-        # **Why VercelAIAdapter.load_messages and not messages_to_model_history**:
-        # pydantic-ai matches ``deferred_tool_results[tool_call_id]``
-        # against ``ToolCallPart`` entries in ``message_history``. Our
-        # local ``messages_to_model_history`` only re-emits ``TextPart``,
-        # so the deferred tool's originating call is lost → agent run
-        # raises ``UserError("Tool call results were provided, but the
-        # message history does not contain any unprocessed tool calls.")``.
-        # ``VercelAIAdapter.load_messages`` round-trips the full
-        # UIMessage shape (text + tool-calls + reasoning + …) into the
-        # proper ``ModelMessage`` list.
-        from pydantic_ai.ui.vercel_ai.request_types import (  # noqa: PLC0415
-            UIMessage,
-        )
-
-        rows = await thread_repo.history(thread_id, limit=history_limit)
-        ui_msgs: list[UIMessage] = []
-        for row in rows:
-            if row.role not in {"user", "assistant", "system"}:
-                continue
-            ui_msgs.append(
-                UIMessage.model_validate({
-                    "id": row.id,
-                    "role": row.role,
-                    "parts": row.parts,
-                }),
-            )
-        history = VercelAIAdapter.load_messages(ui_msgs)
+        # 1. Our ``_persist_assistant_turn`` skips persisting when the
+        #    agent paused with ``DeferredToolRequests`` — the assistant
+        #    row with the pending ToolCallPart is NOT in the repo.
+        # 2. assistant-ui's body carries the full conversation state
+        #    INCLUDING the assistant turn with the deferred tool call
+        #    (in ``approval-responded`` state after the user clicked).
+        #    VercelAIAdapter parses it into proper ``ToolCallPart``s.
+        # 3. pydantic-ai matches ``deferred_tool_results[tool_call_id]``
+        #    against currently-pending ``ToolCallPart`` entries; body's
+        #    history has them, repo doesn't.
+        #
+        # Without this, the agent raises "Tool call results were
+        # provided, but the message history does not contain any
+        # unprocessed tool calls."
+        history = list(adapter.messages)
         history_dump = ModelMessagesTypeAdapter.dump_python(
             history, mode="json",
         )
 
-        # Filter approvals: body may carry approval-responded parts
-        # for tool calls that already executed in PRIOR turns (their
-        # ToolReturnPart is in history). pydantic-ai requires the
-        # ``deferred_tool_results`` keyset to EXACTLY match currently-
-        # pending tool calls — extras raise "Tool call results need to
-        # be provided for all deferred tool calls". Compute the pending
-        # set (called but never returned) and keep only those.
+        # Filter approvals to currently-pending tool calls in history.
+        # Body may carry ``approval-responded`` parts for tool calls
+        # that already executed in PRIOR turns (their ``ToolReturnPart``
+        # is in history). pydantic-ai requires the
+        # ``deferred_tool_results`` keyset to EXACTLY match pending —
+        # extras raise "Tool call results need to be provided for all
+        # deferred tool calls".
         pending = _pending_tool_call_ids(history)
         approvals_dump: dict[str, bool | dict[str, Any]] = {}
         for tcid, decision in deferred.approvals.items():
@@ -416,6 +402,24 @@ async def _durable_post_message(
                 approvals_dump[tcid] = {
                     "message": getattr(decision, "message", "denied"),
                 }
+
+        if not approvals_dump:
+            # Defensive: no actually-pending approval matched — likely
+            # a stale resend after the tool already executed. Fall back
+            # to the new-turn path (or no-op SSE) instead of triggering
+            # the pydantic-ai "no unprocessed tool calls" error.
+            _log.warning(
+                "Approval-resume body had %d approvals but none match "
+                "a pending tool call in history; ignoring resume",
+                len(deferred.approvals),
+            )
+            return _build_sse_response(
+                encoder=encoder,
+                thread_id=thread_id,
+                event_log=event_log,
+                event_stream=event_stream,
+                last_event_id=await event_log.latest_seq(thread_id),
+            )
 
         last_event_id = _parse_last_event_id(request)
         if last_event_id == 0:
