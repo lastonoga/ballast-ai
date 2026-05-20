@@ -290,6 +290,53 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
             lastAssistantMessageIsCompleteWithApprovalResponses,
         });
 
+        // Bridge the Stop button to the backend's durable workflow:
+        //
+        // Vercel AI SDK's `chat.stop()` only aborts the client-side
+        // fetch — for a non-durable backend that's enough (server sees
+        // the dropped connection and bails). Our `StateflowDurableAgent`
+        // is the opposite: it survives client disconnects on purpose,
+        // so aborting the fetch leaves the workflow running and the
+        // user just sees nothing happen.
+        //
+        // Wrap `chat.stop` once so every code path that triggers it
+        // (ComposerPrimitive.Cancel, programmatic cancellation, the
+        // assistant-ui runtime's cancelRun, …) first POSTs
+        // `/threads/{id}/cancel`. The backend kills every active
+        // workflow on that thread + emits a `cancelled` event so the
+        // SSE stream closes cleanly. THEN we drop the local fetch.
+        useEffect(() => {
+          const w = chat as unknown as {
+            stop: (...a: unknown[]) => Promise<void>;
+            __backendCancelWrapped?: boolean;
+          };
+          if (w.__backendCancelWrapped) return;
+          const original = w.stop.bind(chat);
+          w.stop = async (...args: unknown[]): Promise<void> => {
+            const tid = remoteIdRef.current;
+            if (tid) {
+              try {
+                await fetch(`${apiUrl}/threads/${tid}/cancel`, {
+                  method: "POST",
+                  headers,
+                });
+              } catch (err) {
+                // Best-effort: a failed cancel endpoint shouldn't
+                // block the local SSE abort. The workflow will
+                // eventually finish or time out on its own; meanwhile
+                // the user still gets immediate UI feedback.
+                // eslint-disable-next-line no-console
+                console.warn(
+                  "[runtime-provider] backend cancel failed",
+                  err,
+                );
+              }
+            }
+            return original(...args);
+          };
+          w.__backendCancelWrapped = true;
+        }, [chat]);
+
         // History adapter MUST be built inside PerThreadRuntime (not in
         // an outer provider): ``useNotesAppThreadHistoryAdapter`` calls
         // ``useAui()`` which is only available once the
