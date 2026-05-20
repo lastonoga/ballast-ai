@@ -37,8 +37,9 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from dbos import DBOS, SetWorkflowID
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
@@ -50,12 +51,8 @@ from pydantic_ai_stateflow.capabilities import (
     StateflowCapability,
 )
 from pydantic_ai_stateflow.grounded import Ref, Selector
-from pydantic_ai_stateflow.patterns.hitl import (
-    ApprovedResponse,
-    HITLGate,
-    ModifiedResponse,
-)
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
+from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
 from notes_app.notes.domain import Note
@@ -64,6 +61,7 @@ from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
 )
+from notes_app.todo_flow import TodoApprovalFlow
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
@@ -121,14 +119,15 @@ def default_notes_capabilities() -> list[StateflowCapability]:
 class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
-    ``hitl_gate`` and ``parent_thread_id`` are only used by the
-    HITL-gated ``propose_todo`` tool — the simpler note tools ignore
-    them. They may be ``None`` for tests that only exercise the
-    non-HITL tools.
+    ``todo_flow``, ``thread_repo``, and ``parent_thread_id`` are only
+    used by ``propose_todo`` to spawn the durable approval workflow —
+    the simpler note tools ignore them. They may be ``None`` for tests
+    that only exercise the non-HITL tools.
     """
 
     repo: NoteRepository
-    hitl_gate: HITLGate | None = None
+    todo_flow: TodoApprovalFlow | None = None
+    thread_repo: ThreadRepository | None = None
     parent_thread_id: UUID | None = None
 
 
@@ -146,12 +145,14 @@ class NotesAgent(StateflowAgent):
         self,
         *,
         notes_repo: NoteRepository,
-        hitl_gate: HITLGate | None = None,
+        todo_flow: TodoApprovalFlow | None = None,
+        thread_repo: ThreadRepository | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
     ) -> None:
         self._notes_repo = notes_repo
-        self._hitl_gate = hitl_gate
+        self._todo_flow = todo_flow
+        self._thread_repo = thread_repo
         self._model_name = model_name
         self._api_key = api_key
 
@@ -192,7 +193,8 @@ class NotesAgent(StateflowAgent):
         del message
         return NoteToolDeps(
             repo=self._notes_repo,
-            hitl_gate=self._hitl_gate,
+            todo_flow=self._todo_flow,
+            thread_repo=self._thread_repo,
             parent_thread_id=thread.id,
         )
 
@@ -278,49 +280,81 @@ async def edit_note(
 @NotesAgent.tool
 async def propose_todo(
     ctx: RunContext[NoteToolDeps], title: str, body: str,
-) -> Note:
-    """Open a confirmation thread, wait for user approval, then save the note.
+) -> str:
+    """Open a confirmation thread for a todo and return immediately.
 
     Use this INSTEAD of ``create_note`` when the user asks to create a
-    TODO specifically (vs. a regular note). The flow:
+    TODO specifically. The flow is **fire-and-forget + durable**:
 
-    1. ``HITLGate.ask_helper`` spawns a new thread bound to the
-       ``todo_approval`` agent, with ``TodoApprovalContext`` as
-       metadata.
-    2. This run BLOCKS until the user confirms / rejects / modifies the
-       proposal in the side thread.
-    3. On approval the note is persisted with the (possibly modified)
-       title / body. On rejection this tool raises and the note is
-       NOT saved.
+    1. A new thread is spawned bound to the ``todo_approval`` agent.
+    2. A DBOS workflow (``TodoApprovalFlow``) is launched in the
+       background — it blocks on the helper's HITL response, then saves
+       the note (or skips on reject) and posts a notification message
+       back to this thread.
+    3. This tool returns IMMEDIATELY. The user sees "I opened a side
+       conversation" right away, and when the helper agent resolves —
+       even minutes or hours later, even if the user closed and
+       reopened the app — the saved-todo notification will appear on
+       this thread.
 
     Both ``title`` and ``body`` are required and free-form.
     """
-    if ctx.deps.hitl_gate is None or ctx.deps.parent_thread_id is None:
+    if (
+        ctx.deps.todo_flow is None
+        or ctx.deps.thread_repo is None
+        or ctx.deps.parent_thread_id is None
+    ):
         raise RuntimeError(
-            "propose_todo requires hitl_gate + parent_thread_id on "
-            "NoteToolDeps — was NotesAgent constructed without them?",
+            "propose_todo requires todo_flow + thread_repo + "
+            "parent_thread_id on NoteToolDeps — was NotesAgent "
+            "constructed without them?",
         )
 
+    request_id = uuid4()
+    workflow_id = str(uuid4())
     context = TodoApprovalContext(
         proposed_title=title,
         proposed_body=body,
         parent_thread_id=ctx.deps.parent_thread_id,
     )
-    response = await ctx.deps.hitl_gate.ask_helper(
-        helper_agent=NotesTodoApprovalAgent,
-        context=context,
-        opening_message=context.to_opening_message(),
+
+    # T2's metadata carries BOTH the user-facing context fields AND two
+    # routing keys (request_id, workflow_id) so the helper agent's tools
+    # can ``DBOS.send`` their response straight to the durable workflow
+    # without going through any extra lookup table.
+    thread_metadata: dict[str, Any] = context.model_dump(mode="json")
+    thread_metadata["request_id"] = str(request_id)
+    thread_metadata["workflow_id"] = workflow_id
+
+    t2 = await ctx.deps.thread_repo.create(
+        agent=NotesTodoApprovalAgent.name,
+        metadata=thread_metadata,
+    )
+    await ctx.deps.thread_repo.add_message(
+        t2.id,
+        role="assistant",
+        parts=[{
+            "type": "text",
+            "text": context.to_opening_message(),
+            "state": "done",
+        }],
     )
 
-    if isinstance(response, ApprovedResponse):
-        return await ctx.deps.repo.create(title=title, body=body)
-    if isinstance(response, ModifiedResponse):
-        mod = response.modified_proposal
-        return await ctx.deps.repo.create(
-            title=str(mod.get("title", title)),
-            body=str(mod.get("body", body)),
+    # Start the durable workflow with the pre-allocated id. ``SetWorkflowID``
+    # makes the id deterministic so the helper tools (which read it out
+    # of T2's metadata) can hit the right destination via ``DBOS.send``.
+    with SetWorkflowID(workflow_id):
+        await DBOS.start_workflow_async(
+            ctx.deps.todo_flow.run,
+            context_dict=context.model_dump(mode="json"),
+            request_id=str(request_id),
         )
-    raise RuntimeError("Todo creation rejected by user")
+
+    return (
+        f"I opened a confirmation thread to review this todo. "
+        f"Once you approve (or modify / reject) it there, I'll save "
+        f"it on this thread."
+    )
 
 
 @NotesAgent.tool(requires_approval=True)

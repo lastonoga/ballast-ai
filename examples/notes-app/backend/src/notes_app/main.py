@@ -28,14 +28,6 @@ from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider
-from pydantic_ai_stateflow.patterns.hitl import (
-    AllowAll,
-    HITLGate,
-    UIChannel,
-    build_hitl_router,
-)
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
-from pydantic_ai_stateflow.persistence.hitl.repository import HITLRepository
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
@@ -46,6 +38,7 @@ from notes_app.agent import NotesAgent
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
 from notes_app.notes.routes import build_notes_router
 from notes_app.todo_approval_agent import NotesTodoApprovalAgent
+from notes_app.todo_flow import TodoApprovalFlow
 
 load_dotenv()
 
@@ -68,8 +61,8 @@ def build_app(
     thread_repo: ThreadRepository | None = None,
     notes_agent: NotesAgent | None = None,
     notes_repo: NoteRepository | None = None,
-    hitl_repo: HITLRepository | None = None,
     todo_approval_agent: NotesTodoApprovalAgent | None = None,
+    todo_flow: TodoApprovalFlow | None = None,
     manage_dbos_lifecycle: bool = True,
 ) -> FastAPI:
     """Construct the FastAPI app.
@@ -81,16 +74,13 @@ def build_app(
     """
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
-    hitl = hitl_repo or InMemoryHITLRepository()
-    hitl_gate = HITLGate(
-        channel=UIChannel(), policy=AllowAll(), repo=hitl, thread_repo=repo,
-    )
+    flow = todo_flow or TodoApprovalFlow(notes_repo=notes, thread_repo=repo)
 
     agent = notes_agent or NotesAgent(
-        notes_repo=notes, hitl_gate=hitl_gate,
+        notes_repo=notes, todo_flow=flow, thread_repo=repo,
     )
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
-        hitl_repo=hitl, notes_repo=notes,
+        notes_repo=notes,
     )
 
     register_agent(agent)
@@ -110,7 +100,6 @@ def build_app(
     notes_router = build_notes_router(repo)
     threads_router = build_threads_router(thread_repo=repo)
     streaming_router = build_streaming_router(thread_repo=repo)
-    hitl_router = build_hitl_router(repo=hitl, policy=AllowAll())
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
@@ -123,9 +112,9 @@ def build_app(
         async def _launch_dbos(_app: FastAPI) -> None:
             # ``DBOS(...)`` registers the singleton; ``launch()`` starts
             # the workflow runtime. Both must happen before any
-            # @DBOS.workflow runs — which means before the first request
-            # hits the streaming router (because ``propose_todo`` calls
-            # ``hitl_gate.run`` which IS a @DBOS.workflow).
+            # @DBOS.workflow runs — including the durable
+            # ``TodoApprovalFlow.run`` that ``propose_todo`` kicks off
+            # via ``DBOS.start_workflow_async``.
             DBOS(
                 config=DBOSConfig(
                     name="notes-app",
@@ -145,7 +134,7 @@ def build_app(
 
     app: FastAPI = engine.fastapi_app(
         extra_routers=[
-            notes_router, threads_router, streaming_router, hitl_router,
+            notes_router, threads_router, streaming_router,
         ],
         cors=CORSConfig.permissive_dev(),
         on_startup=startup_hooks,
@@ -156,8 +145,7 @@ def build_app(
     app.state.thread_repo = repo
     app.state.notes_agent = agent
     app.state.todo_approval_agent = approval_agent
-    app.state.hitl_repo = hitl
-    app.state.hitl_gate = hitl_gate
+    app.state.todo_flow = flow
     return app
 
 

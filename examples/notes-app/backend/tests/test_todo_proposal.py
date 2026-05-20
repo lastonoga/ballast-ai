@@ -1,27 +1,19 @@
-"""Tests for the HITL-gated ``propose_todo`` tool + the approval agent.
+"""Tests for the durable ``propose_todo`` flow.
 
-End-to-end SSE-over-DBOS testing is hard to make reliable — the
-streaming router runs the agent loop in a request context AND the
-HITLGate.run workflow blocks on ``DBOS.recv``. Driving two concurrent
-SSE streams while DBOS sits in the middle is timing-fragile in tests
-even though it works in prod.
+The new architecture is fire-and-forget from the parent run's POV:
 
-So we take the pragmatic unit-level path the architecture brief
-endorses:
+  1. ``propose_todo`` spawns a helper thread + opening message.
+  2. Kicks off ``TodoApprovalFlow.run`` via
+     ``DBOS.start_workflow_async`` with a pre-allocated workflow_id.
+  3. Returns IMMEDIATELY with an "I opened a side conversation" string.
+  4. The helper agent's approve / modify / reject tools DBOS.send their
+     response to the workflow's id (stored in T2 metadata).
+  5. The workflow saves the note (or skips) AND posts a notification
+     message back to the parent thread.
 
-  1. Instantiate the deps that ``propose_todo`` would receive from
-     ``NotesAgent.build_deps``.
-  2. Run ``propose_todo(ctx, title, body)`` as a coroutine.
-  3. In parallel, wait until the HITL repo shows the pending request
-     (i.e. the gate has called ``persist_request`` and is now blocked
-     on ``DBOS.recv``), then invoke the matching ``approve`` /
-     ``reject`` / ``modify`` tool on the approval agent.
-  4. ``propose_todo`` should unblock and resolve with the right
-     behaviour (note created, RuntimeError, or note created with
-     modified payload).
-
-This is the same DBOS.send/recv loop the prod SSE flow uses — just
-without the SSE router and frontend.
+Crucially, step (5) doesn't depend on T1's request handler being alive
+— that's the whole point of the refactor. So these tests exercise the
+durable workflow end-to-end via DBOS.send + handle.get_result.
 """
 
 from __future__ import annotations
@@ -29,33 +21,22 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
+from dbos import DBOS
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_stateflow.patterns.hitl import (
-    AllowAll,
-    HITLGate,
-    UIChannel,
-)
-from pydantic_ai_stateflow.persistence import (
-    InMemoryHITLRepository,
-    InMemoryThreadRepository,
-)
-from pydantic_ai_stateflow.persistence.hitl.domain import (
-    BlockingRequirement,
-    BlockingRequirementStatus,
-)
+from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
 
 from notes_app.agent import NotesAgent, NoteToolDeps
-from notes_app.notes.domain import Note
 from notes_app.notes.repository import InMemoryNoteRepository
 from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
     TodoApprovalDeps,
 )
+from notes_app.todo_flow import TodoApprovalFlow
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -92,411 +73,261 @@ def _bound_tool(agent: Any, name: str) -> Any:
     return agent._function_toolset.tools[name].function  # noqa: SLF001
 
 
-async def _wait_for_pending_request(
-    hitl_repo: InMemoryHITLRepository,
+async def _wait_for_helper_thread(
+    thread_repo: InMemoryThreadRepository,
     *,
-    timeout_s: float = 5.0,
-) -> BlockingRequirement:
-    """Poll until ``hitl_repo.list_pending`` reports the gate request."""
+    timeout_s: float = 2.0,
+) -> Any:
+    """Poll the thread repo until the helper thread appears."""
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
-        pending = await hitl_repo.list_pending()
-        if pending:
-            return pending[0]
+        threads = await thread_repo.list_()
+        helpers = [t for t in threads if t.agent == "todo_approval"]
+        if helpers:
+            return helpers[0]
         await asyncio.sleep(0.02)
-    raise AssertionError(
-        "Timed out waiting for HITLGate to persist its pending request",
-    )
+    raise AssertionError("Timed out waiting for the helper thread to appear")
 
 
-def _approval_deps(
+async def _trigger_approval(
     *,
+    helper_tool: str,
+    t2_metadata: dict[str, Any],
     notes_repo: InMemoryNoteRepository,
-    hitl_repo: InMemoryHITLRepository,
-    request_id: UUID,
-    proposed_title: str,
-    proposed_body: str,
-    parent_thread_id: UUID | None = None,
-) -> TodoApprovalDeps:
-    """Mint ``TodoApprovalDeps`` matching what ``build_deps`` would yield."""
-    return TodoApprovalDeps(
+    **tool_kwargs: Any,
+) -> str:
+    """Invoke a helper-agent approval tool with the right deps shape.
+
+    Mirrors what ``NotesTodoApprovalAgent.build_deps`` would mint when
+    the streaming router runs the helper agent against T2's metadata.
+    """
+    approval_agent = _TestTodoApprovalAgent(notes_repo=notes_repo)
+    fn = _bound_tool(approval_agent.agent, helper_tool)
+    deps = TodoApprovalDeps(
         notes_repo=notes_repo,
-        hitl_repo=hitl_repo,
-        request_id=request_id,
-        metadata=TodoApprovalContext(
-            proposed_title=proposed_title,
-            proposed_body=proposed_body,
-            parent_thread_id=parent_thread_id or uuid4(),
-        ),
+        request_id=UUID(t2_metadata["request_id"]),
+        workflow_id=str(t2_metadata["workflow_id"]),
+        metadata=TodoApprovalContext.model_validate(t2_metadata),
     )
+    return await fn(_FakeCtx(deps=deps), **tool_kwargs)
 
 
-async def _build_propose_deps(
+async def _spawn_proposal(
     *,
+    title: str,
+    body: str,
     notes_repo: InMemoryNoteRepository,
     thread_repo: InMemoryThreadRepository,
-    hitl_repo: InMemoryHITLRepository,
-) -> tuple[NoteToolDeps, UUID]:
-    """Mint the deps + a parent thread id that NotesAgent.build_deps would.
-
-    A NotesAgent thread (T1) is created first so the propose_todo tool
-    has a valid parent_thread_id to write into T2's metadata.
-    """
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    hitl_gate = HITLGate(
-        channel=UIChannel(),
-        policy=AllowAll(),
-        repo=hitl_repo,
-        thread_repo=thread_repo,
+    todo_flow: TodoApprovalFlow,
+) -> tuple[str, Any, dict[str, Any]]:
+    """Run ``propose_todo`` and return (return_value, t1, t2_metadata)."""
+    notes_agent = _TestNotesAgent(
+        notes_repo=notes_repo, todo_flow=todo_flow, thread_repo=thread_repo,
     )
-    # Make sure the tool is registered on the agent so the test agent
-    # behaves like prod (not strictly needed since we call the bare
-    # function below, but a useful smoke).
-    agent_instance = notes_agent.agent
-    assert "propose_todo" in agent_instance._function_toolset.tools  # noqa: SLF001
+    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
     deps = NoteToolDeps(
         repo=notes_repo,
-        hitl_gate=hitl_gate,
+        todo_flow=todo_flow,
+        thread_repo=thread_repo,
         parent_thread_id=t1.id,
     )
-    return deps, t1.id
+    result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
+
+    t2 = await _wait_for_helper_thread(thread_repo)
+    return result, t1, dict(t2.metadata_)
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_propose_todo_approved_saves_note(
+async def test_propose_todo_spawns_helper_thread_and_workflow(
     fresh_dbos_executor: None,
 ) -> None:
-    """Happy path: ``approve`` unblocks the gate and the note is saved."""
+    """propose_todo creates T2 with the right metadata + opening message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    hitl_repo = InMemoryHITLRepository()
+    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
 
-    deps, t1_id = await _build_propose_deps(
-        notes_repo=notes_repo,
-        thread_repo=thread_repo,
-        hitl_repo=hitl_repo,
+    result, t1, t2_meta = await _spawn_proposal(
+        title="groceries", body="milk eggs",
+        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
     )
-    ctx = _FakeCtx(deps=deps)
 
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
+    # Tool returns an "I opened a side conversation" string — NOT a Note.
+    assert "opened" in result.lower() or "confirmation" in result.lower()
 
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    approve_fn = _bound_tool(approval_agent.agent, "approve")
+    # T2 metadata carries the context + framework routing keys.
+    assert t2_meta["proposed_title"] == "groceries"
+    assert t2_meta["proposed_body"] == "milk eggs"
+    assert t2_meta["parent_thread_id"] == str(t1.id)
+    UUID(t2_meta["request_id"])  # well-formed UUID
+    UUID(t2_meta["workflow_id"])  # well-formed UUID
 
-    async def _approver() -> None:
-        req = await _wait_for_pending_request(hitl_repo)
-        approval_deps = _approval_deps(
-            notes_repo=notes_repo,
-            hitl_repo=hitl_repo,
-            request_id=req.id,
-            proposed_title="groceries",
-            proposed_body="milk eggs",
-            parent_thread_id=t1_id,
-        )
-        result = await approve_fn(_FakeCtx(deps=approval_deps))
-        assert "Approved" in result, result
-
-    approver_task = asyncio.create_task(_approver())
-    try:
-        note = await propose_todo(
-            ctx, title="groceries", body="milk eggs",
-        )
-    finally:
-        await approver_task
-
-    assert isinstance(note, Note)
-    assert note.title == "groceries"
-    assert note.body == "milk eggs"
-    listed = await notes_repo.list_()
-    assert [n.id for n in listed] == [note.id]
+    # Opening assistant message is seeded.
     threads = await thread_repo.list_()
-    approval_threads = [t for t in threads if t.agent == "todo_approval"]
-    assert len(approval_threads) == 1
-    assert approval_threads[0].metadata_["proposed_title"] == "groceries"
-    pending = await hitl_repo.list_pending()
-    assert pending == []
-    assert len(hitl_repo._decisions) == 1  # noqa: SLF001
-
-
-@pytest.mark.asyncio
-async def test_propose_todo_rejected_raises_and_skips_note(
-    fresh_dbos_executor: None,
-) -> None:
-    """Rejection branch: tool raises RuntimeError, no note persisted."""
-    notes_repo = InMemoryNoteRepository()
-    thread_repo = InMemoryThreadRepository()
-    hitl_repo = InMemoryHITLRepository()
-
-    deps, t1_id = await _build_propose_deps(
-        notes_repo=notes_repo,
-        thread_repo=thread_repo,
-        hitl_repo=hitl_repo,
-    )
-    ctx = _FakeCtx(deps=deps)
-
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
-
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    reject_fn = _bound_tool(approval_agent.agent, "reject")
-
-    async def _rejecter() -> None:
-        req = await _wait_for_pending_request(hitl_repo)
-        approval_deps = _approval_deps(
-            notes_repo=notes_repo,
-            hitl_repo=hitl_repo,
-            request_id=req.id,
-            proposed_title="garbage",
-            proposed_body="trash",
-            parent_thread_id=t1_id,
-        )
-        result = await reject_fn(
-            _FakeCtx(deps=approval_deps), reason="too vague",
-        )
-        assert "Cancelled" in result, result
-
-    rejecter_task = asyncio.create_task(_rejecter())
-    try:
-        with pytest.raises(RuntimeError, match="rejected by user"):
-            await propose_todo(ctx, title="garbage", body="trash")
-    finally:
-        await rejecter_task
-
-    assert await notes_repo.list_() == []
-    assert (await hitl_repo.list_pending()) == []
-    assert len(hitl_repo._decisions) == 1  # noqa: SLF001
-    decision = next(iter(hitl_repo._decisions.values()))  # noqa: SLF001
-    assert decision.verdict.value == "reject"
-
-
-@pytest.mark.asyncio
-async def test_propose_todo_modified_uses_new_title_and_body(
-    fresh_dbos_executor: None,
-) -> None:
-    """Modify branch: gate returns modified payload, note saved with overrides."""
-    notes_repo = InMemoryNoteRepository()
-    thread_repo = InMemoryThreadRepository()
-    hitl_repo = InMemoryHITLRepository()
-
-    deps, t1_id = await _build_propose_deps(
-        notes_repo=notes_repo,
-        thread_repo=thread_repo,
-        hitl_repo=hitl_repo,
-    )
-    ctx = _FakeCtx(deps=deps)
-
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
-
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    modify_fn = _bound_tool(approval_agent.agent, "modify")
-
-    async def _modifier() -> None:
-        req = await _wait_for_pending_request(hitl_repo)
-        approval_deps = _approval_deps(
-            notes_repo=notes_repo,
-            hitl_repo=hitl_repo,
-            request_id=req.id,
-            proposed_title="groceries",
-            proposed_body="milk",
-            parent_thread_id=t1_id,
-        )
-        result = await modify_fn(
-            _FakeCtx(deps=approval_deps),
-            new_title="weekly groceries",
-            new_body="milk, eggs, bread",
-        )
-        assert "Updated" in result, result
-
-    modifier_task = asyncio.create_task(_modifier())
-    try:
-        note = await propose_todo(ctx, title="groceries", body="milk")
-    finally:
-        await modifier_task
-
-    assert isinstance(note, Note)
-    assert note.title == "weekly groceries"
-    assert note.body == "milk, eggs, bread"
-    listed = await notes_repo.list_()
-    assert [n.title for n in listed] == ["weekly groceries"]
-
-
-@pytest.mark.asyncio
-async def test_approve_tool_returns_error_on_unknown_request(
-    fresh_dbos_executor: None,
-) -> None:
-    """Defensive: approve tool with a stale request_id surfaces a tool error."""
-    notes_repo = InMemoryNoteRepository()
-    hitl_repo = InMemoryHITLRepository()
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    approve_fn = _bound_tool(approval_agent.agent, "approve")
-    reject_fn = _bound_tool(approval_agent.agent, "reject")
-    modify_fn = _bound_tool(approval_agent.agent, "modify")
-
-    bogus_deps = _approval_deps(
-        notes_repo=notes_repo,
-        hitl_repo=hitl_repo,
-        request_id=UUID("00000000-0000-0000-0000-000000000000"),
-        proposed_title="t",
-        proposed_body="b",
-    )
-    ctx = _FakeCtx(deps=bogus_deps)
-    assert "not found" in (await approve_fn(ctx))
-    assert "not found" in (await reject_fn(ctx))
-    assert "not found" in (await modify_fn(ctx))
-
-
-@pytest.mark.asyncio
-async def test_propose_todo_creates_side_thread_with_metadata(
-    fresh_dbos_executor: None,
-) -> None:
-    """T2 carries ``TodoApprovalContext`` fields + framework-injected request_id."""
-    notes_repo = InMemoryNoteRepository()
-    thread_repo = InMemoryThreadRepository()
-    hitl_repo = InMemoryHITLRepository()
-
-    deps, t1_id = await _build_propose_deps(
-        notes_repo=notes_repo,
-        thread_repo=thread_repo,
-        hitl_repo=hitl_repo,
-    )
-    ctx = _FakeCtx(deps=deps)
-
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
-
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    approve_fn = _bound_tool(approval_agent.agent, "approve")
-
-    captured: dict[str, Any] = {}
-
-    async def _approver() -> None:
-        req = await _wait_for_pending_request(hitl_repo)
-        threads = await thread_repo.list_()
-        t2 = next(t for t in threads if t.agent == "todo_approval")
-        captured["t2_metadata"] = dict(t2.metadata_)
-        approval_deps = _approval_deps(
-            notes_repo=notes_repo,
-            hitl_repo=hitl_repo,
-            request_id=req.id,
-            proposed_title="x",
-            proposed_body="y",
-            parent_thread_id=t1_id,
-        )
-        await approve_fn(_FakeCtx(deps=approval_deps))
-
-    approver_task = asyncio.create_task(_approver())
-    try:
-        await propose_todo(ctx, title="x", body="y")
-    finally:
-        await approver_task
-
-    meta = captured["t2_metadata"]
-    assert meta["parent_thread_id"] == str(t1_id)
-    assert meta["proposed_title"] == "x"
-    assert meta["proposed_body"] == "y"
-    # ``request_id`` is the framework-injected routing key (UUID string).
-    UUID(meta["request_id"])
-
-
-@pytest.mark.asyncio
-async def test_propose_todo_seeds_opening_assistant_message_on_t2(
-    fresh_dbos_executor: None,
-) -> None:
-    """The approval thread shows an opening assistant message immediately."""
-    notes_repo = InMemoryNoteRepository()
-    thread_repo = InMemoryThreadRepository()
-    hitl_repo = InMemoryHITLRepository()
-
-    deps, t1_id = await _build_propose_deps(
-        notes_repo=notes_repo,
-        thread_repo=thread_repo,
-        hitl_repo=hitl_repo,
-    )
-    ctx = _FakeCtx(deps=deps)
-
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
-    propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
-
-    approval_agent = _TestTodoApprovalAgent(
-        hitl_repo=hitl_repo, notes_repo=notes_repo,
-    )
-    approve_fn = _bound_tool(approval_agent.agent, "approve")
-
-    captured: dict[str, Any] = {}
-
-    async def _approver() -> None:
-        req = await _wait_for_pending_request(hitl_repo)
-        threads = await thread_repo.list_()
-        t2 = next(t for t in threads if t.agent == "todo_approval")
-        history = await thread_repo.history(t2.id)
-        captured["t2_history"] = history
-        approval_deps = _approval_deps(
-            notes_repo=notes_repo,
-            hitl_repo=hitl_repo,
-            request_id=req.id,
-            proposed_title="alpha",
-            proposed_body="beta",
-            parent_thread_id=t1_id,
-        )
-        await approve_fn(_FakeCtx(deps=approval_deps))
-
-    approver_task = asyncio.create_task(_approver())
-    try:
-        await propose_todo(ctx, title="alpha", body="beta")
-    finally:
-        await approver_task
-
-    history = captured["t2_history"]
+    t2 = next(t for t in threads if t.agent == "todo_approval")
+    history = await thread_repo.history(t2.id)
     assert len(history) == 1
     assert history[0].role == "assistant"
-    text_part = history[0].parts[0]
-    assert "alpha" in text_part["text"]
-    assert "beta" in text_part["text"]
+    assert "groceries" in history[0].parts[0]["text"]
 
 
 @pytest.mark.asyncio
-async def test_propose_todo_rejects_when_deps_missing_hitl_gate() -> None:
-    """Calling ``propose_todo`` without HITL plumbing must fail loudly."""
+async def test_approve_saves_note_and_notifies_parent(
+    fresh_dbos_executor: None,
+) -> None:
+    """Happy path: approve → note saved + 'Saved your todo' on T1."""
+    notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
+    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+
+    _, t1, t2_meta = await _spawn_proposal(
+        title="groceries", body="milk eggs",
+        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+    )
+    workflow_id = t2_meta["workflow_id"]
+
+    await _trigger_approval(
+        helper_tool="approve",
+        t2_metadata=t2_meta,
+        notes_repo=notes_repo,
+    )
+
+    # Wait for the durable workflow to consume the DBOS message and
+    # finish its work (save + notify). ``get_result()`` blocks until the
+    # workflow completes (or raises).
+    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    await handle.get_result()
+
+    listed = await notes_repo.list_()
+    assert [n.title for n in listed] == ["groceries"]
+    assert listed[0].body == "milk eggs"
+
+    history = await thread_repo.history(t1.id)
+    assistant_texts = [
+        m.parts[0]["text"] for m in history if m.role == "assistant"
+    ]
+    assert any("Saved" in t and "groceries" in t for t in assistant_texts)
+
+
+@pytest.mark.asyncio
+async def test_modify_saves_note_with_overrides(
+    fresh_dbos_executor: None,
+) -> None:
+    """Modify branch: overrides applied, note saved, parent notified."""
+    notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
+    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+
+    _, t1, t2_meta = await _spawn_proposal(
+        title="groceries", body="milk",
+        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+    )
+    workflow_id = t2_meta["workflow_id"]
+
+    await _trigger_approval(
+        helper_tool="modify",
+        t2_metadata=t2_meta,
+        notes_repo=notes_repo,
+        new_title="weekly groceries",
+        new_body="milk, eggs, bread",
+    )
+
+    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    await handle.get_result()
+
+    listed = await notes_repo.list_()
+    assert [n.title for n in listed] == ["weekly groceries"]
+    assert listed[0].body == "milk, eggs, bread"
+
+    history = await thread_repo.history(t1.id)
+    assistant_texts = [
+        m.parts[0]["text"] for m in history if m.role == "assistant"
+    ]
+    assert any("weekly groceries" in t for t in assistant_texts)
+
+
+@pytest.mark.asyncio
+async def test_reject_skips_note_and_notifies_parent(
+    fresh_dbos_executor: None,
+) -> None:
+    """Reject branch: no note saved, parent gets a cancellation message."""
+    notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
+    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+
+    _, t1, t2_meta = await _spawn_proposal(
+        title="garbage", body="trash",
+        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+    )
+    workflow_id = t2_meta["workflow_id"]
+
+    await _trigger_approval(
+        helper_tool="reject",
+        t2_metadata=t2_meta,
+        notes_repo=notes_repo,
+        reason="too vague",
+    )
+
+    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    await handle.get_result()
+
+    assert await notes_repo.list_() == []
+
+    history = await thread_repo.history(t1.id)
+    assistant_texts = [
+        m.parts[0]["text"] for m in history if m.role == "assistant"
+    ]
+    assert any("cancelled" in t.lower() for t in assistant_texts)
+    assert any("too vague" in t.lower() for t in assistant_texts)
+
+
+@pytest.mark.asyncio
+async def test_propose_todo_returns_before_helper_decision(
+    fresh_dbos_executor: None,
+) -> None:
+    """The whole point: propose_todo must NOT block on the decision.
+
+    If propose_todo blocked, this test would hang (nobody fires the
+    helper tool). It must return immediately with the workflow running
+    in the background.
+    """
+    notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
+    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+
+    # If this await hung, the test would time out — we explicitly assert
+    # it resolves quickly.
+    result, _, t2_meta = await asyncio.wait_for(
+        _spawn_proposal(
+            title="x", body="y",
+            notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+        ),
+        timeout=2.0,
+    )
+    assert result  # non-empty string
+
+    # Clean up: fire reject so the dangling workflow finishes (otherwise
+    # the test DBOS fixture has a lingering pending workflow).
+    await _trigger_approval(
+        helper_tool="reject",
+        t2_metadata=t2_meta,
+        notes_repo=notes_repo,
+    )
+    handle = await DBOS.retrieve_workflow_async(t2_meta["workflow_id"])
+    await handle.get_result()
+
+
+@pytest.mark.asyncio
+async def test_propose_todo_rejects_when_deps_missing_todo_flow() -> None:
+    """Calling ``propose_todo`` without plumbing must fail loudly."""
     notes_repo = InMemoryNoteRepository()
     notes_agent = _TestNotesAgent(notes_repo=notes_repo)
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
-    deps = NoteToolDeps(repo=notes_repo)  # no hitl_gate
-    ctx = _FakeCtx(deps=deps)
+    deps = NoteToolDeps(repo=notes_repo)  # no todo_flow / thread_repo
     with pytest.raises(RuntimeError, match="propose_todo requires"):
-        await propose_todo(ctx, title="x", body="y")
-
-
-# ---------------------------------------------------------------------------
-# End-to-end SSE-over-DBOS smoke is intentionally left unimplemented.
-#
-# The streaming router would need to run TWO concurrent SSE streams
-# (T1 + T2) while DBOS sits between them on ``recv``. The orchestration
-# is doable but timing-fragile under TestClient, and the brief
-# explicitly endorses the unit-level proof above as the load-bearing
-# coverage for the commit. The end-to-end flow is verified manually
-# against the running app.
-# ---------------------------------------------------------------------------
-
-
-# Suppress "unused" lint flag on imported symbol that we only consume
-# via type annotations (BlockingRequirementStatus is referenced via
-# the helper's typed return chain).
-_ = BlockingRequirementStatus
+        await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
