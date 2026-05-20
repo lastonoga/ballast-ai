@@ -166,6 +166,39 @@ def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
 _DEFAULT_HISTORY_LIMIT = 200
 
 
+async def _last_user_text_from_body(request: Request) -> str:
+    """Return the text of the LAST user UIMessage in the request body.
+
+    Walks the raw Vercel-AI body — NOT ``adapter.messages`` — because
+    the adapter coalesces consecutive user messages (with no assistant
+    between) into a single ``ModelRequest`` with multiple
+    ``UserPromptPart`` entries. That coalescing is fine for prompting
+    the model with the full unbroken user input, but it corrupts our
+    "this is the NEW user turn we just received" extraction: an
+    orphaned user message from a cancelled prior turn would get
+    concatenated with the new text and we'd persist the join (``"а
+    тыты"`` instead of just ``"ты"``).
+
+    The raw body's ``messages`` array preserves one entry per
+    UIMessage. The last role="user" entry is, by frontend convention
+    (Vercel ``useChat.sendMessage``), the user's just-typed turn.
+    """
+    body = await request.json()
+    messages = body.get("messages") or []
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        chunks: list[str] = []
+        for part in msg.get("parts") or []:
+            if part.get("type") == "text":
+                txt = part.get("text")
+                if isinstance(txt, str):
+                    chunks.append(txt)
+        if chunks:
+            return "".join(chunks)
+    return ""
+
+
 def _parse_last_event_id(request: Request) -> int:
     """Read the SSE-standard ``Last-Event-ID`` header (or 0)."""
     raw = request.headers.get("Last-Event-ID") or request.headers.get(
@@ -224,7 +257,16 @@ async def _durable_post_message(
     adapter = await VercelAIAdapter.from_request(
         request, agent=stateflow_agent.agent, sdk_version=6,
     )
-    prompt_text = _last_user_text(adapter.messages)
+    # IMPORTANT: pull the new prompt from the RAW body's last user
+    # UIMessage — NOT from ``adapter.messages``. ``VercelAIAdapter``
+    # coalesces consecutive user messages (no assistant between them)
+    # into a single ``ModelRequest`` with multiple ``UserPromptPart``
+    # entries. That happens whenever a previous turn was cancelled
+    # mid-flight: the orphaned user message stays in the frontend's
+    # local state, so the next send carries BOTH the orphan and the
+    # new text. ``_last_user_text`` would then return the joined text
+    # ("a tyты" instead of just "ты"), corrupting the new prompt.
+    prompt_text = await _last_user_text_from_body(request)
     if not prompt_text:
         raise HTTPException(
             status_code=400,
