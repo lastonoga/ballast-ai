@@ -30,6 +30,7 @@
 
 import {
   AssistantRuntimeProvider,
+  RuntimeAdapterProvider,
   useAui,
   useAuiState,
   useRemoteThreadListRuntime,
@@ -54,6 +55,7 @@ import {
   type PropsWithChildren,
 } from "react";
 import { buildRemoteThreadListAdapter } from "@/lib/thread-list-adapter";
+import { useNotesAppThreadHistoryAdapter } from "@/lib/thread-history-adapter";
 
 const DEFAULT_API_URL = "http://localhost:8000";
 const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
@@ -296,60 +298,14 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
 
         const runtime = useAISDKRuntime(chat);
 
-        // Restore the conversation when a thread mounts with an existing
-        // backend remoteId (page reload, sidebar click on an old thread).
-        // Without this, useChat starts empty even though the backend has
-        // the full history. We fetch the active branch, map to
-        // UIMessage[], and seed useChat once per remoteId — only when
-        // the chat hasn't already filled itself in this session.
-        useEffect(() => {
-          if (!remoteId) return;
-          // Avoid clobbering messages we already streamed in this
-          // session (e.g. after init() flipped remoteId from undefined
-          // → uuid). Restore only on a "cold" mount: zero messages.
-          if (chat.messages.length > 0) return;
-          let cancelled = false;
-          void (async () => {
-            try {
-              const r = await fetch(
-                `${apiUrl}/threads/${remoteId}/messages`,
-                { headers },
-              );
-              if (!r.ok || cancelled) return;
-              const rows = (await r.json()) as Array<{
-                id: string;
-                role: string;
-                parts: Array<Record<string, unknown>>;
-              }>;
-              if (cancelled || chat.messages.length > 0) return;
-              // Backend persists assistant parts in the exact Vercel
-              // UIMessage shape (text + reasoning + tool-* with state)
-              // via VercelAIAdapter.dump_messages on the server. Just
-              // pass them through — useChat / assistant-ui will render
-              // reasoning chains, tool-call cards, and approval outcomes
-              // identical to the live stream. User-message parts are
-              // text-only ({type:"text", text:...}) so they restore
-              // unchanged too.
-              const restored = rows.map((row) => ({
-                id: row.id,
-                role: row.role as UIMessage["role"],
-                parts: row.parts as unknown as UIMessage["parts"],
-              })) as UIMessage[];
-              if (restored.length > 0) {
-                chat.setMessages(restored);
-              }
-            } catch {
-              // Best-effort restore — if it fails we just show an
-              // empty conversation; user can still send new messages.
-            }
-          })();
-          return () => {
-            cancelled = true;
-          };
-          // We intentionally key on `remoteId` only — `chat` identity
-          // changes on every render and would re-fetch.
-          // eslint-disable-next-line react-hooks/exhaustive-deps
-        }, [remoteId, apiUrl, headers]);
+        // History persistence flows through the canonical
+        // ThreadHistoryAdapter wired via <RuntimeAdapterProvider>
+        // below — useAISDKRuntime/useExternalHistory triggers
+        // ``historyAdapter.withFormat(...).load()`` once
+        // ``threadListItem.remoteId`` resolves and imports the
+        // messages via ``runtime.thread.import``. No manual
+        // ``chat.setMessages`` needed; thread switching auto-fires
+        // the load for the newly-active thread.
 
         // Publish this thread's chat helpers to the outer provider via
         // the shared ref. Clear on unmount so a stale helper from a
@@ -392,9 +348,31 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ChatHelpersContext.Provider value={helpersProxy}>
-        {children}
-      </ChatHelpersContext.Provider>
+      <RuntimeAdaptersBridge apiUrl={apiUrl} headers={headers}>
+        <ChatHelpersContext.Provider value={helpersProxy}>
+          {children}
+        </ChatHelpersContext.Provider>
+      </RuntimeAdaptersBridge>
     </AssistantRuntimeProvider>
+  );
+};
+
+/**
+ * Inner provider that builds the ThreadHistoryAdapter (requires
+ * ``useAui`` to be available, which only works inside
+ * ``AssistantRuntimeProvider``) and exposes it via
+ * ``RuntimeAdapterProvider`` so ``useAISDKRuntime``'s
+ * ``useExternalHistory`` picks it up at the per-thread runtime layer.
+ */
+const RuntimeAdaptersBridge: FC<{
+  apiUrl: string;
+  headers: Record<string, string>;
+  children: React.ReactNode;
+}> = ({ apiUrl, headers, children }) => {
+  const historyAdapter = useNotesAppThreadHistoryAdapter(apiUrl, headers);
+  return (
+    <RuntimeAdapterProvider adapters={{ history: historyAdapter }}>
+      {children}
+    </RuntimeAdapterProvider>
   );
 };
