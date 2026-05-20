@@ -12,7 +12,15 @@ from fastapi.testclient import TestClient
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from pydantic_ai_stateflow.persistence import (
+    EventLogRepository,
+    InMemoryEventLogRepository,
+    InMemoryThreadRepository,
+)
+from pydantic_ai_stateflow.runtime import (
+    EventStream,
+    InProcessEventStream,
+)
 
 from notes_app.agent import NotesAgent, NoteToolDeps
 from notes_app.main import build_app
@@ -43,9 +51,19 @@ class _FakeNotesAgent(NotesAgent):
         self,
         *,
         notes_repo: InMemoryNoteRepository,
+        thread_repo: InMemoryThreadRepository | None = None,
+        event_log: EventLogRepository | None = None,
+        event_stream: EventStream | None = None,
+        config_name: str | None = None,
         with_tools: bool = False,
     ) -> None:
-        super().__init__(notes_repo=notes_repo)
+        super().__init__(
+            notes_repo=notes_repo,
+            thread_repo=thread_repo,
+            event_log=event_log,
+            event_stream=event_stream,
+            config_name=config_name,
+        )
         self._with_tools = with_tools
 
     def build_agent(self) -> Agent[NoteToolDeps, str]:
@@ -121,10 +139,23 @@ def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a TestModel-backed agent — no network."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
+    # Durable streaming path needs the agent + the router to share the
+    # SAME event_log + event_stream so workflow writes are visible to
+    # the SSE consumer that polls / subscribes them.
+    event_log = InMemoryEventLogRepository()
+    event_stream = InProcessEventStream()
     app = build_app(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
-        notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
+        event_log=event_log,
+        event_stream=event_stream,
+        notes_agent=_FakeNotesAgent(
+            notes_repo=notes_repo,
+            thread_repo=thread_repo,
+            event_log=event_log,
+            event_stream=event_stream,
+            config_name=f"notes-smoke-{uuid4()}",
+        ),
         todo_flow=_unique_flow(notes_repo, thread_repo),
     )
 

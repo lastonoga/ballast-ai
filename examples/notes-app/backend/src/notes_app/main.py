@@ -121,7 +121,11 @@ def build_app(
 
     notes_router = build_notes_router(repo)
     threads_router = build_threads_router(thread_repo=repo)
-    streaming_router = build_streaming_router(thread_repo=repo)
+    streaming_router = build_streaming_router(
+        thread_repo=repo,
+        event_log=log,
+        event_stream=stream,
+    )
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""

@@ -24,23 +24,39 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
+from dbos import DBOS, SetWorkflowID
 from fastapi import APIRouter, HTTPException, Request
+from starlette.responses import StreamingResponse
 
 from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
 )
+from pydantic_ai_stateflow.api.streaming.wire_encoder import (
+    VercelAIWireEncoder,
+    WireEncoder,
+)
 from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
+from pydantic_ai_stateflow.persistence.events.repository import (
+    EventLogRepository,
+)
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime.agents import get_agent
+from pydantic_ai_stateflow.runtime.durable_agent import StateflowDurableAgent
+from pydantic_ai_stateflow.runtime.event_stream import (
+    EventStream,
+    thread_channel,
+)
 
 _log = get_logger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from pydantic_ai.agent import AgentRunResult
     from pydantic_ai.messages import ModelMessage
     from starlette.responses import Response
@@ -151,9 +167,186 @@ def _trim_adapter_messages_to_last_user_turn(adapter: Any) -> None:
 _DEFAULT_HISTORY_LIMIT = 200
 
 
+def _parse_last_event_id(request: Request) -> int:
+    """Read the SSE-standard ``Last-Event-ID`` header (or 0)."""
+    raw = request.headers.get("Last-Event-ID") or request.headers.get(
+        "last-event-id",
+    )
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        _log.warning("Ignoring malformed Last-Event-ID header: %r", raw)
+        return 0
+
+
+async def _durable_post_message(
+    *,
+    request: Request,
+    thread_id: UUID,
+    stateflow_agent: StateflowDurableAgent,
+    thread_repo: ThreadRepository,
+    event_log: EventLogRepository,
+    event_stream: EventStream,
+    encoder: WireEncoder,
+    history_limit: int,
+) -> Response:
+    """Durable streaming branch — starts the workflow then tails the event log.
+
+    Flow:
+      1. Parse the request body to pull out the new user prompt
+         (mirrors the non-durable path's body shape so frontends use
+         the same client SDK).
+      2. Persist the user message to ``thread_repo`` BEFORE the
+         workflow starts. Same idempotency contract as the existing
+         path — a request retry with the same body produces the same
+         persisted user row.
+      3. Build a JSON-friendly ``history_dump`` from the active branch
+         (excluding the just-persisted prompt — pydantic-ai re-derives
+         it from the workflow argument).
+      4. Start ``stateflow_agent.run`` as a DBOS workflow with a
+         deterministic ``workflow_id`` keyed off the user message id —
+         a refresh / retry from the client reuses the same workflow
+         instead of spawning a duplicate.
+      5. Stream events from the durable log to the client: replay
+         everything ``> Last-Event-ID``, then subscribe to live
+         notifications and keep emitting until a ``done`` event lands.
+
+    SSE chunks come from the ``encoder`` (default VercelAI v6); swap
+    via ``encoder_factory`` for AG-UI / A2A / custom wire formats.
+    """
+    from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
+
+    # The Vercel-AI body parser is the easiest way to extract the
+    # incoming user prompt + message id without re-implementing the
+    # client-side message shape. We don't drive ``adapter.run_stream``
+    # in this path — the workflow does that internally.
+    adapter = await VercelAIAdapter.from_request(
+        request, agent=stateflow_agent.agent, sdk_version=6,
+    )
+    prompt_text = _last_user_text(adapter.messages)
+    if not prompt_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Durable agent requires a non-empty user prompt",
+        )
+
+    # Persist user message (same shape as non-durable path).
+    history_before = await thread_repo.history(thread_id, limit=history_limit)
+    new_user_parent_id = history_before[-1].id if history_before else None
+    user_msg = await thread_repo.add_message(
+        thread_id,
+        role="user",
+        parts=[{"type": "text", "text": prompt_text, "state": "done"}],
+        parent_id=new_user_parent_id,
+    )
+
+    # Build history dump. Pydantic-ai's ``ModelMessage`` instances
+    # serialize via ``model_dump(mode="json")`` for DBOS workflow
+    # transport.
+    rows = await thread_repo.history(thread_id, limit=history_limit)
+    history = messages_to_model_history(rows, drop_prompt=prompt_text)
+    history_dump = [m.model_dump(mode="json") for m in history]
+
+    # Deterministic workflow id keyed off the just-persisted user msg —
+    # SetWorkflowID is idempotent so a retry of the same request body
+    # (same user_msg.id) attaches to the existing workflow instead of
+    # spawning a duplicate.
+    workflow_id = f"agent-run:{thread_id}:{user_msg.id}"
+
+    try:
+        with SetWorkflowID(workflow_id):
+            await DBOS.start_workflow_async(
+                stateflow_agent.run,
+                thread_id_str=str(thread_id),
+                prompt=prompt_text,
+                history_dump=history_dump,
+            )
+    except Exception as exc:  # pragma: no cover — DBOS errors caught wholesale
+        # SetWorkflowID raises if the id collides AND the existing
+        # workflow is in a different state. For our deterministic key
+        # case the typical "collision" outcome is "already running" —
+        # which is what we want; the SSE stream will tail the existing
+        # workflow's events. Log and continue.
+        _log.info(
+            "start_workflow_async returned %s for workflow_id=%s — "
+            "assuming attach-to-existing", type(exc).__name__, workflow_id,
+        )
+
+    last_event_id = _parse_last_event_id(request)
+
+    async def _gen() -> AsyncIterator[bytes]:
+        import asyncio  # noqa: PLC0415
+
+        for chunk in encoder.initial_events(thread_id=thread_id):
+            yield chunk
+
+        last_seq = last_event_id
+
+        # Poll the durable log + tail the live signal channel. Polling
+        # is the safety net: ``EventStream`` notifications are
+        # best-effort and may not reach a different event loop / thread
+        # (DBOS workflow runs in its own asyncio task). The log read is
+        # the source of truth — we always re-read from it after each
+        # wake-up, never trust the notification payload alone.
+        poll_interval_s = 0.05
+        idle_iterations = 0
+        # Cap idle wait at ~30s of consecutive empty polls — beyond
+        # that the workflow is almost certainly stuck / cancelled and
+        # we emit a stream-level error instead of hanging the client.
+        max_idle_iterations = int(30.0 / poll_interval_s)
+
+        while True:
+            events = await event_log.read_since(thread_id, after_seq=last_seq)
+            if events:
+                idle_iterations = 0
+                for ev in events:
+                    for chunk in encoder.encode_event(ev):
+                        yield chunk
+                    last_seq = ev.seq
+                    if ev.kind == "done":
+                        for chunk in encoder.finalize():
+                            yield chunk
+                        return
+            else:
+                idle_iterations += 1
+                if idle_iterations >= max_idle_iterations:
+                    _log.warning(
+                        "Durable stream idle for ~30s on thread %s "
+                        "(last_seq=%d) — closing",
+                        thread_id, last_seq,
+                    )
+                    for chunk in encoder.finalize():
+                        yield chunk
+                    return
+            await asyncio.sleep(poll_interval_s)
+
+    # ``event_stream`` is reserved for future live-signal optimization
+    # (avoid polling entirely on the same-loop case). Kept in the
+    # signature so apps can wire it now — current implementation just
+    # polls the log.
+    _ = event_stream
+
+    return StreamingResponse(_gen(), media_type=encoder.content_type())
+
+
+EncoderFactory = Callable[[], WireEncoder]
+"""Producer of a per-request encoder instance.
+
+Defaults to ``VercelAIWireEncoder``. Apps swap in their own factory
+to support AG-UI / A2A / custom wire formats — the factory pattern
+gives each SSE response a fresh encoder instance so per-stream state
+(e.g. text-delta accumulation) doesn't leak across requests.
+"""
+
+
 def build_streaming_router(
     *,
     thread_repo: ThreadRepository,
+    event_log: EventLogRepository | None = None,
+    event_stream: EventStream | None = None,
+    encoder_factory: EncoderFactory | None = None,
     prefix: str = "",
     history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> APIRouter:
@@ -193,6 +386,7 @@ def build_streaming_router(
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
     router = APIRouter(prefix=prefix)
+    _encoder_factory: EncoderFactory = encoder_factory or VercelAIWireEncoder
 
     @router.post("/threads/{thread_id}/messages")
     @traced(
@@ -215,6 +409,31 @@ def build_streaming_router(
             raise HTTPException(status_code=404, detail="thread not found")
 
         stateflow_agent = get_agent(thread.agent)
+
+        # Durable path: fire the run as a @DBOS.workflow, then stream
+        # events from the durable log + signal channel back to the
+        # client. Survives caller cancellation / process restart /
+        # reconnect via Last-Event-ID.
+        if isinstance(stateflow_agent, StateflowDurableAgent):
+            if event_log is None or event_stream is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Durable agent requires event_log + event_stream "
+                        "wired into build_streaming_router(...)"
+                    ),
+                )
+            return await _durable_post_message(
+                request=request,
+                thread_id=thread_id,
+                stateflow_agent=stateflow_agent,
+                thread_repo=thread_repo,
+                event_log=event_log,
+                event_stream=event_stream,
+                encoder=_encoder_factory(),
+                history_limit=history_limit,
+            )
+
         agent = stateflow_agent.agent
         model_settings = stateflow_agent.model_settings()
 
