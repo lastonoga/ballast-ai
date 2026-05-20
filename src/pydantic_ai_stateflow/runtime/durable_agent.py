@@ -541,7 +541,12 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         model_settings = self.model_settings()
 
         await self._persist_and_publish(
-            thread_id=thread_id, kind="start", payload={"prompt": prompt},
+            thread_id=thread_id,
+            kind="start",
+            payload={
+                "prompt": prompt,
+                "conversation_id": str(thread_id),
+            },
         )
 
         token = _current_thread_id.set(thread_id)

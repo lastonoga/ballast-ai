@@ -335,8 +335,34 @@ async def _durable_post_message(
         # the assistant turn with approval state baked into parts; we
         # don't want to persist that as a new assistant row — the
         # resumed agent run will produce the real tool-output assistant).
+        #
+        # **Why VercelAIAdapter.load_messages and not messages_to_model_history**:
+        # pydantic-ai matches ``deferred_tool_results[tool_call_id]``
+        # against ``ToolCallPart`` entries in ``message_history``. Our
+        # local ``messages_to_model_history`` only re-emits ``TextPart``,
+        # so the deferred tool's originating call is lost → agent run
+        # raises ``UserError("Tool call results were provided, but the
+        # message history does not contain any unprocessed tool calls.")``.
+        # ``VercelAIAdapter.load_messages`` round-trips the full
+        # UIMessage shape (text + tool-calls + reasoning + …) into the
+        # proper ``ModelMessage`` list.
+        from pydantic_ai.ui.vercel_ai.request_types import (  # noqa: PLC0415
+            UIMessage,
+        )
+
         rows = await thread_repo.history(thread_id, limit=history_limit)
-        history = messages_to_model_history(rows, drop_prompt=None)
+        ui_msgs: list[UIMessage] = []
+        for row in rows:
+            if row.role not in {"user", "assistant", "system"}:
+                continue
+            ui_msgs.append(
+                UIMessage.model_validate({
+                    "id": row.id,
+                    "role": row.role,
+                    "parts": row.parts,
+                }),
+            )
+        history = VercelAIAdapter.load_messages(ui_msgs)
         history_dump = ModelMessagesTypeAdapter.dump_python(
             history, mode="json",
         )
