@@ -36,9 +36,9 @@ def upgrade() -> None:
             sa.ForeignKey("tenants.id"),
             nullable=False,
         ),
-        sa.Column("purpose", sa.String(), nullable=False),
+        sa.Column("agent", sa.String(), nullable=False),
         sa.Column(
-            "purpose_metadata",
+            "metadata",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),

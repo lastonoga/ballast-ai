@@ -84,11 +84,24 @@ class ThreadRepository(Protocol):
     async def create(
         self,
         *,
-        purpose: str,
-        purpose_metadata: dict[str, Any],
+        agent: str,
+        metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
-    ) -> Thread: ...
+    ) -> Thread:
+        """Create a new thread bound to ``agent``.
+
+        ``agent`` is the registry key (``StateflowAgent.name``) — callers
+        usually pass it as the result of
+        ``pydantic_ai_stateflow.runtime.agents._resolve_agent_name(...)``
+        so a class or instance reference also works at the call site.
+        Stored verbatim as a string in the DB.
+
+        ``metadata`` should already be validated against the agent's
+        ``metadata_model`` (see ``validate_thread_metadata``) before
+        being passed here — the repo does not re-validate.
+        """
+        ...
     async def load(self, id: UUID, *, tenant_id: UUID) -> Thread | None: ...
     async def add_message(
         self,
@@ -162,23 +175,23 @@ class InMemoryThreadRepository:
 
     @traced(
         TraceName.THREAD_CREATE,
-        attrs=lambda _self, *, purpose, tenant_id, **__: {
-            "tenant_id": str(tenant_id), "purpose": purpose,
+        attrs=lambda _self, *, agent, tenant_id, **__: {
+            "tenant_id": str(tenant_id), "agent": agent,
         },
     )
     async def create(
         self,
         *,
-        purpose: str,
-        purpose_metadata: dict[str, Any],
+        agent: str,
+        metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
     ) -> Thread:
         thread = Thread(
             id=uuid4(),
             tenant_id=tenant_id,
-            purpose=purpose,
-            purpose_metadata=dict(purpose_metadata),
+            agent=agent,
+            metadata=dict(metadata),
             workflow_id=None,
             actor_id=actor_id,
             status=ThreadStatus.OPEN,
@@ -189,8 +202,8 @@ class InMemoryThreadRepository:
         self._threads[thread.id] = thread
         self._messages[thread.id] = []
         _log.info(
-            "InMemoryThreadRepository.create: id=%s tenant=%s purpose=%s",
-            thread.id, tenant_id, purpose,
+            "InMemoryThreadRepository.create: id=%s tenant=%s agent=%s",
+            thread.id, tenant_id, agent,
         )
         return thread
 

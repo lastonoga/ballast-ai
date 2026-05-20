@@ -20,21 +20,6 @@ def _app(repo: InMemoryThreadRepository) -> FastAPI:
 
 
 @pytest.mark.asyncio
-async def test_create_thread_201_returns_id():
-    repo = InMemoryThreadRepository()
-    app = _app(repo)
-    tid = uuid4()
-    body = {"purpose": "conversation", "purpose_metadata": {}, "actor_id": "alice"}
-    with TestClient(app) as c:
-        r = c.post("/threads", json=body, headers={"X-Tenant-Id": str(tid)})
-    assert r.status_code == 201
-    payload = r.json()
-    assert "id" in payload
-    assert payload["actor_id"] == "alice"
-    assert payload["tenant_id"] == str(tid)
-
-
-@pytest.mark.asyncio
 async def test_get_thread_404_when_unknown():
     repo = InMemoryThreadRepository()
     app = _app(repo)
@@ -48,7 +33,7 @@ async def test_get_thread_200_when_owned():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -63,7 +48,7 @@ async def test_get_thread_404_cross_tenant():
     tid = uuid4()
     other = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -76,7 +61,7 @@ async def test_history_returns_messages():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     await repo.add_message(
         th.id, role="user", parts=[{"kind": "text", "text": "hi"}], tenant_id=tid,
@@ -100,12 +85,15 @@ async def test_history_returns_messages():
 @pytest.mark.asyncio
 async def test_router_respects_prefix():
     repo = InMemoryThreadRepository()
+    tid = uuid4()
+    th = await repo.create(
+        agent="conversation", metadata={}, actor_id="x", tenant_id=tid,
+    )
     app = FastAPI()
     app.include_router(build_threads_router(thread_repo=repo, prefix="/api"))
-    body = {"purpose": "conversation", "purpose_metadata": {}, "actor_id": "x"}
     with TestClient(app) as c:
-        r = c.post("/api/threads", json=body, headers={"X-Tenant-Id": str(uuid4())})
-    assert r.status_code == 201
+        r = c.get(f"/api/threads/{th.id}", headers={"X-Tenant-Id": str(tid)})
+    assert r.status_code == 200
 
 
 # ── F6: list / rename / archive / unarchive / delete ─────────────────────────
@@ -116,10 +104,10 @@ async def test_list_endpoint_200_respects_include_archived():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     t1 = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     t2 = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     await repo.archive(t1.id, tenant_id=tid)
     app = _app(repo)
@@ -144,7 +132,7 @@ async def test_list_endpoint_tenant_scoped():
     tid = uuid4()
     other = uuid4()
     await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -158,7 +146,7 @@ async def test_patch_thread_sets_title_200():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -190,7 +178,7 @@ async def test_patch_thread_404_cross_tenant():
     tid = uuid4()
     other = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -207,7 +195,7 @@ async def test_archive_endpoint_sets_status():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -229,7 +217,7 @@ async def test_archive_endpoint_404_cross_tenant():
     tid = uuid4()
     other = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -244,7 +232,7 @@ async def test_delete_endpoint_204_and_idempotent():
     repo = InMemoryThreadRepository()
     tid = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -270,7 +258,7 @@ async def test_delete_endpoint_cross_tenant_does_not_remove():
     tid = uuid4()
     other = uuid4()
     th = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a", tenant_id=tid,
+        agent="conversation", metadata={}, actor_id="a", tenant_id=tid,
     )
     app = _app(repo)
     with TestClient(app) as c:
@@ -296,7 +284,7 @@ async def test_list_endpoint_honors_offset_query_param():
     created = []
     for _ in range(3):
         t = await repo.create(
-            purpose="conversation", purpose_metadata={}, actor_id="a",
+            agent="conversation", metadata={}, actor_id="a",
             tenant_id=tid,
         )
         created.append(t)

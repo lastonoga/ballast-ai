@@ -139,8 +139,8 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
     assert sent["message"]["kind"] == "approved"
     assert len(runner.thread_repo._threads) == 1
     th = next(iter(runner.thread_repo._threads.values()))
-    assert th.purpose == "hitl"
-    assert th.purpose_metadata["request_id"] == str(rid)
+    assert th.agent == "hitl"
+    assert th.metadata["request_id"] == str(rid)
 
 
 @pytest.mark.asyncio

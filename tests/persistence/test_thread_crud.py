@@ -9,7 +9,6 @@ import pytest
 
 from pydantic_ai_stateflow.persistence.thread import (
     InMemoryThreadRepository,
-    ThreadPurpose,
     ThreadStatus,
 )
 
@@ -32,18 +31,18 @@ def repo() -> InMemoryThreadRepository:
 @pytest.mark.asyncio
 async def test_list_returns_newest_first(repo, tenant_id):
     t1 = await repo.create(
-        purpose=ThreadPurpose.CONVERSATION.value, purpose_metadata={},
+        agent="conversation", metadata={},
         actor_id="a", tenant_id=tenant_id,
     )
     # Ensure distinct created_at by yielding to the loop.
     await asyncio.sleep(0.01)
     t2 = await repo.create(
-        purpose=ThreadPurpose.CONVERSATION.value, purpose_metadata={},
+        agent="conversation", metadata={},
         actor_id="a", tenant_id=tenant_id,
     )
     await asyncio.sleep(0.01)
     t3 = await repo.create(
-        purpose=ThreadPurpose.CONVERSATION.value, purpose_metadata={},
+        agent="conversation", metadata={},
         actor_id="a", tenant_id=tenant_id,
     )
     listed = await repo.list_(tenant_id=tenant_id)
@@ -53,11 +52,11 @@ async def test_list_returns_newest_first(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_list_excludes_archived_by_default(repo, tenant_id):
     t1 = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     t2 = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.archive(t1.id, tenant_id=tenant_id)
@@ -70,7 +69,7 @@ async def test_list_excludes_archived_by_default(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_list_includes_archived_when_flag_set(repo, tenant_id):
     t1 = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.archive(t1.id, tenant_id=tenant_id)
@@ -81,11 +80,11 @@ async def test_list_includes_archived_when_flag_set(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_list_isolated_by_tenant(repo, tenant_id, other_tenant_id):
     await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="b",
+        agent="conversation", metadata={}, actor_id="b",
         tenant_id=other_tenant_id,
     )
     listed = await repo.list_(tenant_id=tenant_id)
@@ -101,7 +100,7 @@ async def test_list_offset_skips_first_n(repo, tenant_id):
     created = []
     for _ in range(5):
         t = await repo.create(
-            purpose="conversation", purpose_metadata={}, actor_id="a",
+            agent="conversation", metadata={}, actor_id="a",
             tenant_id=tenant_id,
         )
         created.append(t)
@@ -117,7 +116,7 @@ async def test_list_offset_skips_first_n(repo, tenant_id):
 async def test_list_offset_beyond_total_returns_empty(repo, tenant_id):
     for _ in range(3):
         await repo.create(
-            purpose="conversation", purpose_metadata={}, actor_id="a",
+            agent="conversation", metadata={}, actor_id="a",
             tenant_id=tenant_id,
         )
     page = await repo.list_(tenant_id=tenant_id, limit=10, offset=100)
@@ -127,7 +126,7 @@ async def test_list_offset_beyond_total_returns_empty(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_rename_sets_title(repo, tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     renamed = await repo.rename(t.id, title="Trip planning", tenant_id=tenant_id)
@@ -142,7 +141,7 @@ async def test_rename_sets_title(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_rename_404_cross_tenant(repo, tenant_id, other_tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     with pytest.raises(KeyError):
@@ -152,7 +151,7 @@ async def test_rename_404_cross_tenant(repo, tenant_id, other_tenant_id):
 @pytest.mark.asyncio
 async def test_archive_sets_status(repo, tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     archived = await repo.archive(t.id, tenant_id=tenant_id)
@@ -168,7 +167,7 @@ async def test_archive_sets_status(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_archive_404_cross_tenant(repo, tenant_id, other_tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     with pytest.raises(KeyError):
@@ -178,7 +177,7 @@ async def test_archive_404_cross_tenant(repo, tenant_id, other_tenant_id):
 @pytest.mark.asyncio
 async def test_unarchive_restores_status(repo, tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.archive(t.id, tenant_id=tenant_id)
@@ -192,7 +191,7 @@ async def test_delete_is_idempotent(repo, tenant_id):
     await repo.delete(uuid4(), tenant_id=tenant_id)
     # Deleting twice is a no-op.
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.delete(t.id, tenant_id=tenant_id)
@@ -203,7 +202,7 @@ async def test_delete_is_idempotent(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_delete_removes_messages_too(repo, tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     await repo.add_message(
@@ -218,7 +217,7 @@ async def test_delete_removes_messages_too(repo, tenant_id):
 @pytest.mark.asyncio
 async def test_delete_cross_tenant_is_noop(repo, tenant_id, other_tenant_id):
     t = await repo.create(
-        purpose="conversation", purpose_metadata={}, actor_id="a",
+        agent="conversation", metadata={}, actor_id="a",
         tenant_id=tenant_id,
     )
     # Cross-tenant delete must NOT remove the thread.

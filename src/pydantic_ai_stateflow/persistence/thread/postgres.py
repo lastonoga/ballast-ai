@@ -36,23 +36,23 @@ class PostgresThreadRepository:
 
     @traced(
         TraceName.THREAD_CREATE,
-        attrs=lambda _self, *, purpose, tenant_id, **__: {
-            "tenant_id": str(tenant_id), "purpose": purpose,
+        attrs=lambda _self, *, agent, tenant_id, **__: {
+            "tenant_id": str(tenant_id), "agent": agent,
             "backend": "postgres",
         },
     )
     async def create(
         self,
         *,
-        purpose: str,
-        purpose_metadata: dict[str, Any],
+        agent: str,
+        metadata: dict[str, Any],
         actor_id: str,
         tenant_id: UUID,
     ) -> Thread:
         row = ThreadRow(
             tenant_id=tenant_id,
-            purpose=purpose,
-            purpose_metadata=dict(purpose_metadata),
+            agent=agent,
+            metadata_=dict(metadata),
             actor_id=actor_id,
         )
         self._session.add(row)

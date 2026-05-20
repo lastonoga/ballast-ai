@@ -16,7 +16,6 @@ from pydantic_ai_stateflow.persistence.hitl import (
     HITLPurpose,
 )
 from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
-from pydantic_ai_stateflow.persistence.thread import ThreadPurpose
 
 
 @pytest.mark.asyncio
@@ -35,8 +34,8 @@ async def test_full_state_round_trip(session_factory):  # type: ignore[no-untype
     async with uow1:
         threads = PostgresThreadRepository(uow1.session)
         thread = await threads.create(
-            purpose=ThreadPurpose.HITL.value,
-            purpose_metadata={"gate_kind": "strategy_review"},
+            agent="hitl",
+            metadata={"gate_kind": "strategy_review"},
             actor_id="founder-1",
             tenant_id=tenant_id,
         )

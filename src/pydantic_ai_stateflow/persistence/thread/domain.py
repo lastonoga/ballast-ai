@@ -10,25 +10,6 @@ from pydantic import BaseModel, ConfigDict
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
 
 
-class ThreadPurpose(StrEnum):
-    """Framework-suggested values for thread purpose.
-
-    EXTENSIBLE: the DB stores `str` and the domain field type is
-    ``ThreadPurpose | str`` (union). Apps may pass their own purpose
-    strings (e.g. ``"task_planning"``, ``"approval_chain"``,
-    ``"hitl:strategy_review"`` for sub-categorisation) directly to
-    ``repo.create(purpose=...)``. Unknown values pass through as raw `str`
-    via ``Thread.from_row``.
-
-    Use the framework enum when one of the suggested values applies;
-    introduce a custom string otherwise.
-    """
-
-    ONBOARDING = "onboarding"
-    CONVERSATION = "conversation"
-    HITL = "hitl"
-
-
 class ThreadStatus(StrEnum):
     """Thread lifecycle states.
 
@@ -48,11 +29,31 @@ class ThreadStatus(StrEnum):
 
 
 class Thread(BaseModel):
+    """A conversation thread bound to one ``StateflowAgent``.
+
+    ``agent`` is the registry key (== ``StateflowAgent.name``) that
+    decides which agent runs against this thread when messages arrive.
+    Set once at create-time; the per-thread agent never changes
+    afterwards — HITL/tool-call flows rely on the tool registry being
+    stable for the same thread.
+
+    ``metadata`` is a free-form dict validated against the registered
+    agent's ``metadata_model`` (when present) at create-time. Typical
+    keys: ``"relations"`` (FKs to app-side entities) and ``"context"``
+    (per-thread settings the agent reads from ``ctx.deps``). The
+    metadata model is owned by the agent class — see
+    ``pydantic_ai_stateflow.runtime.agents``.
+    """
+
     model_config = ConfigDict(frozen=True)
     id: UUID
     tenant_id: UUID
-    purpose: ThreadPurpose | str  # may be domain-specific str
-    purpose_metadata: dict[str, Any]
+    agent: str
+    """Registry key — matches the ``name`` ClassVar of the
+    ``StateflowAgent`` subclass that handles this thread."""
+    metadata: dict[str, Any]
+    """Validated against ``agent``'s ``metadata_model``; free-form when
+    the agent declares no model."""
     workflow_id: UUID | None
     actor_id: str
     status: ThreadStatus
@@ -62,16 +63,14 @@ class Thread(BaseModel):
 
     @classmethod
     def from_row(cls, row: ThreadRow) -> Thread:
-        # Coerce known purposes to enum; unknown stays as str
-        try:
-            purpose: ThreadPurpose | str = ThreadPurpose(row.purpose)
-        except ValueError:
-            purpose = row.purpose
         return cls(
             id=row.id,
             tenant_id=row.tenant_id,
-            purpose=purpose,
-            purpose_metadata=row.purpose_metadata,
+            agent=row.agent,
+            # ThreadRow uses ``metadata_`` (Python trailing-underscore)
+            # to dodge the SQLAlchemy ``metadata`` reserved-attr clash;
+            # domain Thread is Pydantic and has no such clash.
+            metadata=row.metadata_,
             workflow_id=row.workflow_id,
             actor_id=row.actor_id,
             status=ThreadStatus(row.status),

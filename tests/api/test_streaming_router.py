@@ -100,8 +100,8 @@ async def test_persists_user_message_before_stream() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -138,8 +138,8 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -180,8 +180,8 @@ async def test_message_history_reconstructed_from_repo() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -253,8 +253,8 @@ async def test_stream_emits_canonical_vercel_ai_events() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -303,8 +303,8 @@ async def test_deps_factory_invoked_per_request() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -348,8 +348,8 @@ async def test_model_settings_flow_through() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -399,8 +399,8 @@ async def test_regenerate_message_creates_sibling_assistant() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )
@@ -490,8 +490,8 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     repo = InMemoryThreadRepository()
     tenant_id = uuid4()
     thread = await repo.create(
-        purpose="conversation",
-        purpose_metadata={},
+        agent="conversation",
+        metadata={},
         actor_id="a",
         tenant_id=tenant_id,
     )

@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
 from pydantic_ai_stateflow.persistence.thread import (
     PostgresThreadRepository,
-    ThreadPurpose,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -37,8 +36,8 @@ async def test_create_and_load_thread(session_factory: async_sessionmaker[AsyncS
     async with session_factory() as session, session.begin():
         repo = PostgresThreadRepository(session)
         thread = await repo.create(
-            purpose=ThreadPurpose.CONVERSATION.value,
-            purpose_metadata={"source": "test"},
+            agent="conversation",
+            metadata={"source": "test"},
             actor_id="user-42",
             tenant_id=tenant.id,
         )
@@ -53,7 +52,7 @@ async def test_create_and_load_thread(session_factory: async_sessionmaker[AsyncS
     assert loaded.id == thread_id
     assert loaded.actor_id == "user-42"
     assert loaded.tenant_id == tenant.id
-    assert loaded.purpose_metadata == {"source": "test"}
+    assert loaded.metadata == {"source": "test"}
 
 
 @pytest.mark.asyncio
@@ -67,8 +66,8 @@ async def test_load_cross_tenant_returns_none(
     async with session_factory() as session, session.begin():
         repo = PostgresThreadRepository(session)
         thread = await repo.create(
-            purpose=ThreadPurpose.HITL.value,
-            purpose_metadata={},
+            agent="hitl",
+            metadata={},
             actor_id="actor-1",
             tenant_id=tenant_a.id,
         )
@@ -92,8 +91,8 @@ async def test_add_message_and_history(
     async with session_factory() as session, session.begin():
         repo = PostgresThreadRepository(session)
         thread = await repo.create(
-            purpose=ThreadPurpose.CONVERSATION.value,
-            purpose_metadata={},
+            agent="conversation",
+            metadata={},
             actor_id="bot",
             tenant_id=tenant.id,
         )
@@ -141,8 +140,8 @@ async def test_add_message_wrong_tenant_raises_key_error(
     async with session_factory() as session, session.begin():
         repo = PostgresThreadRepository(session)
         thread = await repo.create(
-            purpose=ThreadPurpose.CONVERSATION.value,
-            purpose_metadata={},
+            agent="conversation",
+            metadata={},
             actor_id="a",
             tenant_id=tenant_a.id,
         )

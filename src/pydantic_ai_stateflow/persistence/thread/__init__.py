@@ -1,7 +1,6 @@
 from pydantic_ai_stateflow.persistence.thread.domain import (
     Message,
     Thread,
-    ThreadPurpose,
     ThreadStatus,
 )
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
@@ -19,7 +18,6 @@ __all__ = [
     "PostgresThreadRepository",
     "Thread",
     "ThreadClosedError",
-    "ThreadPurpose",
     "ThreadRepository",
     "ThreadRow",
     "ThreadStatus",

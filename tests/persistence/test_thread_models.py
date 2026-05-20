@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadPurpose
+from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread
 from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
 
 
@@ -11,32 +11,26 @@ def test_thread_table_registered():
     assert "messages" in SQLModel.metadata.tables
 
 
-def test_thread_purpose_enum_values():
-    assert ThreadPurpose.ONBOARDING == "onboarding"
-    assert ThreadPurpose.CONVERSATION == "conversation"
-    assert ThreadPurpose.HITL == "hitl"
-
-
 def test_thread_row_minimal_fields():
     row = ThreadRow(
         tenant_id=uuid4(),
-        purpose=ThreadPurpose.CONVERSATION.value,
+        agent="conversation",
         actor_id="user-1",
     )
     assert isinstance(row.id, UUID)
-    assert row.purpose == "conversation"
+    assert row.agent == "conversation"
     assert row.actor_id == "user-1"
-    assert row.purpose_metadata == {}
+    assert row.metadata_ == {}
 
 
-def test_thread_row_with_purpose_metadata():
+def test_thread_row_with_metadata():
     row = ThreadRow(
         tenant_id=uuid4(),
-        purpose=ThreadPurpose.HITL.value,
+        agent="hitl",
         actor_id="founder-x",
-        purpose_metadata={"gate_kind": "strategy_review", "wave_id": "abc"},
+        metadata_={"gate_kind": "strategy_review", "wave_id": "abc"},
     )
-    assert row.purpose_metadata["gate_kind"] == "strategy_review"
+    assert row.metadata_["gate_kind"] == "strategy_review"
 
 
 def test_message_row_fields():
@@ -55,13 +49,13 @@ def test_message_row_fields():
 def test_thread_domain_from_row():
     row = ThreadRow(
         tenant_id=uuid4(),
-        purpose=ThreadPurpose.CONVERSATION.value,
+        agent="conversation",
         actor_id="a",
     )
     domain = Thread.from_row(row)
     assert domain.id == row.id
-    assert domain.purpose == ThreadPurpose.CONVERSATION
-    assert domain.purpose_metadata == {}
+    assert domain.agent == "conversation"
+    assert domain.metadata == {}
 
 
 def test_message_domain_from_row():

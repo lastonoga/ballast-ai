@@ -18,10 +18,15 @@ class ThreadRow(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: UUID = Field(foreign_key="tenants.id", index=True)
-    purpose: str  # ThreadPurpose enum value or domain-specific str
-    purpose_metadata: dict[str, Any] = Field(
+    agent: str  # StateflowAgent.name registry key
+    # ``metadata`` is reserved by SQLAlchemy Declarative for the
+    # MetaData class-attr, so we use the trailing-underscore
+    # Python attr (PEP 8) and map it to the SQL column named
+    # ``metadata`` via ``sa_column``. Apps never touch ThreadRow
+    # directly — domain ``Thread.metadata`` is clean.
+    metadata_: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+        sa_column=Column("metadata", JSONB, nullable=False, server_default="{}"),
     )
     workflow_id: UUID | None = Field(default=None, index=True)
     actor_id: str

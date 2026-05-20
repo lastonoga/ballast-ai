@@ -106,8 +106,8 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
         )
 
         thread = await self.thread_repo.create(
-            purpose="hitl",
-            purpose_metadata={
+            agent="hitl",
+            metadata={
                 "request_id": str(input.request_id),
                 "gate_kind": "hitl_gate",
                 "tenant_id": str(input.tenant_id),
