@@ -136,6 +136,16 @@ export function buildRemoteThreadListAdapter(
     },
 
     async fetch(remoteId): Promise<RemoteThreadMetadata> {
+      // assistant-ui's runtime calls fetch() with its internal
+      // ``__LOCALID_xxx`` placeholder for threads that haven't been
+      // initialized on the backend yet (a fresh draft the user opened
+      // but hasn't sent a message in). Hitting the backend with that
+      // id 422s on the UUID path validator, AND there's no row to
+      // return anyway — short-circuit so the local-only thread stays
+      // local until ``initialize()`` flips it to a real remoteId.
+      if (remoteId.startsWith("__LOCALID_")) {
+        throw new Error(`thread ${remoteId} is local-only; not yet initialized`);
+      }
       const r = await fetch(`${apiUrl}/threads/${remoteId}`, { headers });
       if (!r.ok) {
         throw new Error(`GET /threads/${remoteId} failed: ${r.status}`);
