@@ -1,4 +1,5 @@
 import re
+from collections.abc import AsyncIterator
 
 import pytest
 from pydantic_ai import Agent
@@ -45,9 +46,14 @@ async def test_two_capabilities_compose_in_one_agent() -> None:
     def fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[TextPart(content="contact alice@example.com")])
 
+    async def stream_fn(
+        messages: list[ModelMessage], info: AgentInfo,
+    ) -> AsyncIterator[str]:
+        yield "contact alice@example.com"
+
     from pydantic_ai_stateflow.capabilities import RegexDetector
     agent = Agent(
-        model=FunctionModel(fn),
+        model=FunctionModel(fn, stream_function=stream_fn),
         capabilities=[
             BudgetGuard(max_iterations=5),
             PIIGuard(

@@ -10,6 +10,9 @@ Wires:
     streaming router (resolves ``NotesAgent`` via registry per request).
   - ``StateflowAgent`` registry: a ``NotesAgent`` instance is registered
     under ``name="notes"`` at boot.
+
+To see logfire traces, set ``LOGFIRE_TOKEN`` env var before starting the
+server. Without it, telemetry is a no-op.
 """
 
 from __future__ import annotations

@@ -142,6 +142,16 @@ class Engine:
         app = FastAPI(lifespan=_lifespan)
         app.state.container = self.container
         app.state.engine = self
+        # Wire FastAPI instrumentation now that the app exists. Done here
+        # (not in boot()) because boot() runs from inside the lifespan,
+        # by which point logfire's FastAPI instrumentation needs to have
+        # been attached before any request is served. Lazy import to
+        # avoid the observability ⇄ engine cycle.
+        from pydantic_ai_stateflow.observability.provider import ObservabilityProvider
+
+        for provider in self._providers:
+            if isinstance(provider, ObservabilityProvider):
+                provider.instrument_app(app)
         app.include_router(build_health_router(checks=health_checks))
         for r in extra_routers or []:
             app.include_router(r)

@@ -474,3 +474,64 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     assert msgs_before == msgs_after, (
         "trim must not run when deferred_tool_results is present"
     )
+
+
+@pytest.mark.asyncio
+async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
+    """End-to-end: an Agent wired with ``PIIGuard`` must scrub PII from
+    the SSE body BEFORE the client sees it, not just from the persisted
+    assistant message.
+
+    This pins the user-facing bug: the assistant-ui frontend renders raw
+    bytes off the live stream and never re-syncs from persistence on
+    stream end, so leaking PII via SSE deltas is a real user-visible
+    leak even when the persisted row is clean.
+    """
+    import re as _re
+
+    from pydantic_ai_stateflow.capabilities import PIIGuard, RegexDetector
+
+    email_re = _re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+    leak = "Contact alice@example.com to follow up."
+
+    def fn(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=leak)])
+
+    async def fn_stream(
+        _messages: list[Any], _info: AgentInfo,
+    ) -> AsyncIterator[str]:
+        # Split deliberately so the "@" arrives in a later chunk — the
+        # classic split-across-deltas case PIIGuard.wrap_run_event_stream
+        # must cover.
+        yield "Contact alice"
+        yield "@example.com to follow up."
+
+    repo = InMemoryThreadRepository()
+    thread = await repo.create(agent="conversation", metadata={})
+    agent: Agent[None, str] = Agent(
+        FunctionModel(fn, stream_function=fn_stream),
+        output_type=str,
+        capabilities=[PIIGuard(detector=RegexDetector(patterns=[email_re]))],
+    )
+    app = _build_app(repo, agent)
+
+    async with _client(app) as c:
+        r = await c.post(
+            f"/threads/{thread.id}/messages",
+            json=_ag_ui_body(thread_id=thread.id, user_text="who?"),
+            headers={"Accept": "text/event-stream"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.text
+
+    # The user-facing assertion: the raw email must NOT have reached
+    # the SSE consumer.
+    assert "alice@example.com" not in body, body
+    assert "[REDACTED]" in body, body
+
+    # Persistence path should also be clean (after_model_request handles
+    # the non-streaming reconstruction the on_complete callback uses).
+    msgs = await repo.history(thread.id)
+    asst = next(m for m in msgs if m.role == "assistant")
+    persisted_text = json.dumps(asst.parts)
+    assert "alice@example.com" not in persisted_text, persisted_text

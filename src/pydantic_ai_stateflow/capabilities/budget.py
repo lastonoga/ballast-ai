@@ -8,6 +8,8 @@ from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import ModelRequestContext
 
 from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from pydantic_ai_stateflow.observability.spans import traced
+from pydantic_ai_stateflow.observability.trace_names import TraceName
 
 
 class BudgetExhausted(Exception):  # noqa: N818
@@ -58,6 +60,14 @@ class BudgetGuard(StateflowCapability):
     def get_ordering(self) -> CapabilityOrdering:
         return CapabilityOrdering(position="outermost")
 
+    @traced(
+        TraceName.CAPABILITY_BUDGET_GUARD,
+        attrs=lambda self, ctx, request_context: {
+            "phase": "before_model_request",
+            "iterations": self._iterations,
+            "max_iterations": self.max_iterations,
+        },
+    )
     async def before_model_request(
         self,
         ctx: RunContext[Any],
@@ -73,6 +83,14 @@ class BudgetGuard(StateflowCapability):
         self._iterations += 1
         return request_context
 
+    @traced(
+        TraceName.CAPABILITY_BUDGET_GUARD,
+        attrs=lambda self, ctx, *, request_context, response: {
+            "phase": "after_model_request",
+            "input_tokens": self._input_tokens,
+            "output_tokens": self._output_tokens,
+        },
+    )
     async def after_model_request(
         self,
         ctx: RunContext[Any],

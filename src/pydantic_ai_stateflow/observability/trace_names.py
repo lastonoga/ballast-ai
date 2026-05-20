@@ -41,5 +41,10 @@ class TraceName(StrEnum):
     CHANNEL_WEBHOOK = "channel.webhook"
     CHANNEL_CONVERSATIONAL = "channel.conversational"
 
+    # --- capabilities ------------------------------------------------------
+    CAPABILITY_PII_GUARD = "capability.pii_guard"
+    CAPABILITY_PII_GUARD_STREAM = "capability.pii_guard.stream"
+    CAPABILITY_BUDGET_GUARD = "capability.budget_guard"
+
 
 __all__ = ["TraceName"]
