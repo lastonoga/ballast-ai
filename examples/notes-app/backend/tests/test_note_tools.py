@@ -1,8 +1,14 @@
 """Direct unit tests for the note tools + repo (no LLM involved).
 
-These exercise the `NoteRepository` Protocol's contract through the
-in-memory impl, and the tool functions' wiring of `ctx.deps`. They run
-without `OPENROUTER_API_KEY`.
+These exercise the ``NoteRepository`` Protocol's contract through the
+in-memory impl, and the tool functions' wiring of ``ctx.deps``. They run
+without ``OPENROUTER_API_KEY``.
+
+Tools live on ``NotesAgent`` via ``@NotesAgent.tool``; the framework
+registers them on the pydantic-ai ``Agent`` the first time
+``NotesAgent.agent`` is accessed. We construct a ``_TestNotesAgent``
+variant whose ``build_agent`` returns a ``TestModel``-backed bare Agent
+so we can introspect the registered tools without hitting OpenRouter.
 """
 
 from __future__ import annotations
@@ -12,25 +18,48 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
 
+from notes_app.agent import NotesAgent, NoteToolDeps
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import InMemoryNoteRepository
-from notes_app.notes.tools import NoteToolDeps
 
 
 @dataclass
 class _FakeCtx:
     """Minimal RunContext stand-in for direct tool invocation in tests.
 
-    pydantic-ai's `RunContext` is a heavier object, but the only attribute
-    our tools read is `.deps`, so a dataclass is enough.
+    pydantic-ai's ``RunContext`` is a heavier object, but the only
+    attribute our tools read is ``.deps``, so a dataclass is enough.
     """
 
     deps: NoteToolDeps
 
 
+class _TestNotesAgent(NotesAgent):
+    """``NotesAgent`` with a TestModel-backed ``build_agent`` — no API key."""
+
+    def build_agent(self) -> Agent[NoteToolDeps, str]:
+        return Agent(
+            TestModel(custom_output_text="ok"),
+            output_type=str,
+            deps_type=NoteToolDeps,
+        )
+
+
 def _make_deps(repo: InMemoryNoteRepository, tenant_id: UUID) -> NoteToolDeps:
     return NoteToolDeps(repo=repo, tenant_id=tenant_id)
+
+
+def _agent_with_tools(repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
+    """Build a ``NotesAgent`` and return its lazy-constructed pydantic-ai Agent.
+
+    The framework's ``StateflowAgent.agent`` cached_property registers
+    every ``@NotesAgent.tool`` and installs grounded ``prepare`` hooks
+    on the way out.
+    """
+    return _TestNotesAgent(notes_repo=repo).agent
 
 
 def _bound_tool(agent: Any, name: str) -> Any:
@@ -46,18 +75,7 @@ async def test_create_note_persists_via_repo(
     deps = _make_deps(repo, tenant_id)
     ctx = _FakeCtx(deps=deps)
 
-    # Call the tool's underlying coroutine directly. We resolve it via the
-    # agent's registration to make sure register_note_tools wired it.
-    from pydantic_ai import Agent
-
-    from notes_app.notes.tools import register_note_tools
-
-    agent = Agent(
-        model="test",
-        output_type=str,
-        deps_type=NoteToolDeps,
-    )
-    register_note_tools(agent)
+    agent = _agent_with_tools(repo)
     create_note = _bound_tool(agent, "create_note")
 
     note = await create_note(ctx, title="grocery", body="milk, eggs")
@@ -139,21 +157,13 @@ async def test_list_notes_is_tenant_scoped(
 async def test_grounded_prepare_narrows_delete_note_to_real_ids(
     repo: InMemoryNoteRepository, tenant_id: UUID,
 ) -> None:
-    """``register_grounded_tools`` wires Selector → JSON-schema enum.
+    """``Annotated[Ref[Note], Selector(...)]`` → JSON-schema enum.
 
-    Validates the iter-3 → iter-4 migration: the per-run ``prepare``
-    hook now comes from the framework rather than hand-rolled here.
+    Validates that the framework's ``StateflowAgent.agent`` cached
+    property auto-installs the grounded ``prepare`` hook without the
+    user ever calling ``register_grounded_tools``.
     """
-    from pydantic_ai import Agent
-    from pydantic_ai_stateflow.grounded import register_grounded_tools
-
-    from notes_app.notes.tools import register_note_tools
-
-    agent: Agent[NoteToolDeps, str] = Agent(
-        model="test", output_type=str, deps_type=NoteToolDeps,
-    )
-    register_note_tools(agent)
-    register_grounded_tools(agent)
+    agent = _agent_with_tools(repo)
 
     n = await repo.create(title="g", body="b", tenant_id=tenant_id)
     deps = _make_deps(repo, tenant_id)
@@ -170,16 +180,7 @@ async def test_grounded_prepare_hides_delete_note_when_empty(
     repo: InMemoryNoteRepository, tenant_id: UUID,
 ) -> None:
     """Empty repo → tool hidden so the model can't fabricate an id."""
-    from pydantic_ai import Agent
-    from pydantic_ai_stateflow.grounded import register_grounded_tools
-
-    from notes_app.notes.tools import register_note_tools
-
-    agent: Agent[NoteToolDeps, str] = Agent(
-        model="test", output_type=str, deps_type=NoteToolDeps,
-    )
-    register_note_tools(agent)
-    register_grounded_tools(agent)
+    agent = _agent_with_tools(repo)
 
     deps = _make_deps(repo, tenant_id)
     ctx = _FakeCtx(deps=deps)

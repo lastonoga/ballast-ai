@@ -176,3 +176,10 @@ def test_metadata_unknown_field_raises_when_model_is_strict() -> None:
     # No assertion error — extras pass through silently with default config.
     out = validate_thread_metadata("with_meta", {"extra": "x"})
     assert "extra" not in out  # dropped during round-trip dump
+
+
+def test_metadata_does_not_break_when_subclass_has_no_extra_tools() -> None:
+    """Smoke: an agent with zero ``@tool`` decorations still builds."""
+    instance = _NoMetaAgent()
+    a = instance.agent
+    assert a._function_toolset.tools == {}  # noqa: SLF001

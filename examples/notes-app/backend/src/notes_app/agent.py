@@ -1,11 +1,16 @@
 """OpenRouter-backed ``StateflowAgent`` for the notes app.
 
-``NotesAgent`` is the framework's per-thread agent abstraction
-(see ``pydantic_ai_stateflow.runtime.agents.StateflowAgent``). The
-registry binds ``Thread.agent == "notes"`` to this class — the
-streaming router resolves it per request and uses
-``self.agent`` (lazy-cached pydantic-ai ``Agent``), ``build_deps(...)``,
-and ``model_settings()`` to drive the run.
+One file = one agent. ``NotesAgent`` is the framework's per-thread agent
+abstraction (see
+``pydantic_ai_stateflow.runtime.agents.StateflowAgent``); the registry
+binds ``Thread.agent == "notes"`` to this class.
+
+Tools are declared inline with ``@NotesAgent.tool`` decorators at module
+load — the framework registers them on the underlying pydantic-ai
+``Agent`` automatically when ``self.agent`` is first accessed. Grounded
+``Annotated[Ref[Note], Selector(...)]`` parameters get per-run ``prepare``
+hooks installed automatically too; no explicit
+``register_grounded_tools(...)`` call needed.
 
 Output shape decision (iter 3 round 2, still relevant):
   We use ``output_type=[str, DeferredToolRequests]`` — NOT a structured
@@ -20,28 +25,29 @@ Output shape decision (iter 3 round 2, still relevant):
 
   Plain ``str`` (plus ``DeferredToolRequests`` for the approval branch)
   sidesteps all three.
+
+Note on annotations: we intentionally do NOT use
+``from __future__ import annotations`` here. pydantic-ai's tool-
+registration introspects parameter types via ``get_type_hints()`` at
+decoration time, and postponed-evaluation annotations have bitten this
+codebase before (see ``project_pydantic_ai_api_quirks.md``).
 """
 
-from __future__ import annotations
-
 import os
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import Annotated, Any
+from uuid import UUID
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow.grounded import register_grounded_tools
+from pydantic_ai_stateflow.grounded import Ref, Selector
+from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
-from notes_app.notes.tools import NoteToolDeps, register_note_tools
-
-if TYPE_CHECKING:
-    from uuid import UUID
-
-    from pydantic_ai.messages import ModelMessage
-    from pydantic_ai_stateflow.persistence.thread.domain import Thread
-
-    from notes_app.notes.repository import NoteRepository
+from notes_app.notes.domain import Note
+from notes_app.notes.repository import NoteRepository
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
@@ -57,6 +63,18 @@ SYSTEM_PROMPT = (
     "If the user is chatting and not asking for a note action, just "
     "reply conversationally."
 )
+
+
+@dataclass
+class NoteToolDeps:
+    """Per-request dependencies for the note tools.
+
+    ``repo`` is the shared note store; ``tenant_id`` is the requesting
+    tenant (derived from the ``X-Tenant-Id`` header).
+    """
+
+    repo: NoteRepository
+    tenant_id: UUID
 
 
 class NotesAgent(StateflowAgent):
@@ -98,22 +116,14 @@ class NotesAgent(StateflowAgent):
         # ``output_type=[str, DeferredToolRequests]`` opts into pydantic-ai's
         # deferred-tools branch: when the model calls a tool marked
         # ``requires_approval=True`` (e.g. ``delete_note``) the agent
-        # pauses and yields a ``DeferredToolRequests`` instead of looping
-        # forever over an unresolved tool call. ``VercelAIAdapter`` knows
-        # how to serialize the deferred call as a ``tool-approval-request``
-        # chunk and to thread approval responses back through
-        # ``deferred_tool_results`` on the next round-trip.
-        agent: Agent[NoteToolDeps, Any] = Agent(
+        # pauses and yields a ``DeferredToolRequests`` instead of
+        # looping forever over an unresolved tool call.
+        return Agent(
             model=model,
             output_type=[str, DeferredToolRequests],
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
         )
-        register_note_tools(agent)
-        # Install per-run ``prepare`` hooks on tools whose params are
-        # ``Annotated[Ref[T], Selector(...)]``.
-        register_grounded_tools(agent)
-        return agent
 
     async def build_deps(
         self,
@@ -138,3 +148,108 @@ class NotesAgent(StateflowAgent):
             openrouter_reasoning={"effort": "none"},
             openrouter_usage={"include": True},
         )
+
+
+# ── Tools ────────────────────────────────────────────────────────────────────
+#
+# Declared at module load via ``@NotesAgent.tool``. The framework
+# registers them on the underlying pydantic-ai ``Agent`` the first time
+# ``NotesAgent.agent`` is accessed, and auto-installs grounded
+# ``prepare`` hooks for any ``Annotated[Ref[T], Selector(...)]`` params.
+
+
+@NotesAgent.tool
+async def create_note(
+    ctx: RunContext[NoteToolDeps], title: str, body: str,
+) -> Note:
+    """Create a new note with the given title and body.
+
+    Returns the saved note (including its ``id``, which you should use
+    for any follow-up edit/delete in the same turn).
+    """
+    return await ctx.deps.repo.create(
+        title=title, body=body, tenant_id=ctx.deps.tenant_id,
+    )
+
+
+@NotesAgent.tool
+async def list_notes(
+    ctx: RunContext[NoteToolDeps], limit: int = 20,
+) -> list[Note]:
+    """List the most recent notes for the current user, newest first.
+
+    Use this when the user asks "show me my notes" or wants an
+    overview. Returns at most ``limit`` notes (default 20).
+    """
+    return await ctx.deps.repo.list_(
+        tenant_id=ctx.deps.tenant_id, limit=limit,
+    )
+
+
+@NotesAgent.tool
+async def search_notes(
+    ctx: RunContext[NoteToolDeps], query: str, limit: int = 20,
+) -> list[Note]:
+    """Search the user's notes by case-insensitive substring on title+body.
+
+    Returns matching notes newest-first, at most ``limit``. Use this
+    when the user references a note by topic or keyword rather than id.
+    """
+    return await ctx.deps.repo.search(
+        query, tenant_id=ctx.deps.tenant_id, limit=limit,
+    )
+
+
+@NotesAgent.tool
+async def edit_note(
+    ctx: RunContext[NoteToolDeps],
+    note_id: Annotated[
+        Ref[Note],
+        Selector(lambda c: c.deps.repo.list_(
+            tenant_id=c.deps.tenant_id, limit=1000,
+        )),
+    ],
+    title: str | None = None,
+    body: str | None = None,
+) -> Note:
+    """Edit an existing note. Pass only the fields you want to change.
+
+    ``note_id`` is constrained at the schema level (via Selector) to
+    the set of notes that currently exist for this user — you cannot
+    fabricate one. Returns the updated note.
+    """
+    nid = note_id.id if isinstance(note_id, Ref) else note_id
+    return await ctx.deps.repo.update(
+        nid,
+        title=title,
+        body=body,
+        tenant_id=ctx.deps.tenant_id,
+    )
+
+
+@NotesAgent.tool(requires_approval=True)
+async def delete_note(
+    ctx: RunContext[NoteToolDeps],
+    note_id: Annotated[
+        Ref[Note],
+        Selector(lambda c: c.deps.repo.list_(
+            tenant_id=c.deps.tenant_id, limit=1000,
+        )),
+    ],
+) -> str:
+    """Delete the note with the given id.
+
+    REQUIRES USER APPROVAL — destructive, irreversible. The model
+    proposes the call; pydantic-ai pauses the run and emits a deferred
+    ``approval-requested`` part. The frontend renders an approve/cancel
+    card; once the user clicks, the response round-trips back through
+    ``VercelAIAdapter.deferred_tool_results`` and this body executes
+    (or denial is fed back to the model).
+
+    ``note_id`` is constrained at the schema level (via Selector) to
+    the set of notes that currently exist for this user. Idempotent —
+    safe to call twice. Returns a short confirmation.
+    """
+    nid = note_id.id if isinstance(note_id, Ref) else note_id
+    await ctx.deps.repo.delete(nid, tenant_id=ctx.deps.tenant_id)
+    return f"deleted {nid}"

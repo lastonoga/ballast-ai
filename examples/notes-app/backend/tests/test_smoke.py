@@ -26,19 +26,20 @@ from fastapi.testclient import TestClient
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
-from notes_app.agent import NotesAgent
+from notes_app.agent import NotesAgent, NoteToolDeps
 from notes_app.main import build_app
 from notes_app.notes.repository import InMemoryNoteRepository
-from notes_app.notes.tools import NoteToolDeps, register_note_tools
 
 
 class _FakeNotesAgent(NotesAgent):
     """``NotesAgent`` variant whose ``build_agent`` returns a TestModel agent.
 
     Skips OpenRouter entirely so the CI smoke runs without
-    ``OPENROUTER_API_KEY``. Tool registration is opt-in: ``TestModel``
-    auto-calls every registered tool, which buries the lifecycle
-    ``finish`` chunk behind a fanout of tool-call events.
+    ``OPENROUTER_API_KEY``. The framework still auto-registers the
+    ``@NotesAgent.tool``-declared tools on top — ``TestModel`` would
+    auto-call every registered tool and bury the lifecycle ``finish``
+    chunk, so we override ``agent`` to skip the tool wiring entirely
+    when ``with_tools=False``.
     """
 
     def __init__(
@@ -51,14 +52,27 @@ class _FakeNotesAgent(NotesAgent):
         self._with_tools = with_tools
 
     def build_agent(self) -> Agent[NoteToolDeps, str]:
-        agent: Agent[NoteToolDeps, str] = Agent(
+        return Agent(
             TestModel(custom_output_text="Hello, world!"),
             output_type=str,
             deps_type=NoteToolDeps,
         )
+
+    @property  # type: ignore[override]
+    def agent(self) -> Agent[NoteToolDeps, str]:
+        # When ``with_tools`` is False, bypass the framework's
+        # ``StateflowAgent.agent`` cached_property (which would register
+        # every ``@NotesAgent.tool``) and return a bare TestModel agent.
+        cache_key = "_test_agent"
+        cached = self.__dict__.get(cache_key)
+        if cached is not None:
+            return cached
         if self._with_tools:
-            register_note_tools(agent)
-        return agent
+            built = super().agent
+        else:
+            built = self.build_agent()
+        self.__dict__[cache_key] = built
+        return built
 
     def model_settings(self) -> None:
         return None
