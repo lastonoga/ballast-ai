@@ -241,12 +241,15 @@ async def _durable_post_message(
         parent_id=new_user_parent_id,
     )
 
-    # Build history dump. Pydantic-ai's ``ModelMessage`` instances
-    # serialize via ``model_dump(mode="json")`` for DBOS workflow
-    # transport.
+    # Build history dump. ``ModelMessage`` is a TypeAdapter-backed
+    # discriminated union (not a BaseModel subclass), so per-instance
+    # ``model_dump`` doesn't exist — round-trip the whole list via
+    # ``ModelMessagesTypeAdapter`` instead.
+    from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
+
     rows = await thread_repo.history(thread_id, limit=history_limit)
     history = messages_to_model_history(rows, drop_prompt=prompt_text)
-    history_dump = [m.model_dump(mode="json") for m in history]
+    history_dump = ModelMessagesTypeAdapter.dump_python(history, mode="json")
 
     # Enqueue into the per-thread serialization queue (concurrency=1
     # per thread). Workflow id is deterministic per (thread_id,
@@ -259,6 +262,10 @@ async def _durable_post_message(
             user_message_id=user_msg.id,
             prompt=prompt_text,
             history_dump=history_dump,
+            # Parent of the assistant turn we're about to generate IS
+            # the user message we just persisted — keeps the message
+            # tree consistent with the non-durable path.
+            assistant_parent_id=user_msg.id,
         )
     except Exception as exc:  # pragma: no cover — DBOS errors caught wholesale
         # Enqueue raises if the workflow id collides with one in a

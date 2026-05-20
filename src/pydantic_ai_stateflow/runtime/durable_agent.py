@@ -248,6 +248,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         user_message_id: UUID,
         prompt: str,
         history_dump: list[dict[str, Any]],
+        assistant_parent_id: UUID | None = None,
     ) -> WorkflowHandleAsync[None]:
         """Enqueue ``self.run`` into the per-thread serialization queue.
 
@@ -277,6 +278,9 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 thread_id_str=str(thread_id),
                 prompt=prompt,
                 history_dump=history_dump,
+                assistant_parent_id_str=(
+                    str(assistant_parent_id) if assistant_parent_id else None
+                ),
             )
 
     async def cancel_thread_runs(self, thread_id: UUID) -> int:
@@ -328,6 +332,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         thread_id_str: str,
         prompt: str,
         history_dump: list[dict[str, Any]],
+        assistant_parent_id_str: str | None = None,
     ) -> None:
         """Durable agent run — drives ``agent.iter()`` and persists every event.
 
@@ -396,6 +401,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             thread_id=thread_id, kind="start", payload={"prompt": prompt},
         )
 
+        final_result: Any = None
         try:
             async with self.agent.iter(
                 prompt,
@@ -423,6 +429,9 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                                 PartEndEvent=PartEndEvent,
                                 FunctionToolResultEvent=FunctionToolResultEvent,
                             )
+                # ``agent_run.result`` is set once the iterator reaches
+                # the End node — pull all_messages() for the full turn.
+                final_result = agent_run.result
         except Exception as exc:
             await self._persist_and_publish(
                 thread_id=thread_id,
@@ -431,8 +440,80 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             )
             raise
 
+        # Persist the assistant turn to ``thread_repo`` so the next
+        # request sees it in the conversation history. Without this,
+        # subsequent runs would build ``history`` from only user
+        # messages and pydantic-ai would reject the prompt with
+        # "consecutive user messages without an assistant response".
+        if final_result is not None:
+            await self._persist_assistant_turn(
+                thread_id=thread_id,
+                result=final_result,
+                parent_id=(
+                    UUID(assistant_parent_id_str)
+                    if assistant_parent_id_str else None
+                ),
+            )
+
         await self._persist_and_publish(
             thread_id=thread_id, kind="done", payload={},
+        )
+
+    @DBOS.step()
+    async def _persist_assistant_turn(
+        self,
+        *,
+        thread_id: UUID,
+        result: Any,
+        parent_id: UUID | None,
+    ) -> None:
+        """Dump the assistant's Vercel-AI UI parts and persist as one message row.
+
+        Mirrors the non-durable router's ``on_complete`` callback: we
+        run ``VercelAIAdapter.dump_messages`` on the agent's
+        ``all_messages()`` (which includes the new model response +
+        tool returns), pick out the assistant parts emitted AFTER the
+        latest user prompt, and add them under a single message in
+        ``thread_repo``. ``@DBOS.step`` makes the persistence
+        idempotent across workflow replays.
+        """
+        from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+        from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
+
+        output = result.output
+        if isinstance(output, DeferredToolRequests):
+            # Paused mid-run waiting for approval — the resumption
+            # request emits the real assistant turn; nothing to
+            # persist on this round.
+            return
+
+        all_msgs = result.all_messages()
+        ui_msgs = VercelAIAdapter.dump_messages(all_msgs, sdk_version=6)
+
+        last_user_idx = -1
+        for i, m in enumerate(ui_msgs):
+            if m.role == "user":
+                last_user_idx = i
+
+        asst_parts: list[dict[str, Any]] = []
+        for m in ui_msgs[last_user_idx + 1:]:
+            if m.role != "assistant":
+                continue
+            for p in m.parts:
+                asst_parts.append(
+                    p.model_dump(
+                        mode="json", by_alias=True, exclude_none=True,
+                    ),
+                )
+
+        if not asst_parts:
+            return
+
+        await self._thread_repo.add_message(
+            thread_id,
+            role="assistant",
+            parts=asst_parts,
+            parent_id=parent_id,
         )
 
     async def _encode_and_persist(
