@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from dbos import DBOS
@@ -122,7 +122,7 @@ async def _spawn_proposal(
 ) -> tuple[str, Any, dict[str, Any]]:
     """Run ``propose_todo`` and return (return_value, t1, t2_metadata)."""
     notes_agent = _TestNotesAgent(
-        notes_repo=notes_repo, todo_flow=todo_flow, thread_repo=thread_repo,
+        notes_repo=notes_repo, todo_flow=todo_flow,
     )
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
@@ -130,7 +130,6 @@ async def _spawn_proposal(
     deps = NoteToolDeps(
         repo=notes_repo,
         todo_flow=todo_flow,
-        thread_repo=thread_repo,
         parent_thread_id=t1.id,
     )
     result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
@@ -149,7 +148,10 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     """propose_todo creates T2 with the right metadata + opening message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+    flow = TodoApprovalFlow(
+        notes_repo=notes_repo, thread_repo=thread_repo,
+        config_name=f"todo-flow-test-{uuid4()}",
+    )
 
     result, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -182,7 +184,10 @@ async def test_approve_saves_note_and_notifies_parent(
     """Happy path: approve → note saved + 'Saved your todo' on T1."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+    flow = TodoApprovalFlow(
+        notes_repo=notes_repo, thread_repo=thread_repo,
+        config_name=f"todo-flow-test-{uuid4()}",
+    )
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -220,7 +225,10 @@ async def test_modify_saves_note_with_overrides(
     """Modify branch: overrides applied, note saved, parent notified."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+    flow = TodoApprovalFlow(
+        notes_repo=notes_repo, thread_repo=thread_repo,
+        config_name=f"todo-flow-test-{uuid4()}",
+    )
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk",
@@ -257,7 +265,10 @@ async def test_reject_skips_note_and_notifies_parent(
     """Reject branch: no note saved, parent gets a cancellation message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+    flow = TodoApprovalFlow(
+        notes_repo=notes_repo, thread_repo=thread_repo,
+        config_name=f"todo-flow-test-{uuid4()}",
+    )
 
     _, t1, t2_meta = await _spawn_proposal(
         title="garbage", body="trash",
@@ -297,7 +308,10 @@ async def test_propose_todo_returns_before_helper_decision(
     """
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(notes_repo=notes_repo, thread_repo=thread_repo)
+    flow = TodoApprovalFlow(
+        notes_repo=notes_repo, thread_repo=thread_repo,
+        config_name=f"todo-flow-test-{uuid4()}",
+    )
 
     # If this await hung, the test would time out — we explicitly assert
     # it resolves quickly.

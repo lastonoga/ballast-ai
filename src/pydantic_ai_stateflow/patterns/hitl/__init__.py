@@ -7,6 +7,7 @@ from pydantic_ai_stateflow.patterns.hitl.channels import (
     WebhookChannel,
     WebhookConfig,
 )
+from pydantic_ai_stateflow.patterns.hitl.durable import DurableHITLWorkflow
 from pydantic_ai_stateflow.patterns.hitl.gate import HITLGate
 from pydantic_ai_stateflow.patterns.hitl.helper import (
     DefaultHelperSessionRunner,
@@ -41,6 +42,7 @@ __all__ = [
     "ConversationalChannel",
     "DefaultHelperSessionRunner",
     "DenyAll",
+    "DurableHITLWorkflow",
     "HITLChannel",
     "HITLGate",
     "HITLOption",

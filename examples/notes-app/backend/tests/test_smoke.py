@@ -12,9 +12,28 @@ from fastapi.testclient import TestClient
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
+from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+
 from notes_app.agent import NotesAgent, NoteToolDeps
 from notes_app.main import build_app
 from notes_app.notes.repository import InMemoryNoteRepository
+from notes_app.todo_flow import TodoApprovalFlow
+
+
+def _unique_flow(
+    notes_repo: InMemoryNoteRepository,
+    thread_repo: InMemoryThreadRepository,
+) -> TodoApprovalFlow:
+    """Per-test ``TodoApprovalFlow`` with a unique DBOS config_name.
+
+    The smoke tests run in the same process, and DBOSConfiguredInstance
+    refuses duplicate (class, config_name) registrations.
+    """
+    return TodoApprovalFlow(
+        notes_repo=notes_repo,
+        thread_repo=thread_repo,
+        config_name=f"todo-flow-smoke-{uuid4()}",
+    )
 
 
 class _FakeNotesAgent(NotesAgent):
@@ -86,9 +105,12 @@ def test_note_repository_is_bound_in_container() -> None:
     from notes_app.notes.repository import NoteRepository
 
     notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
     app = build_app(
         notes_repo=notes_repo,
+        thread_repo=thread_repo,
         notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
+        todo_flow=_unique_flow(notes_repo, thread_repo),
     )
     with TestClient(app):
         assert app.state.container.has(NoteRepository)
@@ -98,9 +120,12 @@ def test_note_repository_is_bound_in_container() -> None:
 def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a TestModel-backed agent — no network."""
     notes_repo = InMemoryNoteRepository()
+    thread_repo = InMemoryThreadRepository()
     app = build_app(
         notes_repo=notes_repo,
+        thread_repo=thread_repo,
         notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
+        todo_flow=_unique_flow(notes_repo, thread_repo),
     )
 
     with TestClient(app) as client:

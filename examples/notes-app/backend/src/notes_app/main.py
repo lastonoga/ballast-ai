@@ -77,7 +77,7 @@ def build_app(
     flow = todo_flow or TodoApprovalFlow(notes_repo=notes, thread_repo=repo)
 
     agent = notes_agent or NotesAgent(
-        notes_repo=notes, todo_flow=flow, thread_repo=repo,
+        notes_repo=notes, todo_flow=flow,
     )
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
         notes_repo=notes,
