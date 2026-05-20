@@ -273,15 +273,41 @@ async def _durable_post_message(
             detail="Durable agent requires a non-empty user prompt",
         )
 
-    # Persist user message (same shape as non-durable path).
+    # ── trigger semantics ──────────────────────────────────────────────────
+    # ``submit-message`` (default): the user just typed a NEW turn — we
+    # persist it as a new user row and the assistant turn becomes its
+    # child.
+    # ``regenerate-message``: the user re-ran the LAST user turn (edit
+    # / regenerate UI). DO NOT persist a duplicate user row — the new
+    # assistant becomes a SIBLING of the prior assistant, both under
+    # the same user msg.
+    trigger = getattr(adapter.run_input, "trigger", "submit-message")
+    is_regenerate = trigger == "regenerate-message"
+
     history_before = await thread_repo.history(thread_id, limit=history_limit)
-    new_user_parent_id = history_before[-1].id if history_before else None
-    user_msg = await thread_repo.add_message(
-        thread_id,
-        role="user",
-        parts=[{"type": "text", "text": prompt_text, "state": "done"}],
-        parent_id=new_user_parent_id,
-    )
+
+    if is_regenerate:
+        # Find the last user msg in the active branch — that's the
+        # parent of the new (regenerated) assistant turn.
+        last_user_id = _find_last_role_id(history_before, "user")
+        assistant_parent_id: UUID | None = last_user_id
+        user_msg_id: UUID = last_user_id or uuid4()
+        _log.info(
+            "regenerate-message: new assistant will sibling under user_id=%s",
+            last_user_id,
+        )
+    else:
+        new_user_parent_id = (
+            history_before[-1].id if history_before else None
+        )
+        user_msg = await thread_repo.add_message(
+            thread_id,
+            role="user",
+            parts=[{"type": "text", "text": prompt_text, "state": "done"}],
+            parent_id=new_user_parent_id,
+        )
+        assistant_parent_id = user_msg.id
+        user_msg_id = user_msg.id
 
     # Build history dump. ``ModelMessage`` is a TypeAdapter-backed
     # discriminated union (not a BaseModel subclass), so per-instance
@@ -320,13 +346,14 @@ async def _durable_post_message(
     try:
         await stateflow_agent.enqueue_run(
             thread_id=thread_id,
-            user_message_id=user_msg.id,
+            user_message_id=user_msg_id,
             prompt=prompt_text,
             history_dump=history_dump,
-            # Parent of the assistant turn we're about to generate IS
-            # the user message we just persisted — keeps the message
-            # tree consistent with the non-durable path.
-            assistant_parent_id=user_msg.id,
+            # Parent of the assistant turn we're about to generate:
+            # - submit-message → the user message we just persisted
+            # - regenerate-message → the EXISTING last user message
+            #   (so the new assistant becomes a sibling of the prior)
+            assistant_parent_id=assistant_parent_id,
         )
     except Exception as exc:  # pragma: no cover — DBOS errors caught wholesale
         # Enqueue raises if the workflow id collides with one in a
@@ -336,7 +363,7 @@ async def _durable_post_message(
         # workflow's events. Log and continue.
         _log.info(
             "enqueue_run returned %s for user_msg=%s — "
-            "assuming attach-to-existing", type(exc).__name__, user_msg.id,
+            "assuming attach-to-existing", type(exc).__name__, user_msg_id,
         )
 
     async def _gen() -> AsyncIterator[bytes]:
