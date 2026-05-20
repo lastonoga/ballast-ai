@@ -10,6 +10,7 @@ from pydantic_ai_stateflow.runtime.agents import (
 from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
 from pydantic_ai_stateflow.runtime.dbos_setup import DBOSConfig, build_dbos_config
 from pydantic_ai_stateflow.runtime.det import Det
+from pydantic_ai_stateflow.runtime.durable_agent import DurableAgent
 from pydantic_ai_stateflow.runtime.engine import Engine, EngineInvariantViolation
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventNotification,
@@ -29,6 +30,7 @@ __all__ = [
     "DBOSConfig",
     "DefaultContainer",
     "Det",
+    "DurableAgent",
     "Engine",
     "EngineInvariantViolation",
     "EventNotification",
