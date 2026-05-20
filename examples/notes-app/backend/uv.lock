@@ -2097,6 +2097,7 @@ name = "notes-app"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dbos" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "logfire", extra = ["fastapi", "httpx"] },
@@ -2117,6 +2118,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dbos", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "logfire", extras = ["fastapi", "httpx"], specifier = ">=4.0" },

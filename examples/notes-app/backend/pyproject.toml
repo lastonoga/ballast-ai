@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28",
     "sqlmodel>=0.0.22",
     "logfire[fastapi,httpx]>=4.0",
+    "dbos>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -34,7 +34,7 @@ async def test_ui_channel_returns_received_response():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -54,7 +54,7 @@ async def test_ui_channel_returns_timeout_on_none():
     )
     recv = AsyncMock(return_value=None)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -62,7 +62,13 @@ async def test_ui_channel_returns_timeout_on_none():
 
 
 @pytest.mark.asyncio
-async def test_ui_channel_no_timeout_passes_none():
+async def test_ui_channel_no_timeout_passes_large_finite_ceiling():
+    """No ``prompt.timeout`` ⇒ effectively-infinite finite timeout.
+
+    ``DBOS.recv_async`` does ``time.time() + seconds`` internally, so
+    ``None`` would crash. UIChannel substitutes ``_NO_TIMEOUT_SECONDS``
+    (≈ 1 year) instead.
+    """
     rid = uuid4()
     prompt = HITLPrompt(
         title="t",
@@ -74,8 +80,10 @@ async def test_ui_channel_no_timeout_passes_none():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         await channel.ask(prompt, request_id=rid)
-    recv.assert_awaited_once_with(_hitl_topic(rid), timeout_seconds=None)
+    recv.assert_awaited_once_with(
+        _hitl_topic(rid), timeout_seconds=UIChannel._NO_TIMEOUT_SECONDS,
+    )

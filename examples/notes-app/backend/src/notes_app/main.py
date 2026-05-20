@@ -18,13 +18,24 @@ server. Without it, telemetry is a no-op.
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 
+from dbos import DBOS, DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider
+from pydantic_ai_stateflow.patterns.hitl import (
+    AllowAll,
+    HITLGate,
+    UIChannel,
+    build_hitl_router,
+)
+from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from pydantic_ai_stateflow.persistence.hitl.repository import HITLRepository
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
@@ -34,8 +45,22 @@ from pydantic_ai_stateflow.runtime import Engine, register_agent
 from notes_app.agent import NotesAgent
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
 from notes_app.notes.routes import build_notes_router
+from notes_app.todo_approval_agent import NotesTodoApprovalAgent
 
 load_dotenv()
+
+
+def _default_dbos_database_url() -> str:
+    """Default DBOS system DB path for the notes-app demo (SQLite).
+
+    Honors ``DBOS_DATABASE_URL`` env var when set (e.g. for Postgres).
+    Otherwise uses a per-process SQLite file under the system tempdir so
+    repeated dev restarts don't accumulate state in the project root.
+    """
+    override = os.environ.get("DBOS_DATABASE_URL")
+    if override:
+        return override
+    return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
 def build_app(
@@ -43,13 +68,31 @@ def build_app(
     thread_repo: ThreadRepository | None = None,
     notes_agent: NotesAgent | None = None,
     notes_repo: NoteRepository | None = None,
+    hitl_repo: HITLRepository | None = None,
+    todo_approval_agent: NotesTodoApprovalAgent | None = None,
+    manage_dbos_lifecycle: bool = True,
 ) -> FastAPI:
-    """Construct the FastAPI app."""
+    """Construct the FastAPI app.
+
+    DBOS is launched (and destroyed) inside the FastAPI lifespan when
+    ``manage_dbos_lifecycle=True`` (the default). Tests that supply
+    their own DBOS runtime (see ``tests/conftest.py``) pass
+    ``manage_dbos_lifecycle=False`` so the test fixture stays in charge.
+    """
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
-    agent = notes_agent or NotesAgent(notes_repo=notes)
+    hitl = hitl_repo or InMemoryHITLRepository()
+    hitl_gate = HITLGate(channel=UIChannel(), policy=AllowAll(), repo=hitl)
+
+    agent = notes_agent or NotesAgent(
+        notes_repo=notes, hitl_gate=hitl_gate, thread_repo=repo,
+    )
+    approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
+        hitl_repo=hitl, notes_repo=notes,
+    )
 
     register_agent(agent)
+    register_agent(approval_agent)
 
     engine = Engine(
         providers=[
@@ -65,20 +108,54 @@ def build_app(
     notes_router = build_notes_router(repo)
     threads_router = build_threads_router(thread_repo=repo)
     streaming_router = build_streaming_router(thread_repo=repo)
+    hitl_router = build_hitl_router(repo=hitl, policy=AllowAll())
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
         app.state.container.bind(NoteRepository, notes)
 
+    startup_hooks = [_bind_domain_repos]
+    shutdown_hooks: list = []
+
+    if manage_dbos_lifecycle:
+        async def _launch_dbos(_app: FastAPI) -> None:
+            # ``DBOS(...)`` registers the singleton; ``launch()`` starts
+            # the workflow runtime. Both must happen before any
+            # @DBOS.workflow runs — which means before the first request
+            # hits the streaming router (because ``propose_todo`` calls
+            # ``hitl_gate.run`` which IS a @DBOS.workflow).
+            DBOS(
+                config=DBOSConfig(
+                    name="notes-app",
+                    system_database_url=_default_dbos_database_url(),
+                ),
+            )
+            DBOS.launch()
+
+        async def _destroy_dbos(_app: FastAPI) -> None:
+            # ``destroy_registry=False`` — leave @DBOS.workflow
+            # registrations intact for tests / subsequent boots in the
+            # same process.
+            DBOS.destroy(destroy_registry=False)
+
+        startup_hooks.append(_launch_dbos)
+        shutdown_hooks.append(_destroy_dbos)
+
     app: FastAPI = engine.fastapi_app(
-        extra_routers=[notes_router, threads_router, streaming_router],
+        extra_routers=[
+            notes_router, threads_router, streaming_router, hitl_router,
+        ],
         cors=CORSConfig.permissive_dev(),
-        on_startup=[_bind_domain_repos],
+        on_startup=startup_hooks,
+        on_shutdown=shutdown_hooks,
     )
 
     app.state.notes_repo = notes
     app.state.thread_repo = repo
     app.state.notes_agent = agent
+    app.state.todo_approval_agent = approval_agent
+    app.state.hitl_repo = hitl
+    app.state.hitl_gate = hitl_gate
     return app
 
 
