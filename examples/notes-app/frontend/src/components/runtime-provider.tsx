@@ -337,10 +337,49 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     [apiUrl, headers],
   );
 
+  // Restore the previously-active thread across reloads. Without this,
+  // assistant-ui drops the user onto a fresh draft and the history
+  // adapter's load() is never triggered (it short-circuits on missing
+  // remoteId on first mount; switching threads later wouldn't re-fire
+  // load for the original active one). We persist the active id to
+  // localStorage on every switch and use it as ``initialThreadId``.
+  const initialThreadId = useMemo<string | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    return window.localStorage.getItem("notes-app:active-thread") ?? undefined;
+  }, []);
+
   const runtime = useRemoteThreadListRuntime({
     adapter,
     runtimeHook,
+    initialThreadId,
   });
+
+  // Track the current thread id and persist it. ``runtime.threads`` is
+  // the thread-list API; subscribe to learn when the active thread
+  // switches.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const persist = () => {
+      try {
+        const id =
+          (runtime as unknown as {
+            threads?: { getState: () => { mainThreadId?: string } };
+          }).threads?.getState().mainThreadId;
+        if (id) {
+          window.localStorage.setItem("notes-app:active-thread", id);
+        }
+      } catch {
+        /* best-effort */
+      }
+    };
+    persist();
+    const sub = (runtime as unknown as {
+      threads?: { subscribe?: (fn: () => void) => () => void };
+    }).threads?.subscribe?.(persist);
+    return () => {
+      if (sub) sub();
+    };
+  }, [runtime]);
 
   // Stable proxy over `helpersRef` so consumers can `useContext` once
   // and call through to whichever chat is currently mounted.
