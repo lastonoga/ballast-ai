@@ -79,7 +79,7 @@ async def test_run_persists_streaming_event_taxonomy(
 
     with SetWorkflowID(str(uuid4())):
         await DBOS.start_workflow_async(
-            durable.run,
+            durable._run_with_tracking,
             thread_id_str=str(thread.id),
             prompt="hi",
             history_dump=[],
@@ -142,7 +142,7 @@ async def test_run_publishes_notifications_for_each_event(
 
     with SetWorkflowID(str(uuid4())):
         await DBOS.start_workflow_async(
-            durable.run,
+            durable._run_with_tracking,
             thread_id_str=str(thread.id),
             prompt="hi",
             history_dump=[],
@@ -171,7 +171,7 @@ async def test_run_emits_error_event_when_thread_missing(
 
     with SetWorkflowID(str(uuid4())):
         handle = await DBOS.start_workflow_async(
-            durable.run,
+            durable._run_with_tracking,
             thread_id_str=str(bogus),
             prompt="hi",
             history_dump=[],

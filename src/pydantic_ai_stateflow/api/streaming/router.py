@@ -68,7 +68,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from pydantic_ai.agent import AgentRunResult
-    from pydantic_ai.messages import ModelMessage
     from starlette.responses import Response
 
     from pydantic_ai_stateflow.persistence.thread.domain import Message
@@ -228,77 +227,19 @@ async def _sync_db_with_body(
     return await thread_repo.history(thread_id, limit=history_limit)
 
 
-def _parse_last_event_id(request: Request) -> int:
-    """Read the SSE-standard ``Last-Event-ID`` header (or 0)."""
-    raw = request.headers.get("Last-Event-ID") or request.headers.get(
-        "last-event-id",
-    )
-    if not raw:
-        return 0
-    try:
-        return int(raw)
-    except ValueError:
-        _log.warning("Ignoring malformed Last-Event-ID header: %r", raw)
-        return 0
-
-
-async def _durable_post_message(
+def _build_sse_response(
     *,
-    request: Request,
+    encoder: WireEncoder,
     thread_id: UUID,
-    stateflow_agent: StateflowDurableAgent,
-    thread_repo: ThreadRepository,
     event_log: EventLogRepository,
     event_stream: EventStream,
-    encoder: WireEncoder,
-    history_limit: int,
+    last_event_id: int,
 ) -> Response:
-    """Durable path: sync DB with body, enqueue workflow, tail event log."""
-    body_messages = await _parse_body_messages(request)
-    rows = await _sync_db_with_body(
-        thread_id=thread_id,
-        body_messages=body_messages,
-        thread_repo=thread_repo,
-        history_limit=history_limit,
-    )
+    """Build the SSE StreamingResponse that tails the event log.
 
-    # Extract prompt from the now-persisted history. Last row IS the
-    # new user message (we just synced); if not user (somehow empty
-    # body) bail.
-    if not rows or rows[-1].role != "user":
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot start run: thread has no user message to respond to.",
-        )
-    user_msg = rows[-1]
-    prompt_text = extract_text(user_msg.parts)
-
-    from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
-
-    history = messages_to_model_history(rows, drop_prompt=prompt_text)
-    history_dump = ModelMessagesTypeAdapter.dump_python(history, mode="json")
-
-    # ── Last-Event-ID cutoff ────────────────────────────────────────────────
-    # Snapshot ``latest_seq`` BEFORE enqueueing so the SSE consumer
-    # doesn't replay every historical event for this thread when
-    # ``Last-Event-ID`` is absent.
-    last_event_id = _parse_last_event_id(request)
-    if last_event_id == 0:
-        last_event_id = await event_log.latest_seq(thread_id)
-
-    try:
-        await stateflow_agent.enqueue_run(
-            thread_id=thread_id,
-            user_message_id=user_msg.id,
-            prompt=prompt_text,
-            history_dump=history_dump,
-        )
-    except Exception as exc:  # pragma: no cover — DBOS errors wholesale
-        _log.info(
-            "enqueue_run returned %s for user_msg=%s — "
-            "assuming attach-to-existing", type(exc).__name__, user_msg.id,
-        )
-
+    Pulled out so both ``enqueue_run`` and ``enqueue_approval_resume``
+    can use the same generator without duplicating the polling loop.
+    """
     async def _gen() -> AsyncIterator[bytes]:
         import asyncio  # noqa: PLC0415
 
@@ -335,8 +276,151 @@ async def _durable_post_message(
                     return
             await asyncio.sleep(poll_interval_s)
 
-    _ = event_stream  # reserved for future live-signal wiring
+    _ = event_stream  # reserved for future live-signal optimization
     return StreamingResponse(_gen(), media_type=encoder.content_type())
+
+
+def _parse_last_event_id(request: Request) -> int:
+    """Read the SSE-standard ``Last-Event-ID`` header (or 0)."""
+    raw = request.headers.get("Last-Event-ID") or request.headers.get(
+        "last-event-id",
+    )
+    if not raw:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        _log.warning("Ignoring malformed Last-Event-ID header: %r", raw)
+        return 0
+
+
+async def _durable_post_message(
+    *,
+    request: Request,
+    thread_id: UUID,
+    stateflow_agent: StateflowDurableAgent,
+    thread_repo: ThreadRepository,
+    event_log: EventLogRepository,
+    event_stream: EventStream,
+    encoder: WireEncoder,
+    history_limit: int,
+) -> Response:
+    """Durable path: sync DB with body, enqueue workflow, tail event log.
+
+    Two dispatch modes inside one endpoint:
+
+    - **New turn** (normal user prompt): body's last message is user;
+      sync DB, enqueue ``enqueue_run`` for a fresh agent turn.
+    - **Approval resume**: body carries a paused-tool assistant message
+      with ``approval-responded`` parts (assistant-ui's auto-resend
+      after the user clicks Approve/Reject); extract the approvals,
+      enqueue ``enqueue_approval_resume`` to execute / deny the tool
+      with the human decision threaded through.
+    """
+    from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
+    from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
+
+    # Peek at the body for approval-responses. ``VercelAIAdapter.from_request``
+    # parses the body once + caches; ``deferred_tool_results`` is a
+    # cached_property that scans for ``approval-responded`` parts and
+    # builds a ``DeferredToolResults`` if any are present. None → no
+    # approval in the body → normal new-turn flow.
+    adapter = await VercelAIAdapter.from_request(
+        request, agent=stateflow_agent.agent, sdk_version=6,
+    )
+    deferred = adapter.deferred_tool_results
+
+    if deferred is not None and deferred.approvals:
+        # Approval resume path. Don't sync body → DB (the body carries
+        # the assistant turn with approval state baked into parts; we
+        # don't want to persist that as a new assistant row — the
+        # resumed agent run will produce the real tool-output assistant).
+        rows = await thread_repo.history(thread_id, limit=history_limit)
+        history = messages_to_model_history(rows, drop_prompt=None)
+        history_dump = ModelMessagesTypeAdapter.dump_python(
+            history, mode="json",
+        )
+
+        # Translate DeferredToolResults.approvals (Python-typed) → wire
+        # shape for the workflow arg (JSON-safe dict).
+        approvals_dump: dict[str, bool | dict[str, Any]] = {}
+        for tcid, decision in deferred.approvals.items():
+            if isinstance(decision, bool):
+                approvals_dump[tcid] = decision
+            else:
+                # ToolDenied(message=...)
+                approvals_dump[tcid] = {
+                    "message": getattr(decision, "message", "denied"),
+                }
+
+        last_event_id = _parse_last_event_id(request)
+        if last_event_id == 0:
+            last_event_id = await event_log.latest_seq(thread_id)
+
+        await stateflow_agent.enqueue_approval_resume(
+            thread_id=thread_id,
+            history_dump=history_dump,
+            approvals=approvals_dump,
+        )
+        return _build_sse_response(
+            encoder=encoder,
+            thread_id=thread_id,
+            event_log=event_log,
+            event_stream=event_stream,
+            last_event_id=last_event_id,
+        )
+
+    # New turn path.
+    body_messages = await _parse_body_messages(request)
+    rows = await _sync_db_with_body(
+        thread_id=thread_id,
+        body_messages=body_messages,
+        thread_repo=thread_repo,
+        history_limit=history_limit,
+    )
+
+    # Extract prompt from the now-persisted history. Last row IS the
+    # new user message (we just synced); if not user (somehow empty
+    # body) bail.
+    if not rows or rows[-1].role != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot start run: thread has no user message to respond to.",
+        )
+    user_msg = rows[-1]
+    prompt_text = extract_text(user_msg.parts)
+
+    history = messages_to_model_history(rows, drop_prompt=prompt_text)
+    history_dump = ModelMessagesTypeAdapter.dump_python(history, mode="json")
+
+    # ── Last-Event-ID cutoff ────────────────────────────────────────────────
+    # Snapshot ``latest_seq`` BEFORE enqueueing so the SSE consumer
+    # doesn't replay every historical event for this thread when
+    # ``Last-Event-ID`` is absent.
+    last_event_id = _parse_last_event_id(request)
+    if last_event_id == 0:
+        last_event_id = await event_log.latest_seq(thread_id)
+
+    try:
+        await stateflow_agent.enqueue_run(
+            thread_id=thread_id,
+            user_message_id=user_msg.id,
+            prompt=prompt_text,
+            history_dump=history_dump,
+        )
+    except Exception as exc:  # pragma: no cover — DBOS errors wholesale
+        _log.info(
+            "enqueue_run returned %s for user_msg=%s — "
+            "assuming attach-to-existing", type(exc).__name__, user_msg.id,
+        )
+
+    return _build_sse_response(
+        encoder=encoder,
+        thread_id=thread_id,
+        event_log=event_log,
+        event_stream=event_stream,
+        last_event_id=last_event_id,
+    )
 
 
 EncoderFactory = Callable[[], WireEncoder]

@@ -1,57 +1,53 @@
-"""``StateflowDurableAgent`` — ``StateflowAgent`` variant with durable run loop.
+"""``StateflowDurableAgent`` — ``StateflowAgent`` durably executed via DBOSAgent.
 
-The motivating problem (from the design discussion):
+Built on top of pydantic-ai's ``DBOSAgent`` wrapper, which:
 
-  ``StateflowAgent.agent.run_stream(...)`` runs inside the FastAPI
-  request handler's asyncio task. When the SSE consumer dies (browser
-  tab closed, network blip, request timeout), the task is cancelled,
-  ``CancelledError`` cascades down to every ``await`` in tool bodies,
-  and any side effects depending on the model's response are lost.
-  ``DurableHITLWorkflow`` works around this for HITL specifically by
-  spawning a separate ``@DBOS.workflow``; ``StateflowDurableAgent`` solves it
-  at the source — the WHOLE agent run lives inside a workflow.
+  - Wraps the underlying ``Agent`` so that every model request and tool
+    call is automatically a ``@DBOS.step`` — survives process crashes,
+    memoised on workflow replay, no manual ``_wrap_tool_fn`` needed.
+  - Exposes ``run()`` as a ``@DBOS.workflow`` — the whole agent loop
+    is durable end-to-end.
+  - Supports ``event_stream_handler`` for streaming AgentStreamEvents
+    out of the workflow without having to drive ``agent.iter()``
+    manually.
 
-What this buys:
+What our subclass adds on top:
 
-  - Caller cancellation only kills the HTTP response, not the agent
-    run. The workflow continues; events keep landing in the durable
-    log; on reconnect the SSE handler replays missed events via
-    Last-Event-ID.
-  - Process crash recovers via DBOS's standard workflow recovery —
-    the agent run resumes from the last persisted step.
-  - HITL becomes a regular ``await hitl_gate.ask_helper(...)`` from
-    inside a tool — the workflow boundary protects it. No more
-    ``DurableHITLWorkflow`` + ``on_decision`` boilerplate for typical
-    HITL flows.
+  - An outer per-turn workflow (``_run_with_tracking``) that:
+    1. Emits a ``start`` ThreadEvent to the durable log.
+    2. Calls ``DBOSAgent.run(...)`` (a child workflow).
+    3. Routes every AgentStreamEvent through the event-stream handler →
+       ``ThreadEvent`` rows + ``EventNotification`` signals so the SSE
+       consumer can replay/tail.
+    4. Persists the assistant turn to ``thread_repo``.
+    5. Emits ``approval-request`` ThreadEvents per ``DeferredToolRequests``
+       approval entry (HITL: tool needs user approve/reject).
+    6. Emits ``done`` (or ``error``).
 
-What this costs:
+  - A per-thread serialization queue (``AGENT_RUN_QUEUE`` with
+    ``partition_queue=True`` + ``concurrency=1``) so a thread can't
+    have two agent turns interleaving.
 
-  - Tool side effects MUST be idempotent (DBOS replays workflow
-    steps on recovery). The framework's ``Det.now / uuid_for / random_*``
-    helpers handle non-determinism, but app-side tools that hit
-    external systems (DB writes, HTTP POSTs, payment processors)
-    must be wrapped in ``@DBOS.step`` with idempotency keys —
-    capability ``IdempotentTools`` (separate task #128) automates
-    this opt-in.
-  - Performance: every persisted event is a row write + signal
-    publish. For very high-throughput agent runs swap the in-memory
-    log + in-process stream for postgres / Redis.
-  - Per-thread serialization: only one ``StateflowDurableAgent.run`` can be
-    in-flight per thread at a time (DBOS queue policy, task #127).
+  - ``enqueue_run`` (fresh user prompt) and ``enqueue_approval_resume``
+    (resume after the user supplied ``DeferredToolResults`` via the
+    ``POST /threads/{id}/approve`` endpoint).
 
-Apps adopt ``StateflowDurableAgent`` by subclassing it instead of
-``StateflowAgent`` — the rest of the contract (``build_agent``,
-``build_deps``, ``model_settings``, ``@SomeAgent.tool``,
-``@SomeAgent.system_prompt``, ``metadata_model``) is unchanged.
+  - ``cancel_thread_runs`` — best-effort cancel of every active workflow
+    for a thread + a synthetic ``cancelled`` ThreadEvent so the SSE
+    consumer closes.
+
+Apps still subclass ``StateflowDurableAgent`` exactly like
+``StateflowAgent``; ``build_agent`` / ``build_deps`` / ``model_settings``
+/ ``@SomeAgent.tool`` are unchanged. The DBOSAgent wrapping is internal.
 """
 
 from __future__ import annotations
 
-import functools
 import itertools
-import traceback
+from contextvars import ContextVar
+from functools import cached_property
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dbos import (
     DBOS,
@@ -72,9 +68,12 @@ from pydantic_ai_stateflow.runtime.event_stream import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterable, Callable
 
     from dbos._dbos import WorkflowHandleAsync
+    from pydantic_ai.durable_exec.dbos import DBOSAgent
+    from pydantic_ai.messages import AgentStreamEvent
+    from pydantic_ai.tools import RunContext
 
     from pydantic_ai_stateflow.persistence.thread.repository import (
         ThreadRepository,
@@ -83,17 +82,13 @@ if TYPE_CHECKING:
 _instance_counter = itertools.count()
 
 
-# Per-thread serialization queue.
+# Per-thread serialization queue. ``partition_queue=True`` + ``concurrency=1``
+# means at most ONE workflow runs at a time per (thread_id) partition,
+# but different threads run concurrently. This serializes turns within
+# a thread (no two parallel agent runs writing assistant turns over
+# each other) without blocking the whole app.
 #
-# Single global DBOS queue with ``partition_queue=True`` + ``concurrency=1``.
-# Each ``thread_id`` acts as a partition key — at most ONE workflow runs at
-# a time per thread, but different threads run concurrently. This prevents
-# the race where two user messages in the same thread spawn parallel agent
-# runs that interleave writes / step on each other's message history /
-# duplicate side effects.
-#
-# Module-level so DBOS sees the registration BEFORE ``DBOS.launch()`` runs
-# in apps that import this module at boot.
+# Module-level so DBOS sees the registration BEFORE ``DBOS.launch()``.
 AGENT_RUN_QUEUE: Queue = Queue(
     name="stateflow-agent-runs",
     concurrency=1,
@@ -104,16 +99,20 @@ AGENT_RUN_QUEUE: Queue = Queue(
 def agent_run_workflow_id(thread_id: UUID, user_message_id: str) -> str:
     """Deterministic workflow id for one (thread, user message) pair.
 
-    Re-using the same id idempotently attaches a request retry to the
-    in-flight workflow instead of spawning a duplicate. The prefix
+    Same id idempotently attaches a request retry to the in-flight
+    workflow instead of spawning a duplicate. The prefix
     ``"agent-run:"`` is used by ``cancel_thread_runs`` to find all
-    workflows for a thread via ``list_workflows_async(workflow_id_prefix=...)``.
-
-    ``user_message_id`` is the free-form ``Message.id`` string (may be
-    a UUID, may be an assistant-ui-generated short id — we don't
-    coerce; the value is just a key for workflow-id determinism).
+    workflows for a thread via
+    ``list_workflows_async(workflow_id_prefix=...)``.
     """
     return f"agent-run:{thread_id}:{user_message_id}"
+
+
+def _agent_resume_workflow_id(thread_id: UUID, suffix: str) -> str:
+    """Workflow id for an approval-resume run. Distinct from the
+    initial run's id so the queue treats it as a fresh turn but the
+    prefix still matches for cancellation."""
+    return f"agent-run:{thread_id}:resume:{suffix}"
 
 
 def _agent_run_prefix(thread_id: UUID) -> str:
@@ -121,27 +120,36 @@ def _agent_run_prefix(thread_id: UUID) -> str:
     return f"agent-run:{thread_id}:"
 
 
+# Thread-id carried through the call stack so the event-stream handler
+# (set on DBOSAgent at construction; doesn't get explicit thread context
+# in its callback) knows which thread to write events to. ContextVar
+# propagates across asyncio await boundaries within a task.
+_current_thread_id: ContextVar[UUID | None] = ContextVar(
+    "_stateflow_current_thread_id", default=None,
+)
+
+
 @DBOS.dbos_class()
 class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
-    """``StateflowAgent`` whose ``run`` is a durable DBOS workflow.
+    """``StateflowAgent`` whose agent loop runs as a DBOS workflow.
 
-    Inherits everything from ``StateflowAgent`` — tool decorators,
-    system-prompt decorators, ``metadata_model`` validation, the
-    lazy-cached pydantic-ai ``Agent`` build. Apps subclass exactly
-    the same way; the difference is internal (the run loop is now a
-    ``@DBOS.workflow``).
+    Subclasses provide the usual ``build_agent`` / ``build_deps`` /
+    ``model_settings`` / ``@SomeAgent.tool`` machinery from
+    ``StateflowAgent``. This subclass wraps the resulting pydantic-ai
+    ``Agent`` in ``DBOSAgent``, so model requests and tool calls
+    become durable steps automatically.
 
     Three transport dependencies wired at construction:
 
-      - ``thread_repo``: load thread + (separately) persist messages.
-      - ``event_log``:  append every emitted event for durable replay.
+      - ``thread_repo``: load thread + persist messages.
+      - ``event_log``:   append every emitted event for SSE replay.
       - ``event_stream``: publish ``EventNotification(seq)`` so live
-        SSE consumers wake up without polling the log.
+        SSE consumers wake without polling the log.
 
-    The streaming router checks for ``isinstance(instance,
-    StateflowDurableAgent)`` and routes through the durable path; plain
-    ``StateflowAgent`` subclasses keep the current direct streaming
-    path. Apps opt in by choosing which base class to extend.
+    The streaming router checks ``isinstance(instance,
+    StateflowDurableAgent)`` and routes through the durable path
+    (``enqueue_run`` + SSE-tail-the-event-log). Plain ``StateflowAgent``
+    subclasses keep the non-durable inline streaming path.
     """
 
     def __init__(
@@ -152,11 +160,10 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         event_stream: EventStream,
         config_name: str | None = None,
     ) -> None:
-        # DBOSConfiguredInstance needs a unique config_name per process
-        # so DBOS can rebind the instance to in-flight workflows after a
-        # restart. Default to ``durable-agent:<AgentClassName>`` — apps
-        # with multiple instances of the same class (rare) override
-        # with their own stable string.
+        # DBOSConfiguredInstance requires a stable name so DBOS can
+        # rebind the instance to in-flight workflows after restart.
+        # Default to ``durable-agent:<ClassName>-<n>`` — apps with
+        # multiple instances of the same class (rare) override.
         cls_name = type(self).__name__
         super().__init__(
             config_name=config_name
@@ -171,100 +178,197 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         fn: Callable[..., Any],
         entry: _ToolEntry,
     ) -> Callable[..., Any]:
-        """Wrap tools with ``persistent=True`` in ``@DBOS.step`` for replay safety.
+        """No-op: DBOSAgent auto-wraps tools as ``@DBOS.step``.
 
-        Why: when the agent loop runs inside ``@DBOS.workflow`` and the
-        process crashes mid-run, DBOS recovery REPLAYS the workflow
-        from the start — every tool call re-executes. Read-only tools
-        (``list_notes``, ``search_notes``) are fine; tools that hit
-        external systems (DB writes, API POSTs, payments) would
-        double-fire.
-
-        Wrapping the tool function in ``@DBOS.step`` memoizes its
-        return value in DBOS's system database — replay sees a
-        recorded step and returns the cached result without
-        re-executing the body.
-
-        Default policy for ``StateflowDurableAgent``: ``persistent=None``
-        (the unset default) is treated as ``True`` — apps get safety
-        by default and have to explicitly opt out for read-only tools
-        with ``@SomeAgent.tool(persistent=False)``. Trading per-call
-        DBOS-sys-db write overhead for "won't silently double-create
-        a row on crash recovery" is the right default for an agent
-        framework targeting production reliability.
+        The base ``StateflowAgent._wrap_tool_fn`` is pass-through; we
+        keep this override only to explicitly document that we do NOT
+        need a custom wrapper anymore. DBOSAgent's machinery (via the
+        DBOSModel + toolset overrides) handles step-ification.
         """
-        # ``None`` (unset) → DurableAgent default = persist.
-        # ``False`` → explicit opt-out (read-only tool).
-        # ``True`` → explicit opt-in.
-        if entry.persistent is False:
-            return fn
+        del entry
+        return fn
 
-        # ``@DBOS.step`` wants a unique name per registered step. The
-        # tool's qualified name is stable across replays and unique
-        # within an agent run, which is what DBOS's memoization key
-        # needs.
-        step_name = f"tool:{fn.__qualname__}"
-        step_wrapped = DBOS.step(name=step_name)(fn)
+    @cached_property
+    def dbos_agent(self) -> DBOSAgent[Any, Any]:
+        """Lazy-cached ``DBOSAgent`` wrapping the base pydantic-ai ``Agent``.
 
-        @functools.wraps(fn)
-        async def explained(*args: Any, **kwargs: Any) -> Any:
-            """Catch DBOS's bare ``AssertionError`` when a step tries to
-            spawn a workflow, and re-raise with a fix the developer
-            can actually act on.
+        Constructed once on first access. The wrapped agent inherits
+        all tools / system prompts / metadata model registered via
+        ``@SomeAgent.tool`` / ``@SomeAgent.system_prompt`` on the
+        subclass — those are baked into ``self.agent`` by the base
+        class machinery.
 
-            DBOS guards ``start_workflow_async`` / ``Queue.enqueue`` /
-            ``DurableHITLWorkflow.open`` (anything that creates a child
-            workflow) with ``assert cur_ctx.is_workflow()`` — which
-            fires from inside a ``@DBOS.step``. The default
-            traceback shows ``AssertionError`` with no message + a
-            dbos-internal frame, and a developer reading that has no
-            idea why their tool can't spawn a workflow.
+        ``event_stream_handler`` is set on the ``DBOSAgent`` instance
+        here (not passed per-call to ``run``) so it doesn't end up in
+        the workflow's arg tuple — DBOS pickles workflow args, and a
+        bound method on this instance pulls in non-picklable state
+        (asyncio primitives on the event_stream, ContextVar refs, …).
+        Setting it on the instance makes the handler a property the
+        workflow reads at runtime instead of an arg it serializes.
+        """
+        from pydantic_ai.durable_exec.dbos import DBOSAgent  # noqa: PLC0415
 
-            ``persistent=True`` (the StateflowDurableAgent default)
-            applies ``@DBOS.step``. Tools that spawn workflows MUST
-            be marked ``persistent=False`` — the spawned workflow is
-            already durable in its own right, so the @DBOS.step wrap
-            on the caller adds nothing and actively blocks the spawn.
-            """
-            try:
-                return await step_wrapped(*args, **kwargs)
-            except AssertionError as exc:
-                tb_text = "".join(traceback.format_tb(exc.__traceback__))
-                if "create_start_workflow_child" not in tb_text:
-                    raise
-                raise RuntimeError(
-                    f"Tool {fn.__qualname__!r} tried to spawn a DBOS "
-                    "workflow (e.g. via DBOS.start_workflow_async, "
-                    "Queue.enqueue, or a framework helper like "
-                    "DurableHITLWorkflow.open) from inside @DBOS.step. "
-                    "DBOS forbids this because steps must be leaf "
-                    "operations.\n\n"
-                    "FIX: decorate this tool with "
-                    f"@SomeAgent.tool(persistent=False). The "
-                    "spawned workflow is already durable on its own, "
-                    "so the @DBOS.step wrap on the caller adds nothing "
-                    "AND blocks the spawn.\n\n"
-                    "Background: StateflowDurableAgent wraps tools in "
-                    "@DBOS.step by default (persistent=None → True) so "
-                    "writes are memoised across workflow replay. Tools "
-                    "whose side-effect is itself a durable workflow "
-                    "don't need (and can't have) this wrap.",
-                ) from exc
-
-        # Preserve introspection metadata that pydantic-ai's tool
-        # registration reads (it uses ``get_type_hints`` + the function
-        # signature to derive the JSON schema). ``functools.wraps`` on
-        # the DBOS-step return value would clobber the step's behavior,
-        # so re-mirror just the attributes pydantic-ai actually reads.
-        functools.update_wrapper(
-            explained, fn,
-            assigned=("__module__", "__name__", "__qualname__",
-                      "__doc__", "__annotations__"),
-            updated=(),
+        # ``name`` is the DBOS configured-instance key + workflow-name
+        # prefix. Must be unique across DBOS instances in this process,
+        # so we use ``self.config_name`` (set in __init__ from the user
+        # override or ``durable-agent:<ClassName>-<counter>``) rather
+        # than ``self.name`` (the registry key, shared across
+        # construction). For prod recovery, override config_name to a
+        # stable string at construction time.
+        return DBOSAgent(
+            self.agent,
+            name=self.config_name,
+            event_stream_handler=self._handle_stream_event,
         )
-        return explained
+
+    async def _handle_stream_event(
+        self,
+        ctx: RunContext[Any],
+        stream: AsyncIterable[AgentStreamEvent],
+    ) -> None:
+        """``event_stream_handler`` callback — runs INSIDE the DBOS workflow.
+
+        Translates each pydantic-ai ``AgentStreamEvent`` into a
+        ``ThreadEvent`` row and publishes an ``EventNotification`` so
+        the SSE consumer wakes. ``DBOSAgent`` wraps this callback so it
+        receives a single-event stream per invocation; we still iterate
+        defensively to support both wrapped and direct calling.
+
+        The thread_id comes from the ``_current_thread_id`` ContextVar
+        set by ``_run_with_tracking`` — it propagates through the
+        workflow → child workflow → handler call chain because ContextVar
+        is preserved across asyncio await boundaries in the same task.
+        """
+        del ctx
+        thread_id = _current_thread_id.get()
+        if thread_id is None:
+            return
+        async for event in stream:
+            await self._translate_event_step(
+                thread_id=thread_id, event=event,
+            )
 
     @DBOS.step()
+    async def _translate_event_step(
+        self,
+        *,
+        thread_id: UUID,
+        event: Any,
+    ) -> None:
+        """Persist one ``AgentStreamEvent`` as a ``ThreadEvent`` row.
+
+        Wrapped as ``@DBOS.step`` so persisted events are memoised on
+        replay (we don't double-write on workflow recovery). Unknown
+        event types are silently skipped (forward-compat for new
+        pydantic-ai event kinds).
+        """
+        from pydantic_ai.messages import (  # noqa: PLC0415
+            FunctionToolResultEvent,
+            PartDeltaEvent,
+            PartEndEvent,
+            PartStartEvent,
+            TextPart,
+            TextPartDelta,
+            ToolCallPart,
+            ToolCallPartDelta,
+        )
+
+        if isinstance(event, PartStartEvent):
+            part = event.part
+            if isinstance(part, TextPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="text-start",
+                    payload={"part_index": event.index},
+                )
+                if part.content:
+                    # Some providers ship the full text in PartStart
+                    # (no streaming deltas). Surface it as a delta so
+                    # downstream encoders don't lose it.
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="text-delta",
+                        payload={
+                            "part_index": event.index,
+                            "text": part.content,
+                        },
+                    )
+            elif isinstance(part, ToolCallPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="tool-call-start",
+                    payload={
+                        "part_index": event.index,
+                        "tool_call_id": part.tool_call_id,
+                        "tool_name": part.tool_name,
+                        "args": part.args_as_dict() if part.args else {},
+                    },
+                )
+            return
+
+        if isinstance(event, PartDeltaEvent):
+            delta = event.delta
+            if isinstance(delta, TextPartDelta) and delta.content_delta:
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="text-delta",
+                    payload={
+                        "part_index": event.index,
+                        "text": delta.content_delta,
+                    },
+                )
+            elif isinstance(delta, ToolCallPartDelta):
+                payload: dict[str, Any] = {"part_index": event.index}
+                if delta.args_delta is not None:
+                    payload["args_delta"] = delta.args_delta
+                if delta.tool_name_delta is not None:
+                    payload["tool_name_delta"] = delta.tool_name_delta
+                if delta.tool_call_id is not None:
+                    payload["tool_call_id"] = delta.tool_call_id
+                if len(payload) > 1:
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="tool-call-delta",
+                        payload=payload,
+                    )
+            return
+
+        if isinstance(event, PartEndEvent):
+            part = event.part
+            if isinstance(part, TextPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="text-end",
+                    payload={"part_index": event.index},
+                )
+            elif isinstance(part, ToolCallPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="tool-call-end",
+                    payload={
+                        "part_index": event.index,
+                        "tool_call_id": part.tool_call_id,
+                        "tool_name": part.tool_name,
+                        "args": part.args_as_dict() if part.args else {},
+                    },
+                )
+            return
+
+        if isinstance(event, FunctionToolResultEvent):
+            result = event.part
+            await self._persist_and_publish(
+                thread_id=thread_id,
+                kind="tool-result",
+                payload={
+                    "tool_call_id": result.tool_call_id,
+                    "tool_name": result.tool_name,
+                    "output": _safe_jsonify(
+                        getattr(result, "content", None),
+                    ),
+                },
+            )
+            return
+
     async def _persist_and_publish(
         self,
         *,
@@ -274,13 +378,10 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
     ) -> int:
         """Append one event to the durable log + publish a wake-up signal.
 
-        Wrapped as ``@DBOS.step`` so DBOS records the operation in its
-        execution log — recovery skips the step if it already ran,
-        which is the safety net for non-idempotent log appends across
-        workflow replays.
-
-        Returns the assigned ``seq`` so callers can correlate the
-        durable row with the signal that announced it.
+        NOT decorated as ``@DBOS.step`` directly because this helper is
+        also called from ``_translate_event_step`` (which IS a step) —
+        nesting steps is fine but adds overhead. Callers that need step
+        idempotency wrap their call site.
         """
         ev = await self._event_log.append(
             thread_id=thread_id, kind=kind, payload=dict(payload),
@@ -299,51 +400,55 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         prompt: str,
         history_dump: list[dict[str, Any]],
     ) -> WorkflowHandleAsync[None]:
-        """Enqueue ``self.run`` into the per-thread serialization queue.
+        """Enqueue a fresh-prompt agent turn into the per-thread queue.
 
-        Returns the DBOS handle for the enqueued workflow. The workflow
-        id is deterministic per (thread_id, user_message_id) so a
-        retried request attaches to the existing run instead of
-        spawning a duplicate.
-
-        The partition key is the stringified ``thread_id`` —
-        ``AGENT_RUN_QUEUE`` is configured with ``concurrency=1``, so at
-        most one workflow runs per thread at a time. Other messages
-        for the SAME thread wait in the queue; other threads run
-        concurrently.
+        Returns the DBOS handle for the enqueued workflow. The id is
+        deterministic per (thread_id, user_message_id) so a request
+        retry attaches to the existing workflow instead of spawning a
+        duplicate.
         """
         workflow_id = agent_run_workflow_id(thread_id, user_message_id)
-        # ``SetWorkflowID`` pre-allocates the id; ``SetEnqueueOptions``
-        # routes the enqueue into the right partition. Both are
-        # context-managers that stack on the per-task DBOS context.
-        # ``enqueue_async`` (not ``enqueue``) is required in async code —
-        # the sync variant returns a ``WorkflowHandle`` that can't be
-        # awaited.
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
         ):
             return await AGENT_RUN_QUEUE.enqueue_async(
-                self.run,
+                self._run_with_tracking,
                 thread_id_str=str(thread_id),
                 prompt=prompt,
                 history_dump=history_dump,
+                deferred_tool_results_dump=None,
+            )
+
+    async def enqueue_approval_resume(
+        self,
+        *,
+        thread_id: UUID,
+        history_dump: list[dict[str, Any]],
+        approvals: dict[str, dict[str, Any]],
+    ) -> WorkflowHandleAsync[None]:
+        """Enqueue an approval-resume turn — agent re-runs with the
+        user's ``DeferredToolResults`` to actually execute (or deny)
+        the previously-paused tool call.
+
+        ``approvals`` is a plain dict so DBOS workflow arg serialization
+        survives library version changes; reconstructed into
+        ``DeferredToolResults`` inside the workflow body.
+        """
+        suffix = uuid4().hex
+        workflow_id = _agent_resume_workflow_id(thread_id, suffix)
+        with SetWorkflowID(workflow_id), SetEnqueueOptions(
+            queue_partition_key=str(thread_id),
+        ):
+            return await AGENT_RUN_QUEUE.enqueue_async(
+                self._run_with_tracking,
+                thread_id_str=str(thread_id),
+                prompt="",
+                history_dump=history_dump,
+                deferred_tool_results_dump={"approvals": approvals},
             )
 
     async def cancel_thread_runs(self, thread_id: UUID) -> int:
-        """Cancel every active workflow for ``thread_id`` + emit a ``cancelled`` event.
-
-        Active = ``ENQUEUED`` or ``PENDING`` (i.e. waiting in queue
-        or already running). ``SUCCESS`` / ``ERROR`` / ``CANCELLED``
-        workflows are left alone — calling cancel on a finished
-        workflow is a no-op (we follow Q5: idempotent cancel).
-
-        Returns the number of workflows that were actually cancelled
-        so callers can surface "nothing to cancel" vs "1 cancelled"
-        in their HTTP response.
-        """
-        # Both ENQUEUED (queued, not yet running) and PENDING (running)
-        # are cancellable. DELAYED is a future-timer state we don't
-        # emit but check defensively.
+        """Cancel every active workflow for ``thread_id`` + emit ``cancelled``."""
         active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
         prefix = _agent_run_prefix(thread_id)
         workflows = await DBOS.list_workflows_async(
@@ -356,10 +461,9 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             await DBOS.cancel_workflow_async(wf.workflow_id)
             cancelled += 1
 
-        # Synthetic terminal event so the SSE consumer sees something
-        # in the log and closes — the cancelled workflow itself may
-        # not get a chance to emit anything (DBOS cancellation just
-        # marks the row + interrupts the task).
+        # Synthetic terminal event so the SSE consumer closes — the
+        # cancelled workflow itself may not get a chance to emit
+        # anything (DBOS cancellation just marks the row + interrupts).
         await self._event_log.append(
             thread_id=thread_id,
             kind="cancelled",
@@ -372,53 +476,37 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         return cancelled
 
     @DBOS.workflow()
-    async def run(
+    async def _run_with_tracking(
         self,
         *,
         thread_id_str: str,
         prompt: str,
         history_dump: list[dict[str, Any]],
+        deferred_tool_results_dump: dict[str, Any] | None = None,
     ) -> None:
-        """Durable agent run — drives ``agent.iter()`` and persists every event.
+        """Outer per-turn workflow that brackets ``DBOSAgent.run`` with
+        our ``start`` / ``done`` / ``approval-request`` / ``error``
+        ThreadEvents and the assistant-turn persistence.
 
         Args are JSON-friendly primitives so DBOS workflow
-        serialization is robust across pydantic / pickle version
+        serialization survives pydantic / pickle / library version
         changes:
 
-          - ``thread_id_str``: stringified UUID of the target thread.
-          - ``prompt``: extracted user-message text (the streaming
-            router pulls this out of the Vercel-AI request body).
-          - ``history_dump``: ``[m.model_dump(mode="json") for m in
-            messages_to_model_history(...)]`` — replay-safe.
-
-        Event taxonomy (persisted to ``EventLogRepository``,
-        consumed by ``WireEncoder``):
-
-          - ``start``                — workflow began
-          - ``text-start``           — model emitted a new TextPart
-          - ``text-delta``           — token-level delta on a TextPart
-          - ``text-end``             — TextPart finalized
-          - ``tool-call-start``      — model decided to call a tool
-          - ``tool-call-delta``      — tool-call args streamed in
-          - ``tool-call-end``        — tool-call args complete
-          - ``tool-result``          — tool body returned (post-execution)
-          - ``done`` | ``error``     — terminal (see also ``cancelled``)
-
-        Each event carries enough id-correlation in ``payload`` for
-        the wire encoder to group/order them (``part_index``,
-        ``tool_call_id``).
+          - ``thread_id_str``                — stringified UUID.
+          - ``prompt``                       — user prompt text
+            (empty for approval-resume).
+          - ``history_dump``                 — ``ModelMessagesTypeAdapter``
+            JSON dump of the full conversation history.
+          - ``deferred_tool_results_dump``   — optional; for
+            approval-resume, dict of ``{tool_call_id: bool | {...}}``.
         """
+        from pydantic_ai import (  # noqa: PLC0415
+            DeferredToolRequests,
+            DeferredToolResults,
+            ToolDenied,
+        )
         from pydantic_ai.messages import (  # noqa: PLC0415
-            FunctionToolResultEvent,
-            ModelMessage,
             ModelMessagesTypeAdapter,
-            PartDeltaEvent,
-            PartEndEvent,
-            PartStartEvent,
-            TextPart,
-            TextPartDelta,
-            ToolCallPart,
-            ToolCallPartDelta,
         )
 
         thread_id = UUID(thread_id_str)
@@ -431,13 +519,23 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             )
             return
 
-        # Rehydrate ModelMessage history. ``ModelMessagesTypeAdapter`` is
-        # the canonical pydantic-ai way to round-trip a list of
-        # ModelMessage dicts back into typed objects.
-        history: list[ModelMessage] = (
+        # Rehydrate types from JSON-safe wire shapes.
+        history = (
             ModelMessagesTypeAdapter.validate_python(history_dump)
             if history_dump else []
         )
+        deferred_results: DeferredToolResults | None = None
+        if deferred_tool_results_dump:
+            approvals_raw = deferred_tool_results_dump.get("approvals") or {}
+            approvals: dict[str, bool | ToolDenied] = {}
+            for tcid, decision in approvals_raw.items():
+                if isinstance(decision, bool):
+                    approvals[tcid] = decision
+                elif isinstance(decision, dict) and "message" in decision:
+                    approvals[tcid] = ToolDenied(message=str(decision["message"]))
+                else:
+                    approvals[tcid] = False
+            deferred_results = DeferredToolResults(approvals=approvals)
 
         deps = await self.build_deps(thread=thread, message=None)
         model_settings = self.model_settings()
@@ -446,37 +544,20 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             thread_id=thread_id, kind="start", payload={"prompt": prompt},
         )
 
-        final_result: Any = None
+        token = _current_thread_id.set(thread_id)
         try:
-            async with self.agent.iter(
-                prompt,
+            result = await self.dbos_agent.run(
+                prompt if prompt else None,
                 message_history=history,
+                deferred_tool_results=deferred_results,
                 deps=deps,
                 model_settings=model_settings,
-            ) as agent_run:
-                async for node in agent_run:
-                    # Only ModelRequest + CallTools nodes have a
-                    # ``stream`` method — User/End nodes are inert
-                    # transitions we don't surface as wire events.
-                    if not hasattr(node, "stream"):
-                        continue
-                    async with node.stream(agent_run.ctx) as event_stream:
-                        async for event in event_stream:
-                            await self._encode_and_persist(
-                                thread_id=thread_id,
-                                event=event,
-                                TextPart=TextPart,
-                                TextPartDelta=TextPartDelta,
-                                ToolCallPart=ToolCallPart,
-                                ToolCallPartDelta=ToolCallPartDelta,
-                                PartStartEvent=PartStartEvent,
-                                PartDeltaEvent=PartDeltaEvent,
-                                PartEndEvent=PartEndEvent,
-                                FunctionToolResultEvent=FunctionToolResultEvent,
-                            )
-                # ``agent_run.result`` is set once the iterator reaches
-                # the End node — pull all_messages() for the full turn.
-                final_result = agent_run.result
+                # ``conversation_id == thread.id`` so every run in the
+                # same thread shares a logical conversation grouping for
+                # pydantic-ai's history-derivation + provider replay
+                # (e.g. Anthropic prompt caching keys off it).
+                conversation_id=str(thread_id),
+            )
         except Exception as exc:
             await self._persist_and_publish(
                 thread_id=thread_id,
@@ -484,31 +565,22 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 payload={"message": str(exc), "type": type(exc).__name__},
             )
             raise
+        finally:
+            _current_thread_id.reset(token)
 
-        # Persist the assistant turn to ``thread_repo`` so the next
-        # request sees it in the conversation history. Without this,
-        # subsequent runs would build ``history`` from only user
-        # messages and pydantic-ai would reject the prompt with
-        # "consecutive user messages without an assistant response".
-        if final_result is not None:
-            await self._persist_assistant_turn(
-                thread_id=thread_id,
-                result=final_result,
-            )
+        # Persist the assistant turn so subsequent runs see it in the
+        # repo-driven history. Skipped when output is DeferredToolRequests
+        # (the resumption run will produce the real assistant turn).
+        await self._persist_assistant_turn(
+            thread_id=thread_id, result=result,
+        )
 
-        # HITL: if the agent paused waiting for tool approval, emit an
-        # ``approval-request`` event per deferred call so the wire
-        # encoder can ship ``tool-approval-request`` chunks and the
-        # frontend renders Approve/Reject UI. Without these the SSE
-        # stream just ends after ``tool-input-available`` and
-        # assistant-ui shows a generic "1 tool call" placeholder
-        # instead of the approval card.
-        from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
-
-        if final_result is not None and isinstance(
-            final_result.output, DeferredToolRequests,
-        ):
-            for tc in final_result.output.approvals:
+        # HITL: emit one ``approval-request`` ThreadEvent per deferred
+        # call so the wire encoder can ship Vercel v6
+        # ``tool-approval-request`` chunks and the frontend renders an
+        # approval card.
+        if isinstance(result.output, DeferredToolRequests):
+            for tc in result.output.approvals:
                 await self._persist_and_publish(
                     thread_id=thread_id,
                     kind="approval-request",
@@ -529,24 +601,18 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         thread_id: UUID,
         result: Any,
     ) -> None:
-        """Dump the assistant's Vercel-AI UI parts and persist as one message row.
+        """Dump the assistant's Vercel-AI UI parts and persist as one row.
 
-        Mirrors the non-durable router's ``on_complete`` callback: we
-        run ``VercelAIAdapter.dump_messages`` on the agent's
-        ``all_messages()`` (which includes the new model response +
-        tool returns), pick out the assistant parts emitted AFTER the
-        latest user prompt, and add them under a single message in
-        ``thread_repo``. ``@DBOS.step`` makes the persistence
-        idempotent across workflow replays.
+        ``@DBOS.step`` keeps the write idempotent across workflow
+        replays. Skipped when the output is ``DeferredToolRequests``
+        (paused mid-run waiting for approval — the resumption run
+        emits the real assistant).
         """
         from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
         from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
         output = result.output
         if isinstance(output, DeferredToolRequests):
-            # Paused mid-run waiting for approval — the resumption
-            # request emits the real assistant turn; nothing to
-            # persist on this round.
             return
 
         all_msgs = result.all_messages()
@@ -577,151 +643,32 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             parts=asst_parts,
         )
 
-    async def _encode_and_persist(
-        self,
-        *,
-        thread_id: UUID,
-        event: Any,
-        TextPart: type,
-        TextPartDelta: type,
-        ToolCallPart: type,
-        ToolCallPartDelta: type,
-        PartStartEvent: type,
-        PartDeltaEvent: type,
-        PartEndEvent: type,
-        FunctionToolResultEvent: type,
-    ) -> None:
-        """Map one pydantic-ai stream event to a ``ThreadEvent`` row.
-
-        Unrecognised events are silently skipped — forward-compat for
-        future pydantic-ai event types (Thinking, BuiltinTool,
-        Provider…).
+    async def find_active_workflow_id(self, thread_id: UUID) -> str | None:
+        """Return the workflow_id of the most-recent active run for
+        ``thread_id``, or None. Used by ``POST /threads/{id}/approve``
+        to locate the workflow waiting on a deferred tool — even though
+        with stateless-resume the workflow is already terminated, the
+        endpoint still needs the prefix lookup to confirm a recent run
+        existed.
         """
-        # PartStart — new top-level part begins.
-        if isinstance(event, PartStartEvent):
-            part = event.part
-            if isinstance(part, TextPart):
-                await self._persist_and_publish(
-                    thread_id=thread_id,
-                    kind="text-start",
-                    payload={"part_index": event.index},
-                )
-                # Some providers ship the FULL text in PartStart instead
-                # of streaming deltas — emit it as a delta so downstream
-                # encoders don't lose it.
-                if part.content:
-                    await self._persist_and_publish(
-                        thread_id=thread_id,
-                        kind="text-delta",
-                        payload={"part_index": event.index, "text": part.content},
-                    )
-            elif isinstance(part, ToolCallPart):
-                await self._persist_and_publish(
-                    thread_id=thread_id,
-                    kind="tool-call-start",
-                    payload={
-                        "part_index": event.index,
-                        "tool_call_id": part.tool_call_id,
-                        "tool_name": part.tool_name,
-                        "args": part.args_as_dict() if part.args else {},
-                    },
-                )
-            return
-
-        # PartDelta — incremental update to an existing part.
-        if isinstance(event, PartDeltaEvent):
-            delta = event.delta
-            if isinstance(delta, TextPartDelta):
-                if delta.content_delta:
-                    await self._persist_and_publish(
-                        thread_id=thread_id,
-                        kind="text-delta",
-                        payload={
-                            "part_index": event.index,
-                            "text": delta.content_delta,
-                        },
-                    )
-            elif isinstance(delta, ToolCallPartDelta):
-                payload: dict[str, Any] = {"part_index": event.index}
-                if delta.args_delta is not None:
-                    payload["args_delta"] = delta.args_delta
-                if delta.tool_name_delta is not None:
-                    payload["tool_name_delta"] = delta.tool_name_delta
-                if delta.tool_call_id is not None:
-                    payload["tool_call_id"] = delta.tool_call_id
-                if len(payload) > 1:
-                    await self._persist_and_publish(
-                        thread_id=thread_id,
-                        kind="tool-call-delta",
-                        payload=payload,
-                    )
-            return
-
-        # PartEnd — terminal event for one part.
-        if isinstance(event, PartEndEvent):
-            part = event.part
-            if isinstance(part, TextPart):
-                await self._persist_and_publish(
-                    thread_id=thread_id,
-                    kind="text-end",
-                    payload={"part_index": event.index},
-                )
-            elif isinstance(part, ToolCallPart):
-                await self._persist_and_publish(
-                    thread_id=thread_id,
-                    kind="tool-call-end",
-                    payload={
-                        "part_index": event.index,
-                        "tool_call_id": part.tool_call_id,
-                        # Vercel AI SDK's ``tool-input-available`` /
-                        # ``tool-output-available`` schemas require
-                        # ``toolName`` — keep it on the persisted
-                        # payload so encoders don't need a separate
-                        # lookup.
-                        "tool_name": part.tool_name,
-                        "args": part.args_as_dict() if part.args else {},
-                    },
-                )
-            return
-
-        # FunctionToolResultEvent — tool body returned.
-        if isinstance(event, FunctionToolResultEvent):
-            result = event.result
-            await self._persist_and_publish(
-                thread_id=thread_id,
-                kind="tool-result",
-                payload={
-                    "tool_call_id": result.tool_call_id,
-                    "tool_name": result.tool_name,
-                    # ``result.content`` may be any python value — coerce
-                    # to JSON-friendly via str() if pydantic dump fails.
-                    "output": _safe_jsonify(result.content),
-                },
-            )
-            return
-
-        # FinalResultEvent + others → no wire-level emission (terminal
-        # ``done`` event fires after the agent loop exits in run()).
+        del thread_id
+        # Not used in stateless-resume mode but kept for future
+        # DBOS.recv-based HITL.
+        return None
 
 
 def _safe_jsonify(value: Any) -> Any:
-    """Best-effort JSON-friendly representation of a tool return value.
-
-    Tool results land in the event log as JSON payloads; pydantic
-    models, dataclasses, and primitives serialize naturally, but
-    arbitrary objects (file handles, ORM rows, custom classes) fall
-    back to ``str()`` so persistence never fails on a stringifiable
-    type. Apps that care about precise serialization should return
-    pydantic models / dicts from their tools.
-    """
+    """Best-effort JSON-friendly representation of a tool return value."""
     try:
         from pydantic import TypeAdapter  # noqa: PLC0415
 
-        TypeAdapter(type(value)).dump_python(value, mode="json")
+        return TypeAdapter(type(value)).dump_python(value, mode="json")
     except Exception:
         return str(value)
-    else:
-        return TypeAdapter(type(value)).dump_python(value, mode="json")
 
 
-__all__ = ["StateflowDurableAgent"]
+__all__ = [
+    "AGENT_RUN_QUEUE",
+    "StateflowDurableAgent",
+    "agent_run_workflow_id",
+]
