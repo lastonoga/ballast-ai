@@ -256,11 +256,15 @@ async def create_note(
 
     Returns the saved note (including its ``id``, which you should use
     for any follow-up edit/delete in the same turn).
+
+    Persisted by default (``StateflowDurableAgent`` wraps in @DBOS.step) —
+    crash recovery returns the memoized note instead of creating a
+    duplicate.
     """
     return await ctx.deps.repo.create(title=title, body=body)
 
 
-@NotesAgent.tool
+@NotesAgent.tool(persistent=False)
 async def list_notes(
     ctx: RunContext[NoteToolDeps], limit: int = 20,
 ) -> list[Note]:
@@ -268,11 +272,13 @@ async def list_notes(
 
     Use this when the user asks "show me my notes" or wants an
     overview. Returns at most ``limit`` notes (default 20).
+
+    Read-only — ``persistent=False`` skips DBOS-step overhead.
     """
     return await ctx.deps.repo.list_(limit=limit)
 
 
-@NotesAgent.tool
+@NotesAgent.tool(persistent=False)
 async def search_notes(
     ctx: RunContext[NoteToolDeps], query: str, limit: int = 20,
 ) -> list[Note]:
@@ -280,6 +286,8 @@ async def search_notes(
 
     Returns matching notes newest-first, at most ``limit``. Use this
     when the user references a note by topic or keyword rather than id.
+
+    Read-only — ``persistent=False``.
     """
     return await ctx.deps.repo.search(query, limit=limit)
 

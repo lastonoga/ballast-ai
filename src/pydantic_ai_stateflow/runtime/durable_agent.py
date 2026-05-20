@@ -47,6 +47,7 @@ Apps adopt ``StateflowDurableAgent`` by subclassing it instead of
 
 from __future__ import annotations
 
+import functools
 import itertools
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -56,7 +57,7 @@ from dbos import DBOS, DBOSConfiguredInstance
 from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
 )
-from pydantic_ai_stateflow.runtime.agents import StateflowAgent
+from pydantic_ai_stateflow.runtime.agents import StateflowAgent, _ToolEntry
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventNotification,
     EventStream,
@@ -64,6 +65,8 @@ from pydantic_ai_stateflow.runtime.event_stream import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pydantic_ai_stateflow.persistence.thread.repository import (
         ThreadRepository,
     )
@@ -115,6 +118,59 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         self._thread_repo = thread_repo
         self._event_log = event_log
         self._event_stream = event_stream
+
+    def _wrap_tool_fn(
+        self,
+        fn: Callable[..., Any],
+        entry: _ToolEntry,
+    ) -> Callable[..., Any]:
+        """Wrap tools with ``persistent=True`` in ``@DBOS.step`` for replay safety.
+
+        Why: when the agent loop runs inside ``@DBOS.workflow`` and the
+        process crashes mid-run, DBOS recovery REPLAYS the workflow
+        from the start — every tool call re-executes. Read-only tools
+        (``list_notes``, ``search_notes``) are fine; tools that hit
+        external systems (DB writes, API POSTs, payments) would
+        double-fire.
+
+        Wrapping the tool function in ``@DBOS.step`` memoizes its
+        return value in DBOS's system database — replay sees a
+        recorded step and returns the cached result without
+        re-executing the body.
+
+        Default policy for ``StateflowDurableAgent``: ``persistent=None``
+        (the unset default) is treated as ``True`` — apps get safety
+        by default and have to explicitly opt out for read-only tools
+        with ``@SomeAgent.tool(persistent=False)``. Trading per-call
+        DBOS-sys-db write overhead for "won't silently double-create
+        a row on crash recovery" is the right default for an agent
+        framework targeting production reliability.
+        """
+        # ``None`` (unset) → DurableAgent default = persist.
+        # ``False`` → explicit opt-out (read-only tool).
+        # ``True`` → explicit opt-in.
+        if entry.persistent is False:
+            return fn
+
+        # ``@DBOS.step`` wants a unique name per registered step. The
+        # tool's qualified name is stable across replays and unique
+        # within an agent run, which is what DBOS's memoization key
+        # needs.
+        step_name = f"tool:{fn.__qualname__}"
+        wrapped = DBOS.step(name=step_name)(fn)
+
+        # Preserve introspection metadata that pydantic-ai's tool
+        # registration reads (it uses ``get_type_hints`` + the function
+        # signature to derive the JSON schema). ``functools.wraps`` on
+        # the DBOS-step return value would clobber the step's behavior,
+        # so re-mirror just the attributes pydantic-ai actually reads.
+        functools.update_wrapper(
+            wrapped, fn,
+            assigned=("__module__", "__name__", "__qualname__",
+                      "__doc__", "__annotations__"),
+            updated=(),
+        )
+        return wrapped
 
     @DBOS.step()
     async def _persist_and_publish(
