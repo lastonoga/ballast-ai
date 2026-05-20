@@ -4,25 +4,20 @@ Wires:
   - in-memory thread repository (no Postgres yet)
   - in-memory note repository bound through ``app.state.container``
     via an ``on_startup`` hook (per spec 4A.0.7).
-  - threads router (read/update/delete) + an app-owned
-    ``POST /threads`` create endpoint that calls
-    ``validate_thread_metadata(NotesAgent, body.metadata)`` before
-    persisting.
+  - notes-app routes (``POST /threads``) — see
+    ``notes_app.notes.routes``
+  - framework threads router (read/lifecycle/delete) + framework
+    streaming router (resolves ``NotesAgent`` via registry per request).
   - ``StateflowAgent`` registry: a ``NotesAgent`` instance is registered
-    under ``name="notes"`` at boot; ``Thread.agent == "notes"`` makes the
-    framework's streaming router resolve and drive it per request.
-  - streaming router takes only ``thread_repo`` — the agent, deps, and
-    model settings are resolved from the registry via ``thread.agent``.
+    under ``name="notes"`` at boot.
 """
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
@@ -31,46 +26,13 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import (
-    Engine,
-    register_agent,
-    validate_thread_metadata,
-)
+from pydantic_ai_stateflow.runtime import Engine, register_agent
 
 from notes_app.agent import NotesAgent
-from notes_app.notes.repository import InMemoryNoteRepository, NoteRepository
-
-if TYPE_CHECKING:
-    pass
+from notes_app.notes import InMemoryNoteRepository, NoteRepository
+from notes_app.notes.routes import build_notes_router
 
 load_dotenv()
-
-
-class _CreateThreadBody(BaseModel):
-    metadata: dict[str, Any] | None = None
-
-
-def _build_create_thread_router(repo: ThreadRepository) -> APIRouter:
-    """App-owned ``POST /threads`` — the framework no longer ships one.
-
-    Notes-app threads are always bound to the ``"notes"`` agent. Metadata
-    (if any) is validated via the framework's registry-backed
-    ``validate_thread_metadata`` — currently ``NotesAgent.metadata_model``
-    is ``None`` so anything passes through, but the call site is ready
-    for a future schema without further wiring.
-    """
-    router = APIRouter()
-
-    @router.post("/threads", status_code=201)
-    async def create_thread(body: _CreateThreadBody) -> dict[str, Any]:
-        metadata = validate_thread_metadata(NotesAgent, body.metadata)
-        thread = await repo.create(
-            agent=NotesAgent.name,
-            metadata=metadata,
-        )
-        return thread.model_dump(mode="json", by_alias=True)
-
-    return router
 
 
 def build_app(
@@ -93,12 +55,12 @@ def build_app(
                 environment="dev",
                 instrument_pydantic_ai=True,
                 instrument_httpx=True,
-            )
-        ]
+            ),
+        ],
     )
 
+    notes_router = build_notes_router(repo)
     threads_router = build_threads_router(thread_repo=repo)
-    create_router = _build_create_thread_router(repo)
     streaming_router = build_streaming_router(thread_repo=repo)
 
     async def _bind_domain_repos(app: FastAPI) -> None:
@@ -106,7 +68,7 @@ def build_app(
         app.state.container.bind(NoteRepository, notes)
 
     app: FastAPI = engine.fastapi_app(
-        extra_routers=[create_router, threads_router, streaming_router],
+        extra_routers=[notes_router, threads_router, streaming_router],
         cors=CORSConfig.permissive_dev(),
         on_startup=[_bind_domain_repos],
     )
