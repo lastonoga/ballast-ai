@@ -5,6 +5,15 @@ degrades to a no-op so the test suite (and applications that don't want
 telemetry) keep working. Spec 4D, 4H.
 """
 
+from pydantic_ai_stateflow.observability.cost import (
+    CostExtractor,
+    OpenRouterCostExtractor,
+    OpenRouterUpstreamCostExtractor,
+    ProviderDetailsCostExtractor,
+    configure_cost_extractors,
+    install_cost_fallback_patch,
+    register_cost_extractor,
+)
 from pydantic_ai_stateflow.observability.provider import (
     ObservabilityProvider,
     has_logfire,
@@ -12,4 +21,25 @@ from pydantic_ai_stateflow.observability.provider import (
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 
-__all__ = ["ObservabilityProvider", "TraceName", "has_logfire", "traced"]
+__all__ = [
+    "CostExtractor",
+    "ObservabilityProvider",
+    "OpenRouterCostExtractor",
+    "OpenRouterUpstreamCostExtractor",
+    "ProviderDetailsCostExtractor",
+    "TraceName",
+    "configure_cost_extractors",
+    "has_logfire",
+    "install_cost_fallback_patch",
+    "register_cost_extractor",
+    "traced",
+]
+
+
+# Auto-install the cost-fallback patch at framework import. The patch
+# is purely additive — without any extractors registered it re-raises
+# the original ``LookupError``, so behaviour is identical to
+# unpatched pydantic-ai when nothing else opts in. Apps register
+# extractors via ``ObservabilityProvider(cost_extractors=...)`` or
+# ``register_cost_extractor(...)`` and the same patch handles them.
+install_cost_fallback_patch()
