@@ -133,6 +133,22 @@ from pydantic_ai_stateflow.observability import (
     register_cost_extractor,
     traced,
 )
+from pydantic_ai_stateflow.observability.config import ObservabilityConfig
+from pydantic_ai_stateflow.runtime.app import create_app
+from pydantic_ai_stateflow.runtime.workflows import (
+    clear_workflow_registry,
+    get_workflow_class,
+    list_workflow_classes,
+    workflow,
+    workflow_metadata,
+)
+from pydantic_ai_stateflow.runtime.agents import (
+    clear_agent_class_registry,
+    get_agent_class,
+    list_agent_classes,
+    stateflow_agent,
+)
+from pydantic_ai_stateflow import testing  # noqa: F401 — submodule namespace
 from pydantic_ai_stateflow.patterns import (
     AbortOnLoop,
     ApprovalStage,
@@ -293,6 +309,7 @@ __all__ = [
     "MutationPipeline",
     "MutationRejected",
     "CostExtractor",
+    "ObservabilityConfig",
     "ObservabilityProvider",
     "OpenRouterCostExtractor",
     "OpenRouterUpstreamCostExtractor",
@@ -349,21 +366,32 @@ __all__ = [
     "build_hitl_router",
     "build_streaming_router",
     "build_threads_router",
+    "clear_agent_class_registry",
     "clear_agent_registry",
+    "clear_workflow_registry",
     "configure_cost_extractors",
     "configure_logging",
+    "create_app",
     "extract_text",
     "get_agent",
+    "get_agent_class",
     "get_container",
     "get_engine",
     "get_logger",
+    "get_workflow_class",
     "has_logfire",
+    "list_agent_classes",
     "list_agents",
+    "list_workflow_classes",
     "make_helper_agent_with_approval_tools",
     "messages_to_model_history",
     "register_agent",
     "register_cost_extractor",
     "register_grounded_tools",
+    "stateflow_agent",
+    "testing",
     "traced",
     "validate_thread_metadata",
+    "workflow",
+    "workflow_metadata",
 ]
