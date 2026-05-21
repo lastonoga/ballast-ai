@@ -46,6 +46,8 @@ from pydantic_ai_stateflow.runtime import (
 )
 
 from notes_app.agent import NotesAgent
+from notes_app.brainstorm_flow import BrainstormFlow, build_brainstorm_flow
+from notes_app.brainstorm_router import build_brainstorm_router
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
 from notes_app.notes.routes import build_notes_router
 from notes_app.todo_approval_agent import NotesTodoApprovalAgent
@@ -74,6 +76,7 @@ def build_app(
     notes_repo: NoteRepository | None = None,
     todo_approval_agent: NotesTodoApprovalAgent | None = None,
     todo_flow: TodoApprovalFlow | None = None,
+    brainstorm_flow: BrainstormFlow | None = None,
     event_log: EventLogRepository | None = None,
     event_stream: EventStream | None = None,
     manage_dbos_lifecycle: bool = True,
@@ -109,6 +112,7 @@ def build_app(
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
         notes_repo=notes,
     )
+    bstorm = brainstorm_flow or build_brainstorm_flow(todo_flow=flow)
 
     register_agent(agent)
     register_agent(approval_agent)
@@ -141,6 +145,7 @@ def build_app(
     # Thread-scoped via ``/dbos/threads/{id}/workflows`` (filters by the
     # ``agent-run:{thread_id}:`` prefix that StateflowDurableAgent mints).
     dbos_router = build_dbos_router()
+    brainstorm_router = build_brainstorm_router(flow=bstorm, thread_repo=repo)
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
@@ -175,7 +180,8 @@ def build_app(
 
     app: FastAPI = engine.fastapi_app(
         extra_routers=[
-            notes_router, threads_router, streaming_router, dbos_router,
+            notes_router, threads_router, streaming_router,
+            dbos_router, brainstorm_router,
         ],
         cors=CORSConfig.permissive_dev(),
         on_startup=startup_hooks,
@@ -187,6 +193,7 @@ def build_app(
     app.state.notes_agent = agent
     app.state.todo_approval_agent = approval_agent
     app.state.todo_flow = flow
+    app.state.brainstorm_flow = bstorm
     return app
 
 

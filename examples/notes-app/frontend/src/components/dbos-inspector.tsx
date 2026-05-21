@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitFork,
+  Lightbulb,
   Play,
   RefreshCw,
   X,
@@ -400,6 +401,31 @@ export function DbosInspector() {
 
   const refresh = () => setTick((v) => v + 1);
 
+  const startBrainstorm = async () => {
+    if (!remoteId) return;
+    const topic = window.prompt(
+      "Brainstorm topic (optional — empty uses default)",
+      "",
+    );
+    if (topic === null) return; // user cancelled
+    try {
+      const r = await fetch(`${apiUrl}/workflows/brainstorm-todo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: remoteId, topic: topic || undefined }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      // Workflow is fire-and-forget. Helper thread will appear in the
+      // sidebar via the parent's SSE thread-created event; the inspector
+      // will pick the new workflow up on its next poll tick.
+      refresh();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[brainstorm] start failed", err);
+      window.alert(`Brainstorm failed: ${err instanceof Error ? err.message : err}`);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center justify-between border-b px-3 py-2">
@@ -409,16 +435,29 @@ export function DbosInspector() {
             {remoteId ? `thread ${remoteId.slice(0, 8)}…` : "no active thread"}
           </span>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-7 w-7 p-0"
-          onClick={refresh}
-          title="Refresh now"
-        >
-          <RefreshCw className="size-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 px-2 text-[11px]"
+            onClick={() => void startBrainstorm()}
+            disabled={!remoteId}
+            title="Run divergent-convergent brainstorm → HITL approval"
+          >
+            <Lightbulb className="size-3.5" /> Brainstorm
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0"
+            onClick={refresh}
+            title="Refresh now"
+          >
+            <RefreshCw className="size-3.5" />
+          </Button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2">

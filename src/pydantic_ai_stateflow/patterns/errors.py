@@ -45,3 +45,25 @@ class HITLDenied(PatternError):  # noqa: N818
         self.actor_id = actor_id
         self.votes = votes
         super().__init__(f"HITLDenied: actor_id={actor_id!r} votes={votes!r}")
+
+
+class InsufficientDivergence(PatternError):  # noqa: N818
+    """``DivergentConvergent`` finished the divergent phase with fewer
+    distinct hypotheses than ``min_hypotheses`` requires.
+
+    Holds enough context for the caller to decide between retry with a
+    relaxed config, dropping the run, or escalating to a human."""
+
+    def __init__(
+        self, *,
+        produced: int,
+        required: int,
+        branch_outcomes: dict[str, str] | None = None,
+    ) -> None:
+        self.produced = produced
+        self.required = required
+        self.branch_outcomes = branch_outcomes or {}
+        super().__init__(
+            f"InsufficientDivergence: produced={produced} required={required} "
+            f"branch_outcomes={self.branch_outcomes!r}"
+        )

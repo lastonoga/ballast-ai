@@ -36,6 +36,8 @@ class TraceName(StrEnum):
     PATTERN_REFLECTION = "pattern.reflection"
     PATTERN_MUTATION_PIPELINE = "pattern.mutation_pipeline"
     PATTERN_HITL_GATE = "pattern.hitl_gate"
+    PATTERN_SEMANTIC_DEDUP = "pattern.semantic_dedup"
+    PATTERN_DIVERGENT_CONVERGENT = "pattern.divergent_convergent"
 
     # --- hitl channels -----------------------------------------------------
     CHANNEL_UI = "channel.ui"

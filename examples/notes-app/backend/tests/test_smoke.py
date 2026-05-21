@@ -23,6 +23,7 @@ from pydantic_ai_stateflow.runtime import (
 )
 
 from notes_app.agent import NotesAgent, NoteToolDeps
+from notes_app.brainstorm_flow import BrainstormFlow, build_brainstorm_flow
 from notes_app.main import build_app
 from notes_app.notes.repository import InMemoryNoteRepository
 from notes_app.todo_flow import TodoApprovalFlow
@@ -41,6 +42,16 @@ def _unique_flow(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         config_name=f"todo-flow-smoke-{uuid4()}",
+    )
+
+
+def _unique_brainstorm(todo_flow: TodoApprovalFlow) -> BrainstormFlow:
+    """Per-test ``BrainstormFlow`` (+ inner DivergentConvergent) with
+    unique DBOS config_names so smoke tests don't collide on the
+    instance registry."""
+    return build_brainstorm_flow(
+        todo_flow=todo_flow,
+        config_name=f"brainstorm-smoke-{uuid4()}",
     )
 
 
@@ -124,11 +135,13 @@ def test_note_repository_is_bound_in_container() -> None:
 
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
+    flow = _unique_flow(notes_repo, thread_repo)
     app = build_app(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
         notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
-        todo_flow=_unique_flow(notes_repo, thread_repo),
+        todo_flow=flow,
+        brainstorm_flow=_unique_brainstorm(flow),
     )
     with TestClient(app):
         assert app.state.container.has(NoteRepository)
@@ -144,6 +157,7 @@ def test_threads_crud_and_streaming_fake() -> None:
     # the SSE consumer that polls / subscribes them.
     event_log = InMemoryEventLogRepository()
     event_stream = InProcessEventStream()
+    flow = _unique_flow(notes_repo, thread_repo)
     app = build_app(
         notes_repo=notes_repo,
         thread_repo=thread_repo,
@@ -156,7 +170,8 @@ def test_threads_crud_and_streaming_fake() -> None:
             event_stream=event_stream,
             config_name=f"notes-smoke-{uuid4()}",
         ),
-        todo_flow=_unique_flow(notes_repo, thread_repo),
+        todo_flow=flow,
+        brainstorm_flow=_unique_brainstorm(flow),
     )
 
     with TestClient(app) as client:
