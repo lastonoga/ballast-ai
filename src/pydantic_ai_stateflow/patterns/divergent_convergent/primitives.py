@@ -4,50 +4,52 @@ from dataclasses import dataclass
 from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 InT_contra = TypeVar("InT_contra", contravariant=True)
-HypothesisT_co = TypeVar("HypothesisT_co", covariant=True)
-HypothesisT_contra = TypeVar("HypothesisT_contra", contravariant=True)
+EnvT_co = TypeVar("EnvT_co", covariant=True)
 OutT_co = TypeVar("OutT_co", covariant=True)
+HypothesisT_contra = TypeVar("HypothesisT_contra", contravariant=True)
 
 
 @runtime_checkable
-class DivergentAgent(Protocol[InT_contra, HypothesisT_co]):
+class _AgentRunResult(Protocol[OutT_co]):
+    """Anything with a typed ``.output`` property.
+
+    Structural mirror of pydantic-ai's ``AgentRunResult`` — declared
+    here so the framework doesn't import pydantic-ai at module level.
+    """
+
+    @property
+    def output(self) -> OutT_co: ...
+
+
+@runtime_checkable
+class DivergentAgent(Protocol[InT_contra, EnvT_co]):
     """One ``branch`` in the divergent phase.
 
-    Returns a *pool* (``list[Hypothesis]``) per call — typically 2-5
-    items. Apps usually wrap a ``pydantic_ai.Agent`` (or one of the
-    ``StateflowAgent`` flavours) in a tiny adapter that calls
-    ``agent.run(task)`` and unpacks the structured output.
+    Returns an *envelope* (``EnvT``) per ``.run(task)`` call. The
+    pattern then applies the app-supplied ``hypotheses`` projector to
+    extract the ``list[Hypothesis]`` it reduces over.
 
-    The framework does NOT import pydantic-ai here on purpose: the
-    pattern works with any object that satisfies this protocol, which
-    lets apps mix model-backed agents, mocks (for tests), or pure-
-    Python heuristics in the same fan-out.
+    The signature deliberately matches pydantic-ai's ``Agent.run`` so
+    pydantic-ai agents satisfy it natively — but the framework doesn't
+    import pydantic-ai, so apps can substitute mocks or pure-Python
+    heuristics.
     """
 
-    async def diverge(self, task: InT_contra) -> list[HypothesisT_co]: ...
+    async def run(self, task: InT_contra) -> _AgentRunResult[EnvT_co]: ...
 
 
 @runtime_checkable
-class Synthesizer(Protocol[InT_contra, HypothesisT_contra, OutT_co]):
+class Synthesizer(Protocol[OutT_co]):
     """Convergent reducer over the surviving pool.
 
-    Receives the original ``task`` AND the post-dedup / post-verify
-    candidate set, returns the single chosen output. Common shapes:
-
-    * pick-one (returns ``Candidate``),
-    * pick-and-edit (returns a modified copy),
-    * synthesise-new (returns a blend that wasn't in the pool).
-
-    The pattern is agnostic — that's all decided by the app's
-    synthesizer implementation.
+    Receives a string prompt rendered by the pattern (which used the
+    app-supplied ``format_synth_prompt`` to project ``(task, candidates)``
+    into text). ``.output`` IS the final ``OutT`` — no projector
+    needed for synthesis since the synthesizer's output type is the
+    same as the pattern's result type.
     """
 
-    async def synthesize(
-        self,
-        *,
-        task: InT_contra,
-        candidates: list[HypothesisT_contra],
-    ) -> OutT_co: ...
+    async def run(self, prompt: str) -> _AgentRunResult[OutT_co]: ...
 
 
 @runtime_checkable
@@ -79,15 +81,18 @@ class Verifier(Protocol[HypothesisT_contra]):
 
 HypothesisT = TypeVar("HypothesisT")
 InT = TypeVar("InT")
+EnvT = TypeVar("EnvT")
 
 
 @dataclass(frozen=True)
-class DivergentBranch(Generic[InT, HypothesisT]):
+class DivergentBranch(Generic[InT, EnvT]):
     """One labelled branch in the divergent fan-out.
 
     ``label`` lands in traces / queue task names so you can tell whose
     pool dominated after convergence. ``agent`` is anything satisfying
-    ``DivergentAgent``.
+    ``DivergentAgent[InT, EnvT]`` — typically a ``StateflowAgent`` /
+    ``pydantic_ai.Agent`` whose output type is ``EnvT``.
     """
+
     label: str
-    agent: DivergentAgent[InT, HypothesisT]
+    agent: DivergentAgent[InT, EnvT]
