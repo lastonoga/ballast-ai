@@ -1,6 +1,7 @@
 "use client";
 
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
+import { BrainstormProgressUI } from "@/components/assistant-ui/brainstorm-progress";
 import { DeleteNoteApproval } from "@/components/assistant-ui/delete-note-approval";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
 import { DbosInspector } from "@/components/dbos-inspector";
@@ -20,6 +21,9 @@ export default function Home() {
           this anywhere inside the runtime provider is enough to take over
           rendering for the `delete_note` tool call. */}
       <DeleteNoteApproval />
+      {/* Same pattern — ``makeAssistantDataUI`` self-registers and claims
+          rendering for the ``data-brainstorm-progress`` part type. */}
+      <BrainstormProgressUI />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <ResizablePanelGroup orientation="horizontal">
           <ResizablePanel id="main" defaultSize={67}>

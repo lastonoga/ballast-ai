@@ -32,15 +32,19 @@ No ``from __future__ import annotations``: pydantic-ai introspects
 """
 
 from dataclasses import dataclass
+from typing import Literal, Optional
 from uuid import UUID
 
 from dbos import DBOSConfiguredInstance
+from pydantic import BaseModel
 from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
     Durable,
     SemanticDedup,
     SemanticDedupConfig,
+    ThreadEventBroadcaster,
+    ThreadEventType,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
 from pydantic_ai_stateflow.runtime import StateflowAgent
@@ -157,6 +161,34 @@ DEFAULT_SYNTH_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_SYNTH_TEMPERATURE = 0.2
 
 
+# ── Live progress events ─────────────────────────────────────────────────
+#
+# Brainstorm runs ~25s end-to-end; the user staring at the chat sees
+# nothing happening unless we narrate progress. ``BRAINSTORM_PROGRESS``
+# is a streaming thread event: one ``message_id`` reused across the
+# whole run, so the UI shows ONE animating row that mutates through
+# the phases (diverge → converge → hitl) instead of N separate
+# messages piling up.
+
+
+class BrainstormProgress(BaseModel):
+    """Snapshot of where ``BrainstormFlow.run`` currently is.
+
+    Frontend renders this as a single line that mutates: an icon
+    flips ``running → ok`` per phase, with optional context in
+    ``detail`` (e.g. the chosen idea's title once converge finishes).
+    """
+    step: Literal["diverge", "converge", "hitl"]
+    status: Literal["running", "ok", "failed"]
+    detail: Optional[str] = None
+
+
+BRAINSTORM_PROGRESS = ThreadEventType("brainstorm-progress", BrainstormProgress)
+"""Wire name on the part is ``data-brainstorm-progress`` — frontend
+``makeAssistantDataUI({name: "brainstorm-progress"})`` matches by the
+suffix (assistant-ui strips the ``data-`` prefix internally)."""
+
+
 # ── BrainstormFlow ───────────────────────────────────────────────────────
 
 @Durable.dbos_class()
@@ -178,31 +210,58 @@ class BrainstormFlow(DBOSConfiguredInstance):
         *,
         todo_flow: TodoApprovalFlow,
         divergent: DivergentConvergent[str, TodoIdea, TodoIdea],
+        broadcaster: ThreadEventBroadcaster,
         config_name: str = "notes-brainstorm-flow",
     ) -> None:
         super().__init__(config_name=config_name)
         self._todo_flow = todo_flow
         self._divergent = divergent
+        self._broadcaster = broadcaster
 
     @Durable.workflow()
     async def run(self, *, topic: str, parent_thread_id: UUID) -> UUID:
-        """Run the brainstorm + open HITL. Returns helper thread id."""
-        chosen: TodoIdea = await self._divergent.run(topic)
-        context = TodoApprovalContext(
-            proposed_title=chosen.title,
-            proposed_body=chosen.body,
-            parent_thread_id=parent_thread_id,
-        )
-        helper_thread = await self._todo_flow.open(
-            helper_agent=NotesTodoApprovalAgent,
-            context=context,
-            # Seed an assistant message so the user opening the helper
-            # thread sees what's being proposed — without this the
-            # thread is silently blank until they type. Same affordance
-            # NotesAgent.propose_todo provides.
-            opening_message=context.to_opening_message(),
-            notify_parent_thread_id=parent_thread_id,
-        )
+        """Run the brainstorm + open HITL. Returns helper thread id.
+
+        Emits live ``brainstorm-progress`` events into ``parent_thread_id``
+        through a single stream session: same ``message_id`` across all
+        updates → the UI sees ONE animating row instead of N rows.
+        """
+        async with BRAINSTORM_PROGRESS.stream(
+            self._broadcaster, parent_thread_id,
+        ) as progress:
+            await progress.update(BrainstormProgress(
+                step="diverge", status="running",
+                detail=f'Topic: "{topic}"',
+            ))
+            chosen: TodoIdea = await self._divergent.run(topic)
+            await progress.update(BrainstormProgress(
+                step="diverge", status="ok",
+            ))
+
+            await progress.update(BrainstormProgress(
+                step="converge", status="ok",
+                detail=f'Chosen: "{chosen.title}"',
+            ))
+
+            await progress.update(BrainstormProgress(
+                step="hitl", status="running",
+                detail="Opening approval thread…",
+            ))
+            context = TodoApprovalContext(
+                proposed_title=chosen.title,
+                proposed_body=chosen.body,
+                parent_thread_id=parent_thread_id,
+            )
+            helper_thread = await self._todo_flow.open(
+                helper_agent=NotesTodoApprovalAgent,
+                context=context,
+                opening_message=context.to_opening_message(),
+                notify_parent_thread_id=parent_thread_id,
+            )
+            await progress.update(BrainstormProgress(
+                step="hitl", status="ok",
+                detail="Approval thread opened in sidebar →",
+            ))
         return helper_thread.id
 
 
@@ -211,6 +270,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
 def build_brainstorm_flow(
     *,
     todo_flow: TodoApprovalFlow,
+    broadcaster: ThreadEventBroadcaster,
     divergent_specs: tuple[BrainstormAgentSpec, ...] = DEFAULT_DIVERGENT_SPECS,
     synth_model: str = DEFAULT_SYNTH_MODEL,
     synth_temperature: float = DEFAULT_SYNTH_TEMPERATURE,
@@ -275,7 +335,10 @@ def build_brainstorm_flow(
     )
 
     return BrainstormFlow(
-        todo_flow=todo_flow, divergent=divergent, config_name=config_name,
+        todo_flow=todo_flow,
+        divergent=divergent,
+        broadcaster=broadcaster,
+        config_name=config_name,
     )
 
 

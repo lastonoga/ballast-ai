@@ -44,6 +44,7 @@ from pydantic_ai_stateflow.runtime import (
     EventStream,
     EventStreamProvider,
     InProcessEventStream,
+    ThreadEventBroadcaster,
     register_agent,
 )
 
@@ -114,7 +115,17 @@ def build_app(
     approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
         notes_repo=notes,
     )
-    bstorm = brainstorm_flow or build_brainstorm_flow(todo_flow=flow)
+    # Broadcaster shared across long-running workflows that want to
+    # push live progress events into the parent thread without the
+    # user having an open ``useChat`` stream there. Backed by the
+    # same event_log + event_stream as the framework's other SSE-
+    # delivered events (``message-added``, ``thread-created``).
+    broadcaster = ThreadEventBroadcaster(
+        thread_repo=repo, event_log=log, event_stream=stream,
+    )
+    bstorm = brainstorm_flow or build_brainstorm_flow(
+        todo_flow=flow, broadcaster=broadcaster,
+    )
 
     register_agent(agent)
     register_agent(approval_agent)

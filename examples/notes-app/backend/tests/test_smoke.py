@@ -45,12 +45,30 @@ def _unique_flow(
     )
 
 
-def _unique_brainstorm(todo_flow: TodoApprovalFlow) -> BrainstormFlow:
+def _unique_brainstorm(
+    todo_flow: TodoApprovalFlow,
+    thread_repo: InMemoryThreadRepository,
+) -> BrainstormFlow:
     """Per-test ``BrainstormFlow`` (+ inner DivergentConvergent) with
     unique DBOS config_names so smoke tests don't collide on the
-    instance registry."""
+    instance registry. Broadcaster wired to the test's own repos —
+    the workflow never emits in these smoke tests but the constructor
+    still requires one."""
+    from pydantic_ai_stateflow.persistence import (
+        InMemoryEventLogRepository,
+    )
+    from pydantic_ai_stateflow.runtime import (
+        InProcessEventStream,
+        ThreadEventBroadcaster,
+    )
+    broadcaster = ThreadEventBroadcaster(
+        thread_repo=thread_repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+    )
     return build_brainstorm_flow(
         todo_flow=todo_flow,
+        broadcaster=broadcaster,
         config_name=f"brainstorm-smoke-{uuid4()}",
     )
 
@@ -141,7 +159,7 @@ def test_note_repository_is_bound_in_container() -> None:
         thread_repo=thread_repo,
         notes_agent=_FakeNotesAgent(notes_repo=notes_repo),
         todo_flow=flow,
-        brainstorm_flow=_unique_brainstorm(flow),
+        brainstorm_flow=_unique_brainstorm(flow, thread_repo),
     )
     with TestClient(app):
         assert app.state.container.has(NoteRepository)
@@ -171,7 +189,7 @@ def test_threads_crud_and_streaming_fake() -> None:
             config_name=f"notes-smoke-{uuid4()}",
         ),
         todo_flow=flow,
-        brainstorm_flow=_unique_brainstorm(flow),
+        brainstorm_flow=_unique_brainstorm(flow, thread_repo),
     )
 
     with TestClient(app) as client:
