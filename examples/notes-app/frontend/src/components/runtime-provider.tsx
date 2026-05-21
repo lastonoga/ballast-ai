@@ -50,6 +50,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type FC,
   type PropsWithChildren,
 } from "react";
@@ -75,20 +76,75 @@ export type ChatApprovalHelpers = Pick<
 const ChatHelpersContext = createContext<ChatApprovalHelpers | null>(null);
 
 /**
- * Read the approval helpers from the nearest `<RuntimeProvider>`. Used
- * by `makeAssistantToolUI` cards that need to call
- * `addToolApprovalResponse({ id, approved })` on the underlying
- * `useChat` instance — assistant-ui's per-tool `addResult` callback only
- * triggers `addToolOutput`, not the approval response path.
+ * Read the approval helpers from the nearest ``<PerThreadStateProvider>``
+ * (mounted by ``adapter.unstable_Provider`` — one per active thread).
+ *
+ * The context value is **scoped to the active thread's runtime tree**:
+ * because assistant-ui mounts a fresh ``unstable_Provider`` instance per
+ * alive thread (see ``RemoteThreadListHookInstanceManager._OuterActiveThreadProvider``)
+ * and our Provider holds its helpers in *local React state*, every
+ * ``<DeleteNoteApproval>`` reads the helpers of the thread it's rendered
+ * in — automatically, with no manual active-thread bookkeeping.
  */
 export const useChatApprovalHelpers = (): ChatApprovalHelpers => {
   const ctx = useContext(ChatHelpersContext);
   if (!ctx) {
     throw new Error(
-      "useChatApprovalHelpers must be used inside <RuntimeProvider>",
+      "useChatApprovalHelpers must be used inside a per-thread provider "
+      + "(<RuntimeProvider> + adapter.unstable_Provider).",
     );
   }
   return ctx;
+};
+
+/**
+ * Dispatch surface that ``PerThreadStateProvider`` exposes DOWNWARD to
+ * the runtime hook. The runtime hook receives the chat instance INSIDE
+ * the Provider's subtree — so it calls ``setHelpers(...)`` once the chat
+ * is built, populating the same Provider's local state. React then
+ * re-renders ``ChatHelpersContext.Provider`` with the freshly-set
+ * helpers; descendants (the approval card) see them.
+ *
+ * Why a separate dispatch context rather than just two contexts: the
+ * setter identity is stable for the Provider's lifetime, the helpers
+ * change after the chat is built — keeping them on different contexts
+ * means the runtime hook doesn't re-render on every helpers change.
+ */
+type PerThreadDispatch = {
+  setHelpers: (h: ChatApprovalHelpers) => void;
+};
+
+const PerThreadDispatchContext = createContext<PerThreadDispatch | null>(null);
+
+/**
+ * One ``PerThreadStateProvider`` instance mounts per alive thread —
+ * assistant-ui's ``_OuterActiveThreadProvider`` wraps each thread's
+ * runtime subtree in ``<adapter.unstable_Provider>``. React component
+ * identity is keyed by ``threadId`` upstream, so the ``useState`` here
+ * is genuinely per-thread.
+ *
+ * The runtime hook reads the dispatch from ``PerThreadDispatchContext``
+ * and calls ``setHelpers`` once its ``useChat`` returns an
+ * ``addToolApprovalResponse`` — that's the upward link. The downward
+ * link is ``ChatHelpersContext`` which the approval card reads.
+ */
+const PerThreadStateProvider: FC<PropsWithChildren> = ({ children }) => {
+  const [helpers, setHelpersState] = useState<ChatApprovalHelpers | null>(null);
+
+  // Stable dispatch — only ``setHelpers`` identity matters for descendant
+  // ``useEffect`` deps. ``useState``'s setter is already stable.
+  const dispatch = useMemo<PerThreadDispatch>(
+    () => ({ setHelpers: setHelpersState }),
+    [],
+  );
+
+  return (
+    <PerThreadDispatchContext.Provider value={dispatch}>
+      <ChatHelpersContext.Provider value={helpers}>
+        {children}
+      </ChatHelpersContext.Provider>
+    </PerThreadDispatchContext.Provider>
+  );
 };
 
 /**
@@ -187,28 +243,14 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
 
   const headers = useMemo<Record<string, string>>(() => ({}), []);
 
-  const adapter = useMemo(
-    () => buildRemoteThreadListAdapter(apiUrl, headers),
-    [apiUrl, headers],
-  );
-
-  // Per-thread chat helpers — keyed by ``clientThreadId`` so multiple
-  // alive PerThreadRuntime instances (parent thread + spawned helper
-  // threads in the sidebar) don't race to overwrite a single ref. The
-  // outer proxy looks up by ``activeThreadIdRef.current`` which is
-  // maintained by the same effect that persists the active thread to
-  // localStorage.
-  //
-  // Why not stash on the runtime object: ``useRemoteThreadListRuntime``
-  // returns an OUTER runtime wrapper distinct from the per-thread
-  // runtime, and the wrapper hides attached properties so
-  // ``(runtime as any).__chatApprovalHelpers`` is always undefined.
-  //
-  // Why a Map keyed by clientThreadId and not remoteId: useChat's id is
-  // the client-side stable id (``threadListItem.id``); remoteId can be
-  // undefined for draft threads. Same key used everywhere.
-  const helpersByThreadRef = useRef<Map<string, ChatApprovalHelpers>>(new Map());
-  const activeThreadIdRef = useRef<string | null>(null);
+  // Attach ``unstable_Provider`` so every per-thread runtime subtree
+  // mounts inside its OWN ``<PerThreadStateProvider>`` — that gives us
+  // scoped React context for chat helpers per thread, no shared refs,
+  // no race over who-wrote-last.
+  const adapter = useMemo(() => {
+    const a = buildRemoteThreadListAdapter(apiUrl, headers);
+    return { ...a, unstable_Provider: PerThreadStateProvider };
+  }, [apiUrl, headers]);
 
   // Shared between the per-thread initialize() path and the per-thread
   // history adapter so that the redundant first load() right after
@@ -489,19 +531,28 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         // ``chat.setMessages`` needed; thread switching auto-fires
         // the load for the newly-active thread.
 
-        // Publish THIS thread's chat helpers under its clientThreadId
-        // in the shared map. The outer proxy resolves by the currently-
-        // active thread id, so other alive PerThreadRuntimes (helper
-        // threads visible in the sidebar) don't shadow our entry.
+        // Push THIS thread's chat helpers up to its enclosing
+        // ``PerThreadStateProvider`` (mounted by
+        // ``adapter.unstable_Provider`` one-per-thread). React component
+        // identity is keyed by thread upstream, so the Provider's local
+        // state is scoped: there's no possibility of one thread's
+        // helpers leaking into another's tree.
+        //
+        // Throws (loud, intentional) if the dispatch context is missing
+        // — that means someone removed unstable_Provider from the
+        // adapter and the approval card would silently break.
+        const dispatch = useContext(PerThreadDispatchContext);
         useEffect(() => {
-          if (!clientThreadId) return;
-          helpersByThreadRef.current.set(clientThreadId, {
+          if (!dispatch) {
+            throw new Error(
+              "PerThreadDispatchContext missing — RuntimeProvider must "
+              + "wire adapter.unstable_Provider = PerThreadStateProvider",
+            );
+          }
+          dispatch.setHelpers({
             addToolApprovalResponse: chat.addToolApprovalResponse,
           });
-          return () => {
-            helpersByThreadRef.current.delete(clientThreadId);
-          };
-        }, [clientThreadId, chat.addToolApprovalResponse]);
+        }, [dispatch, chat.addToolApprovalResponse]);
 
         return runtime;
       },
@@ -575,12 +626,6 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
           }).threads?.getState().mainThreadId;
         if (id) {
           window.localStorage.setItem("notes-app:active-thread", id);
-          // Also publish to the in-memory ref so the helpersProxy can
-          // route ``addToolApprovalResponse`` to the CURRENT thread's
-          // useChat instance instead of whichever PerThreadRuntime
-          // happened to mount last (races when helper threads from
-          // ``propose_todo`` / brainstorm are alive in the sidebar).
-          activeThreadIdRef.current = id;
         }
       } catch {
         /* best-effort */
@@ -595,36 +640,16 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     };
   }, [runtime]);
 
-  // Stable proxy that resolves to the helpers of the CURRENTLY-ACTIVE
-  // thread on every invocation. Looks up by the active thread id ref
-  // (maintained by the subscribe-to-threads effect above) so the
-  // approval card always talks to the chat the user is looking at —
-  // not whichever PerThreadRuntime happened to publish last.
-  const helpersProxy = useMemo<ChatApprovalHelpers>(
-    () => ({
-      addToolApprovalResponse: (...args) => {
-        const activeId = activeThreadIdRef.current;
-        const live = activeId
-          ? helpersByThreadRef.current.get(activeId)
-          : undefined;
-        if (!live) {
-          throw new Error(
-            "[runtime-provider] no chat helpers for active thread "
-            + `(active=${activeId ?? "<none>"}; "`
-            + `known=${[...helpersByThreadRef.current.keys()].join(",")})`,
-          );
-        }
-        return live.addToolApprovalResponse(...args);
-      },
-    }),
-    [],
-  );
-
+  // No outer ``ChatHelpersContext.Provider`` here — the chat helpers
+  // are pushed up from each per-thread useChat into ITS enclosing
+  // ``PerThreadStateProvider`` (mounted by ``adapter.unstable_Provider``).
+  // The approval card reads them via ``useChatApprovalHelpers`` which
+  // walks up to the nearest such Provider, automatically yielding the
+  // helpers of the thread the card is rendered in. No proxy, no
+  // active-thread bookkeeping, no shared ref.
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ChatHelpersContext.Provider value={helpersProxy}>
-        {children}
-      </ChatHelpersContext.Provider>
+      {children}
     </AssistantRuntimeProvider>
   );
 };
