@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import UUID
 
+import pydantic_ai_stateflow as sf
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
@@ -138,6 +139,7 @@ class NoteToolDeps:
     parent_thread_id: UUID | None = None
 
 
+@sf.stateflow_agent
 class NotesAgent(StateflowDurableAgent):
     """Personal-notes durable agent.
 

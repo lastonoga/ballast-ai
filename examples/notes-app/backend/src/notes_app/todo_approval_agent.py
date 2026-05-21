@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import pydantic_ai_stateflow as sf
 from dbos import DBOS
 
 from pydantic_ai_stateflow.durable import Durable
@@ -117,6 +118,7 @@ class TodoApprovalDeps:
     metadata: TodoApprovalContext
 
 
+@sf.stateflow_agent
 class NotesTodoApprovalAgent(StateflowAgent):
     """Confirmation-helper ``StateflowAgent`` for the notes-app todo flow.
 

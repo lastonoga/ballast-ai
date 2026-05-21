@@ -1,18 +1,10 @@
 """FastAPI entry point for the notes-app backend.
 
-Wires:
-  - in-memory thread repository (no Postgres yet)
-  - in-memory note repository bound through ``app.state.container``
-    via an ``on_startup`` hook (per spec 4A.0.7).
-  - notes-app routes (``POST /threads``) — see
-    ``notes_app.notes.routes``
-  - framework threads router (read/lifecycle/delete) + framework
-    streaming router (resolves ``NotesAgent`` via registry per request).
-  - ``StateflowAgent`` registry: a ``NotesAgent`` instance is registered
-    under ``name="notes"`` at boot.
-
-To see logfire traces, set ``LOGFIRE_TOKEN`` env var before starting the
-server. Without it, telemetry is a no-op.
+Wires the demo via ``sf.create_app(...)`` — no factory pattern, no
+``or InMemoryX()`` fallbacks. Tests use ``sf.testing.TestEngine``
+with ``dependency_overrides`` for swapping deps; they do NOT call
+``build_app(...)`` (which is kept only as a back-compat shim during
+the migration window).
 """
 
 from __future__ import annotations
@@ -21,16 +13,12 @@ import os
 import tempfile
 from pathlib import Path
 
+import pydantic_ai_stateflow as sf
 from dbos import DBOSConfig
-
-from pydantic_ai_stateflow.durable import Durable
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from pydantic_ai_stateflow.api import CORSConfig
-from pydantic_ai_stateflow.api.dbos_router import build_dbos_router
-from pydantic_ai_stateflow.api.streaming import build_streaming_router
-from pydantic_ai_stateflow.api.threads import build_threads_router
-from pydantic_ai_stateflow.observability import ObservabilityProvider
+
+from pydantic_ai_stateflow.observability.config import ObservabilityConfig
 from pydantic_ai_stateflow.persistence import (
     EventLogRepository,
     InMemoryEventLogRepository,
@@ -40,17 +28,14 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
     ThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import (
-    Engine,
+    DefaultContainer,
     EventStream,
-    EventStreamProvider,
     InProcessEventStream,
     ThreadEventBroadcaster,
     register_agent,
 )
 
 from notes_app.agent import NotesAgent
-from pydantic_ai_stateflow.api.workflow_router import build_workflow_router
-
 from notes_app.brainstorm_flow import BrainstormFlow, build_brainstorm_flow
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
 from notes_app.notes.routes import build_notes_router
@@ -60,7 +45,7 @@ from notes_app.todo_flow import TodoApprovalFlow
 load_dotenv()
 
 
-def _default_dbos_database_url() -> str:
+def _dbos_db_url() -> str:
     """Default DBOS system DB path for the notes-app demo (SQLite).
 
     Honors ``DBOS_DATABASE_URL`` env var when set (e.g. for Postgres).
@@ -85,12 +70,10 @@ def build_app(
     event_stream: EventStream | None = None,
     manage_dbos_lifecycle: bool = True,
 ) -> FastAPI:
-    """Construct the FastAPI app.
+    """Legacy entry point — wraps ``sf.create_app(...)`` for tests
+    that haven't migrated to ``sf.testing.TestEngine`` yet.
 
-    DBOS is launched (and destroyed) inside the FastAPI lifespan when
-    ``manage_dbos_lifecycle=True`` (the default). Tests that supply
-    their own DBOS runtime (see ``tests/conftest.py``) pass
-    ``manage_dbos_lifecycle=False`` so the test fixture stays in charge.
+    SP1 T10 migrates the test suite; this shim is deleted in SP1 T11.
     """
     repo = thread_repo or InMemoryThreadRepository()
     notes = notes_repo or InMemoryNoteRepository()
@@ -102,7 +85,6 @@ def build_app(
         event_log=log,
         event_stream=stream,
     )
-
     agent = notes_agent or NotesAgent(
         notes_repo=notes,
         thread_repo=repo,
@@ -128,92 +110,60 @@ def build_app(
         todo_flow=flow, broadcaster=broadcaster,
     )
 
+    # Streaming router still resolves agents via the process-global
+    # ``get_agent(...)`` registry — keep registering until that path
+    # migrates to ``app.state.agents`` lookups.
     register_agent(agent)
     register_agent(approval_agent)
 
-    engine = Engine(
-        providers=[
-            ObservabilityProvider(
-                service_name="app",
-                environment="dev",
-                instrument_pydantic_ai=True,
-                instrument_httpx=True,
-                # FastAPI route spans pollute traces with one root span
-                # per HTTP request — irrelevant for agent observability.
-                # Agent runs already have their own spans via
-                # ``instrument_pydantic_ai``.
-                instrument_fastapi=False,
-            ),
-            EventStreamProvider(stream=stream, log=log),
-        ],
+    dbos_config = (
+        DBOSConfig(name="notes-app", system_database_url=_dbos_db_url())
+        if manage_dbos_lifecycle
+        else None
     )
 
     notes_router = build_notes_router(repo)
-    threads_router = build_threads_router(thread_repo=repo)
-    streaming_router = build_streaming_router(
+
+    # Back-compat hook: legacy ``test_note_repository_is_bound_in_container``
+    # introspects ``app.state.container``. SP1 T10/T11 deletes both the
+    # container and that test. Until then, mint a container on startup and
+    # bind ``NoteRepository`` onto it.
+    async def _bind_legacy_container(app: FastAPI) -> None:
+        container = DefaultContainer()
+        container.bind(NoteRepository, notes)
+        app.state.container = container
+
+    app = sf.create_app(
+        workflows=[bstorm],
+        agents=[agent, approval_agent],
         thread_repo=repo,
         event_log=log,
         event_stream=stream,
-    )
-    # DBOS introspection + control (workflow tree, cancel/resume/fork).
-    # Thread-scoped via ``/dbos/threads/{id}/workflows`` (filters by the
-    # ``agent-run:{thread_id}:`` prefix that StateflowDurableAgent mints).
-    dbos_router = build_dbos_router()
-    # Transitional: mount the auto-generated @sf.workflow route directly
-    # until T9 rewrites main.py to use sf.create_app(workflows=[bstorm]).
-    brainstorm_workflow_router = build_workflow_router(bstorm)
-
-    async def _bind_domain_repos(app: FastAPI) -> None:
-        """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
-        app.state.container.bind(NoteRepository, notes)
-
-    startup_hooks = [_bind_domain_repos]
-    shutdown_hooks: list = []
-
-    if manage_dbos_lifecycle:
-        async def _launch_dbos(_app: FastAPI) -> None:
-            # ``Durable.init(...)`` registers the singleton;
-            # ``Durable.launch()`` starts the workflow runtime. Both must
-            # happen before any ``@Durable.workflow`` runs — including
-            # the durable ``TodoApprovalFlow.run`` that ``propose_todo``
-            # kicks off via ``Durable.start_workflow``.
-            Durable.init(
-                DBOSConfig(
-                    name="notes-app",
-                    system_database_url=_default_dbos_database_url(),
-                ),
-            )
-            Durable.launch()
-
-        async def _destroy_dbos(_app: FastAPI) -> None:
-            # ``destroy_registry=False`` — leave @DBOS.workflow
-            # registrations intact for tests / subsequent boots in the
-            # same process.
-            Durable.destroy(destroy_registry=False)
-
-        startup_hooks.append(_launch_dbos)
-        shutdown_hooks.append(_destroy_dbos)
-
-    app: FastAPI = engine.fastapi_app(
-        extra_routers=[
-            notes_router, threads_router, streaming_router,
-            dbos_router, brainstorm_workflow_router,
-        ],
-        cors=CORSConfig.permissive_dev(),
-        on_startup=startup_hooks,
-        on_shutdown=shutdown_hooks,
+        dbos=dbos_config,
+        manage_dbos_lifecycle=manage_dbos_lifecycle,
+        cors=sf.CORSConfig.permissive_dev(),
+        observability=ObservabilityConfig(
+            service_name="app",
+            environment="dev",
+            instrument_pydantic_ai=True,
+            instrument_httpx=True,
+            # FastAPI route spans pollute traces with one root span
+            # per HTTP request — irrelevant for agent observability.
+            # Agent runs already have their own spans via
+            # ``instrument_pydantic_ai``.
+            instrument_fastapi=False,
+        ),
+        extra_routers=[notes_router],
+        on_startup=[_bind_legacy_container],
     )
 
+    # Tests introspect these via ``app.state``.
     app.state.notes_repo = notes
     app.state.thread_repo = repo
     app.state.notes_agent = agent
     app.state.todo_approval_agent = approval_agent
     app.state.todo_flow = flow
     app.state.brainstorm_flow = bstorm
-    # ``get_workflow_instance("brainstorm-flow")`` resolves from this dict;
-    # T9 will replace with sf.create_app(workflows=[bstorm]) which populates
-    # app.state.workflows automatically.
-    app.state.workflows = {"brainstorm-flow": bstorm}
     return app
 
 
