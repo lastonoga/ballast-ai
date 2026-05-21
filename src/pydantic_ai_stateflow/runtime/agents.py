@@ -347,6 +347,88 @@ def _takes_run_context(fn: Callable[..., Any]) -> bool:
 _registry: dict[str, StateflowAgent] = {}
 
 
+# ── ``@sf.stateflow_agent`` decorator + class registry ──────────────────
+#
+# The decorator-based registration model. Apps decorate their
+# ``StateflowAgent`` subclasses with ``@sf.stateflow_agent`` — the
+# decorator derives a kebab-case name from the class name (e.g.
+# ``NotesAgent`` → ``notes-agent``) and stores the class in
+# ``_class_registry``. Instances are constructed by the app and passed
+# to ``sf.create_app(agents=[NotesAgent(...)])``; create_app uses
+# ``type(instance).__name__`` to look up the kebab-name set by the
+# decorator and register the instance in ``app.state.agents[name]``.
+#
+# The legacy ``register_agent(instance)`` is kept for the migration
+# window; SP1 T11 deletes it.
+
+_class_registry: dict[str, type[StateflowAgent]] = {}
+_AGENT_NAME_ATTR = "_sf_agent_name"
+
+
+def _kebab_case_agent(name: str) -> str:
+    """Mirror of ``runtime.workflows._kebab_case`` — duplicated to avoid
+    a cross-module import cycle."""
+    import re
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
+    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", s1)
+    return s2.lower()
+
+
+def stateflow_agent(cls: type[StateflowAgent]) -> type[StateflowAgent]:
+    """Register a ``StateflowAgent`` subclass in the class registry.
+
+    Derives kebab-case name from ``cls.__name__`` (e.g. ``NotesAgent``
+    → ``notes-agent``). Sets ``cls.name`` and ``cls._sf_agent_name`` so
+    both the existing ``name: ClassVar[str]`` contract and the new
+    decorator-based lookup work.
+
+    Apps still construct instances themselves and pass them to
+    ``sf.create_app(agents=[...])``. The decorator only handles
+    name→class mapping (used by ``Thread.agent`` string resolution).
+    """
+    name = _kebab_case_agent(cls.__name__)
+    if name in _class_registry and _class_registry[name] is not cls:
+        raise ValueError(
+            f"Duplicate @sf.stateflow_agent name {name!r}: "
+            f"{_class_registry[name].__module__}.{_class_registry[name].__qualname__} "
+            f"and {cls.__module__}.{cls.__qualname__}",
+        )
+    # Preserve explicit ``name = "..."`` if the class already set one
+    # different from the kebab-derived form — backwards compat for
+    # serialized ``Thread.agent`` strings.
+    existing_name = getattr(cls, "name", None)
+    if existing_name is None or existing_name == name:
+        cls.name = name  # type: ignore[misc]
+        resolved = name
+    else:
+        # Explicit override wins.
+        resolved = existing_name
+    setattr(cls, _AGENT_NAME_ATTR, resolved)
+    _class_registry[resolved] = cls
+    return cls
+
+
+def get_agent_class(name: str) -> type[StateflowAgent]:
+    """Look up a @sf.stateflow_agent-decorated class by kebab-name."""
+    try:
+        return _class_registry[name]
+    except KeyError as exc:
+        raise KeyError(
+            f"No agent class registered under {name!r}. "
+            f"Did you forget @sf.stateflow_agent on the class?",
+        ) from exc
+
+
+def list_agent_classes() -> dict[str, type[StateflowAgent]]:
+    """Snapshot of the class registry."""
+    return dict(_class_registry)
+
+
+def clear_agent_class_registry() -> None:
+    """For tests — drops all class registrations (instances unaffected)."""
+    _class_registry.clear()
+
+
 def register_agent(agent: StateflowAgent) -> None:
     """Register an agent instance under its ``type(agent).name``.
 
@@ -442,9 +524,13 @@ def validate_thread_metadata(
 __all__ = [
     "AgentRef",
     "StateflowAgent",
+    "clear_agent_class_registry",
     "clear_agent_registry",
     "get_agent",
+    "get_agent_class",
+    "list_agent_classes",
     "list_agents",
     "register_agent",
+    "stateflow_agent",
     "validate_thread_metadata",
 ]
