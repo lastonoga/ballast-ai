@@ -17,15 +17,19 @@ instances in the flow file:
    construction contract in this codebase; matching it keeps the
    brainstorm path readable next to the other agents.
 
-Output strategy: ``PromptedOutput(TodoIdeas)`` (and ``PromptedOutput
-(TodoIdea)`` for the synthesizer) instead of the default ``ToolOutput``.
-Reason: OpenRouter's ``qwen3.6-plus`` (and several other endpoints
-on OpenRouter) reject ``tool_choice="required"``, which pydantic-ai
-sends by default when ``output_type`` is a ``BaseModel``. Same
-constraint that drove ``agent.py`` to ``output_type=[str,
-DeferredToolRequests]``. ``PromptedOutput`` instructs the model via
-prompt to emit JSON matching the schema — no tool calls, no
-``tool_choice``.
+Output strategy: pydantic-ai's **default** (``ToolOutput`` for
+``BaseModel``), with one twist: for ``qwen/qwen3.6*`` model ids we
+pass an explicit ``ModelProfile`` (see ``openrouter_profile.py``)
+that flips the agent to ``NativeOutput`` mode — provider-side JSON-
+schema validation via ``response_format``. Reason: OpenRouter's
+qwen3.6 endpoints support native JSON-schema output but reject
+``tool_choice="required"`` (which the default ``ToolOutput`` path
+sets), so without the profile patch every qwen3.6 call 404s.
+
+For models pydantic-ai's built-in registry already handles correctly
+(claude-sonnet, gpt-4o, deepseek-chat, etc.) ``profile_for(...)``
+returns ``None`` and the default profile applies — they keep using
+``ToolOutput``, which is the most reliable mode where supported.
 
 These agents are NOT registered into the framework's agent registry
 (``register_agent``) — they aren't selected by ``thread.agent``;
@@ -40,7 +44,7 @@ No ``from __future__ import annotations``: pydantic-ai introspects
 import os
 from typing import Any
 
-from pydantic_ai import Agent, PromptedOutput
+from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -48,6 +52,7 @@ from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
 from notes_app.brainstorm_types import TodoIdea, TodoIdeas
+from notes_app.openrouter_profile import profile_for
 
 
 def _resolve_api_key(explicit: str | None) -> str:
@@ -89,10 +94,11 @@ class BrainstormDivergentAgent(StateflowAgent):
         model = OpenRouterModel(
             self._model_name,
             provider=OpenRouterProvider(api_key=_resolve_api_key(self._api_key)),
+            profile=profile_for(self._model_name),
         )
         return Agent(
             model=model,
-            output_type=PromptedOutput(TodoIdeas),
+            output_type=TodoIdeas,
             system_prompt=self._system_prompt,
         )
 
@@ -143,10 +149,11 @@ class BrainstormSynthesizerAgent(StateflowAgent):
         model = OpenRouterModel(
             self._model_name,
             provider=OpenRouterProvider(api_key=_resolve_api_key(self._api_key)),
+            profile=profile_for(self._model_name),
         )
         return Agent(
             model=model,
-            output_type=PromptedOutput(TodoIdea),
+            output_type=TodoIdea,
             system_prompt=self._system_prompt,
         )
 
