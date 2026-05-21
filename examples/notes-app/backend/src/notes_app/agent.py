@@ -350,6 +350,7 @@ async def propose_todo(
         helper_agent=NotesTodoApprovalAgent,
         context=context,
         opening_message=context.to_opening_message(),
+        notify_parent_thread_id=ctx.deps.parent_thread_id,
     )
     return (
         "I opened a confirmation thread to review this todo. "

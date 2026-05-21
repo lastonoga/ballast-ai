@@ -56,15 +56,23 @@ from pydantic_ai_stateflow.patterns.hitl.response import (
     TimeoutResponse,
 )
 from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from pydantic_ai_stateflow.runtime.event_stream import (
+    EventNotification,
+    thread_channel,
+)
 
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    from pydantic_ai_stateflow.persistence.events.repository import (
+        EventLogRepository,
+    )
     from pydantic_ai_stateflow.persistence.thread.domain import Thread
     from pydantic_ai_stateflow.persistence.thread.repository import (
         ThreadRepository,
     )
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
+    from pydantic_ai_stateflow.runtime.event_stream import EventStream
 
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 _instance_counter = itertools.count()
@@ -96,6 +104,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         self,
         *,
         thread_repo: ThreadRepository,
+        event_log: EventLogRepository | None = None,
+        event_stream: EventStream | None = None,
         config_name: str | None = None,
     ) -> None:
         super().__init__(
@@ -103,6 +113,13 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
             or f"durable-hitl-{next(_instance_counter)}",
         )
         self.thread_repo = thread_repo
+        # Optional. When wired, ``open`` emits a ``thread-created`` event
+        # into the ``notify_parent_thread_id`` event log so any open
+        # ``GET /threads/{id}/events`` SSE consumer can refresh the
+        # thread list without polling. ``_notify`` (callable by
+        # subclasses) similarly emits ``message-added``.
+        self._event_log = event_log
+        self._event_stream = event_stream
 
     @abstractmethod
     async def on_decision(
@@ -134,6 +151,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         context: BaseModel,
         opening_message: str | None = None,
         timeout: timedelta | None = None,
+        notify_parent_thread_id: UUID | None = None,
     ) -> Thread:
         """Spawn the helper thread + start the durable workflow.
 
@@ -151,6 +169,12 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         ``timeout`` (optional ``timedelta``) bounds how long the
         workflow waits for the helper's response. On timeout
         ``on_decision`` is called with a ``TimeoutResponse``.
+
+        ``notify_parent_thread_id`` (optional): when supplied AND the
+        instance has ``event_log`` / ``event_stream`` wired, emits a
+        ``thread-created`` event into that parent thread's event log
+        so a frontend listening on ``GET /threads/{parent}/events``
+        can refresh its thread list immediately (no F5).
         """
         metadata_model = helper_agent.metadata_model
         if metadata_model is None:
@@ -228,6 +252,29 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
                 context_class_fqn=context_class_fqn,
                 timeout_seconds=timeout_seconds,
             )
+
+        # Emit ``thread-created`` on the parent thread's event log so
+        # a frontend listening on its long-lived SSE can refresh the
+        # thread list immediately. No-op when notify_parent_thread_id
+        # or event_log isn't wired.
+        if notify_parent_thread_id is not None and self._event_log is not None:
+            ev = await self._event_log.append(
+                thread_id=notify_parent_thread_id,
+                kind="thread-created",
+                payload={
+                    "thread_id": str(thread.id),
+                    "agent": helper_agent.name,
+                    "metadata": thread_metadata,
+                },
+            )
+            if self._event_stream is not None:
+                await self._event_stream.publish(
+                    thread_channel(notify_parent_thread_id),
+                    EventNotification(
+                        thread_id=notify_parent_thread_id, seq=ev.seq,
+                    ),
+                )
+
         return thread
 
     @DBOS.workflow()

@@ -213,6 +213,13 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   // for why (UI duplicate prevention).
   const justInitialized = useMemo(() => createJustInitializedSink(), []);
 
+  // Stable callback that re-fetches the thread list from the backend.
+  // Populated once the outer ``useRemoteThreadListRuntime`` runtime
+  // exists (see below) — PerThreadRuntime calls it on incoming
+  // ``thread-created`` events to refresh the sidebar live without
+  // page reload.
+  const reloadThreadListRef = useRef<(() => void) | null>(null);
+
   // assistant-ui's `useRemoteThreadListRuntime` re-invokes `runtimeHook`
   // for each thread. To pass `apiUrl`/`headers` in without closing over
   // stale references, we curry them via a factory.
@@ -373,6 +380,14 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
                   parts: Array<Record<string, unknown>>;
                 };
               };
+              if (data.kind === "thread-created") {
+                // A workflow on this thread spawned a side thread —
+                // refresh the sidebar so the new helper conversation
+                // appears without F5. The runtime's threads.reload
+                // re-fetches via thread-list-adapter.list().
+                reloadThreadListRef.current?.();
+                return;
+              }
               if (data.kind !== "message-added" || !data.payload) return;
               const newMsg = data.payload;
               // Append to useChat state — skip if it's already there
@@ -465,6 +480,24 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     runtimeHook,
     initialThreadId,
   });
+
+  // Publish ``runtime.threads.reload`` to the per-thread closure so
+  // PerThreadRuntime's SSE handler can refresh the sidebar when it
+  // sees a ``thread-created`` event. The underlying
+  // ``RemoteThreadListThreadListRuntimeCore.reload`` re-fires
+  // ``adapter.list(...)`` → GET /threads → updates store.
+  useEffect(() => {
+    const threads = (runtime as unknown as {
+      threads?: { reload?: () => void };
+    }).threads;
+    reloadThreadListRef.current =
+      typeof threads?.reload === "function"
+        ? threads.reload.bind(threads)
+        : null;
+    return () => {
+      reloadThreadListRef.current = null;
+    };
+  }, [runtime]);
 
   // Track the current thread id and persist it. ``runtime.threads`` is
   // the thread-list API; subscribe to learn when the active thread
