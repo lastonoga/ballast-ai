@@ -7,18 +7,24 @@ re-run failed steps.
 
 Endpoints (all under ``{prefix}``):
 
-  - ``GET    /dbos/threads/{thread_id}/workflows``  → list workflows for a thread
-  - ``GET    /dbos/workflows/{workflow_id}``        → workflow status + IO
-  - ``GET    /dbos/workflows/{workflow_id}/steps``  → step list (tree leaves)
-  - ``POST   /dbos/workflows/{workflow_id}/cancel`` → mark cancelled
-  - ``POST   /dbos/workflows/{workflow_id}/resume`` → re-execute from where it stopped
-  - ``POST   /dbos/workflows/{workflow_id}/fork``   → fork from a specific step
+  - ``GET    /dbos/threads/{thread_id}/workflows``      → list workflows for a thread
+        query: ``?prefix=`` repeatable; defaults to ``[agent-run:{tid}:]``
+  - ``GET    /dbos/workflows/{workflow_id}``            → workflow status + IO
+  - ``GET    /dbos/workflows/{workflow_id}/steps``      → step list (one level)
+  - ``GET    /dbos/workflows/{workflow_id}/children``   → child workflows
+        (workflows with parent_workflow_id == this id)
+  - ``POST   /dbos/workflows/{workflow_id}/cancel``     → mark cancelled
+  - ``POST   /dbos/workflows/{workflow_id}/resume``     → re-execute from where it stopped
+  - ``POST   /dbos/workflows/{workflow_id}/fork``       → fork from a specific step
     body: ``{"start_step": int, "queue_name": str?, "queue_partition_key": str?}``
 
-The router uses the prefix ``agent-run:{thread_id}:`` (set by
-``StateflowDurableAgent.enqueue_run``) to scope workflows to a thread.
-For non-StateflowDurableAgent workflows the per-thread listing is
-just an empty set — direct ``/workflows/{id}`` lookup still works.
+The per-thread listing defaults to the prefix
+``agent-run:{thread_id}:`` (set by ``StateflowDurableAgent.enqueue_run``)
+to scope workflows to a thread. Apps with their own naming scheme
+(e.g. ``brainstorm:{tid}:…``) pass extra ``?prefix=`` values to
+surface those workflows in the same view. The ``/children`` endpoint
+plus ``StepInfo.child_workflow_id`` together let a UI render the
+full nested execution tree of patterns like ``DivergentConvergent``.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from dbos import DBOS
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.logging import get_logger
@@ -128,17 +134,53 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
         thread_id: UUID,
         limit: int = 100,
         offset: int = 0,
+        prefix: list[str] | None = Query(
+            default=None,
+            description=(
+                "Repeatable workflow_id prefix filter. Defaults to "
+                "['agent-run:{thread_id}:'] — the prefix StateflowDurableAgent "
+                "mints. Apps with their own naming scheme (e.g. brainstorm "
+                "workflows mint 'brainstorm:{thread_id}:…') pass additional "
+                "prefixes here to surface those in the same listing."
+            ),
+        ),
     ) -> list[dict[str, Any]]:
-        """List all workflows for ``thread_id`` (parent + forked + resumed).
+        """List workflows for ``thread_id`` (parent + forked + resumed).
 
-        Filters by the ``agent-run:{thread_id}:`` prefix that
-        ``StateflowDurableAgent`` mints. Newest-first.
+        Defaults to filtering by the ``agent-run:{thread_id}:`` prefix
+        that ``StateflowDurableAgent`` mints. Pass ``?prefix=`` (one or
+        more) to widen the filter — for example
+        ``?prefix=agent-run:UUID:&prefix=brainstorm:UUID:`` surfaces
+        the agent runs AND the app's brainstorm workflows.
+        Newest-first.
         """
+        prefixes = prefix if prefix else [_thread_workflow_prefix(thread_id)]
         wfs = await DBOS.list_workflows_async(
-            workflow_id_prefix=_thread_workflow_prefix(thread_id),
+            workflow_id_prefix=prefixes,
             sort_desc=True,
             limit=limit,
             offset=offset,
+            load_input=False,
+            load_output=False,
+        )
+        return [_wf_to_dict(w) for w in wfs]
+
+    @router.get("/dbos/workflows/{workflow_id}/children")
+    async def list_workflow_children(
+        workflow_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List workflows whose ``parent_workflow_id == workflow_id``.
+
+        Lets the UI drill from any workflow into its direct children
+        without having to know the children's id naming scheme. Use
+        in combination with the steps endpoint to render the full
+        execution tree (steps + nested workflows) of a pattern like
+        ``DivergentConvergent``."""
+        wfs = await DBOS.list_workflows_async(
+            parent_workflow_id=workflow_id,
+            sort_desc=False,  # preserve enqueue order so fan-out reads left-to-right
+            limit=limit,
             load_input=False,
             load_output=False,
         )

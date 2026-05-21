@@ -19,6 +19,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
+  CornerDownRight,
   GitFork,
   Lightbulb,
   Play,
@@ -118,13 +119,26 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
+// Hard cap on recursive descent so a pathological self-referential or
+// extremely deep tree can't blow up the inspector. Real workflows in
+// this codebase top out around 4 levels (BrainstormFlow →
+// DivergentConvergent → queue-enqueued _diverge_one → pydantic-ai
+// model_request); 6 leaves slack for future patterns.
+const MAX_NESTED_DEPTH = 6;
+
 function StepRow({
+  apiUrl,
   step,
+  depth,
   onForkFrom,
 }: {
+  apiUrl: string;
   step: Step;
+  depth: number;
   onForkFrom: (functionId: number) => void;
 }) {
+  const [childExpanded, setChildExpanded] = useState(false);
+
   const status: string =
     step.error != null
       ? "ERROR"
@@ -134,9 +148,28 @@ function StepRow({
       ? "PENDING"
       : "ENQUEUED";
 
+  const hasChild = !!step.child_workflow_id;
+  const canExpand = hasChild && depth < MAX_NESTED_DEPTH;
+
   return (
     <div className="border-l-2 border-muted pl-3 py-2 text-xs">
       <div className="flex items-center gap-2">
+        {canExpand ? (
+          <button
+            type="button"
+            className="rounded p-0.5 hover:bg-accent"
+            title={childExpanded ? "Collapse child workflow" : "Expand child workflow"}
+            onClick={() => setChildExpanded((v) => !v)}
+          >
+            {childExpanded ? (
+              <ChevronDown className="size-3" />
+            ) : (
+              <ChevronRight className="size-3" />
+            )}
+          </button>
+        ) : (
+          <span className="w-4" />
+        )}
         <span className="font-mono text-muted-foreground tabular-nums">
           #{step.function_id ?? "?"}
         </span>
@@ -161,9 +194,12 @@ function StepRow({
           dur {fmtDuration(step.started_at_epoch_ms, step.completed_at_epoch_ms)}
         </span>
       </div>
-      {step.child_workflow_id && (
-        <div className="mt-1 font-mono text-[10px] text-muted-foreground truncate">
-          → child wf: {step.child_workflow_id}
+      {hasChild && (
+        <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+          <CornerDownRight className="size-3" />
+          <span className="truncate" title={step.child_workflow_id!}>
+            {step.child_workflow_id}
+          </span>
         </div>
       )}
       {step.output != null && (
@@ -177,6 +213,95 @@ function StepRow({
           <span className="break-all">{step.error}</span>
         </div>
       )}
+      {childExpanded && canExpand && (
+        <div className="mt-2 ml-2 border-l-2 border-dashed border-muted pl-2">
+          <NestedSteps
+            apiUrl={apiUrl}
+            workflowId={step.child_workflow_id!}
+            depth={depth + 1}
+            onForkFrom={onForkFrom}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NestedSteps({
+  apiUrl,
+  workflowId,
+  depth,
+  onForkFrom,
+}: {
+  apiUrl: string;
+  workflowId: string;
+  depth: number;
+  onForkFrom: (functionId: number) => void;
+}) {
+  const [steps, setSteps] = useState<Step[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // One-shot fetch + slow poll. Top-level WorkflowCard already polls
+  // the steps endpoint for its own workflow at POLL_INTERVAL_MS;
+  // nested workflows usually finish quickly and we'd rather keep the
+  // request count modest at deep recursion levels.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchSteps = async () => {
+      try {
+        const r = await fetch(`${apiUrl}/dbos/workflows/${workflowId}/steps`);
+        if (!r.ok) throw new Error(`steps ${r.status}`);
+        const data = (await r.json()) as Step[];
+        if (!cancelled) {
+          setSteps(data);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    };
+    void fetchSteps();
+    const t = setInterval(() => void fetchSteps(), POLL_INTERVAL_MS * 2);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [apiUrl, workflowId]);
+
+  if (error) {
+    return (
+      <div className="py-1 text-[10px] text-destructive">
+        child steps: {error}
+      </div>
+    );
+  }
+  if (steps === null) {
+    return (
+      <div className="py-1 text-[10px] text-muted-foreground italic">
+        loading child steps…
+      </div>
+    );
+  }
+  if (steps.length === 0) {
+    return (
+      <div className="py-1 text-[10px] text-muted-foreground italic">
+        no steps recorded yet
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      {steps.map((s, i) => (
+        <StepRow
+          key={s.function_id ?? `${workflowId}-${i}`}
+          apiUrl={apiUrl}
+          step={s}
+          depth={depth}
+          onForkFrom={onForkFrom}
+        />
+      ))}
     </div>
   );
 }
@@ -344,10 +469,12 @@ function WorkflowCard({
               no steps recorded yet
             </div>
           ) : (
-            steps.map((s) => (
+            steps.map((s, i) => (
               <StepRow
-                key={s.function_id ?? Math.random()}
+                key={s.function_id ?? `${workflow.workflow_id}-${i}`}
+                apiUrl={apiUrl}
                 step={s}
+                depth={0}
                 onForkFrom={(fid) => void doFork(fid)}
               />
             ))
@@ -368,17 +495,30 @@ export function DbosInspector() {
   // Poll workflows for the active thread. ``remoteId`` is undefined for
   // drafts (thread not yet initialized) — render an empty state instead
   // of hammering the backend with __LOCALID_ ids.
+  //
+  // We pass TWO prefixes: the framework's ``agent-run:`` (chat-turn
+  // workflows) AND the app's ``brainstorm:`` (divergent-convergent
+  // runs started via POST /workflows/brainstorm-todo). Each top-level
+  // workflow's nested execution tree (queued divergent samples, child
+  // synthesizer steps, HITL helpers) becomes visible by clicking the
+  // ChevronRight on any step whose ``child_workflow_id`` is set.
   useEffect(() => {
     if (!remoteId) {
       setWorkflows([]);
       return;
     }
     let cancelled = false;
+    const prefixes = [
+      `agent-run:${remoteId}:`,
+      `brainstorm:${remoteId}:`,
+    ];
+    const qs = new URLSearchParams();
+    qs.set("limit", "50");
+    for (const p of prefixes) qs.append("prefix", p);
+    const url = `${apiUrl}/dbos/threads/${remoteId}/workflows?${qs.toString()}`;
     const fetchWorkflows = async () => {
       try {
-        const r = await fetch(
-          `${apiUrl}/dbos/threads/${remoteId}/workflows?limit=50`,
-        );
+        const r = await fetch(url);
         if (!r.ok) throw new Error(`workflows ${r.status}`);
         const data = (await r.json()) as Workflow[];
         if (!cancelled) {
