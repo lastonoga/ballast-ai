@@ -28,6 +28,9 @@ dev = [
     "aiosqlite>=0.20",
 ]
 
+[project.scripts]
+stateflow = "pydantic_ai_stateflow.cli.main:cli"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
