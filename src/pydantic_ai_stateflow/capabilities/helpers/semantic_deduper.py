@@ -4,16 +4,28 @@ import math
 from collections import deque
 
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
+from pydantic_ai_stateflow.errors import StateflowError
 
 
-class SemanticLoopDetected(Exception):  # noqa: N818
+class SemanticLoopDetected(StateflowError):  # noqa: N818
     """Raised when a sliding window of snapshots is too similar (loop / repeat)."""
+
+    code = "STATEFLOW_CAPABILITY_SEMANTIC_LOOP"
+    status_code = 500
 
     def __init__(self, snapshot: str, similarities: list[float] | None = None) -> None:
         self.snapshot = snapshot
         self.similarities = similarities or []
         super().__init__(
-            f"SemanticLoopDetected: snapshot={snapshot!r} similarities={self.similarities}"
+            f"SemanticLoopDetected: snapshot={snapshot!r} similarities={self.similarities}",
+            hint=(
+                "Lower the similarity threshold, widen the loop-detection "
+                "window, or improve diversity in the model's prompt."
+            ),
+            context={
+                "snapshot": snapshot[:200],
+                "similarities": list(self.similarities),
+            },
         )
 
 

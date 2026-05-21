@@ -1,6 +1,8 @@
+from pydantic_ai_stateflow.errors import StateflowError
 from pydantic_ai_stateflow.patterns import (
     HITLDenied,
     HITLTimedOut,
+    InsufficientDivergence,
     MutationRejected,
     PatternError,
     ReflectionExhausted,
@@ -42,3 +44,45 @@ def test_hitl_denied_carries_actor_and_votes():
     assert err.actor_id == "alice"
     assert err.votes == {"admin_voter": "deny"}
     assert "alice" in str(err)
+
+
+def test_pattern_errors_inherit_stateflow_error():
+    """Migration: every PatternError subclass is now a StateflowError."""
+    assert issubclass(PatternError, StateflowError)
+    assert issubclass(ReflectionExhausted, StateflowError)
+    assert issubclass(MutationRejected, StateflowError)
+    assert issubclass(HITLTimedOut, StateflowError)
+    assert issubclass(HITLDenied, StateflowError)
+    assert issubclass(InsufficientDivergence, StateflowError)
+
+
+def test_pattern_errors_have_codes_and_status():
+    """Stable codes + status_codes per spec §E."""
+    assert ReflectionExhausted.code == "STATEFLOW_PATTERN_REFLECTION_EXHAUSTED"
+    assert ReflectionExhausted.status_code == 500
+    assert MutationRejected.code == "STATEFLOW_PATTERN_MUTATION_REJECTED"
+    assert MutationRejected.status_code == 500
+    assert HITLTimedOut.code == "STATEFLOW_PATTERN_HITL_TIMED_OUT"
+    assert HITLTimedOut.status_code == 504
+    assert HITLDenied.code == "STATEFLOW_PATTERN_HITL_DENIED"
+    assert HITLDenied.status_code == 403
+    assert InsufficientDivergence.code == "STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE"
+    assert InsufficientDivergence.status_code == 500
+
+
+def test_insufficient_divergence_backcompat_attrs():
+    err = InsufficientDivergence(
+        produced=1,
+        required=2,
+        branch_outcomes={"practical": "ok", "creative": "failed"},
+    )
+    # Back-compat instance attributes still readable.
+    assert err.produced == 1
+    assert err.required == 2
+    assert err.branch_outcomes == {"practical": "ok", "creative": "failed"}
+    # New StateflowError contract.
+    d = err.to_dict()
+    assert d["code"] == "STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE"
+    assert d["context"]["produced"] == 1
+    assert d["context"]["required"] == 2
+    assert d["hint"] is not None

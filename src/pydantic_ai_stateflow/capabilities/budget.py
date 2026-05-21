@@ -8,17 +8,28 @@ from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import ModelRequestContext
 
 from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from pydantic_ai_stateflow.errors import StateflowError
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 
 
-class BudgetExhausted(Exception):  # noqa: N818
+class BudgetExhausted(StateflowError):  # noqa: N818
     """Raised by BudgetGuard when the run exceeds the configured budget."""
+
+    code = "STATEFLOW_CAPABILITY_BUDGET_EXHAUSTED"
+    status_code = 429
 
     def __init__(self, reason: str, **details: Any) -> None:
         self.reason = reason
         self.details = details
-        super().__init__(f"BudgetExhausted: {reason} ({details})")
+        super().__init__(
+            f"BudgetExhausted: {reason} ({details})",
+            hint=(
+                "Raise the budget on ``BudgetGuard`` (max_iterations / "
+                "max_input_tokens / max_output_tokens) or shorten the run."
+            ),
+            context={"reason": reason, **details},
+        )
 
 
 class BudgetGuard(StateflowCapability):
