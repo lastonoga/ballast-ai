@@ -62,7 +62,9 @@ class _MockSynthesizer:
 
 
 @pytest.mark.asyncio
-async def test_pattern_invokes_hypotheses_projector_per_branch() -> None:
+async def test_pattern_invokes_hypotheses_projector_per_branch(
+    fresh_dbos_executor: None,
+) -> None:
     """``DivergentConvergent`` should call ``hypotheses(env)`` exactly
     once per successful branch and feed the merged pool into the
     synthesizer via ``format_synth_prompt``."""
