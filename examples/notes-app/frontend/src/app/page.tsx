@@ -22,7 +22,7 @@ export default function Home() {
       <DeleteNoteApproval />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <ResizablePanelGroup orientation="horizontal">
-          <ResizablePanel id="main" defaultSize={75} minSize={40}>
+          <ResizablePanel id="main" defaultSize={67}>
             <AssistantSidebar>
               <div className="flex h-full flex-col">
                 <header className="flex items-center justify-between border-b px-4 py-3">
@@ -44,7 +44,7 @@ export default function Home() {
             </AssistantSidebar>
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel id="dbos" defaultSize={25} minSize={15} maxSize={50}>
+          <ResizablePanel id="dbos" defaultSize={33}>
             <DbosInspector />
           </ResizablePanel>
         </ResizablePanelGroup>
