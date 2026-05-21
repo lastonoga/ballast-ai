@@ -2,9 +2,13 @@
 
 Built on top of pydantic-ai's ``DBOSAgent`` wrapper, which:
 
-  - Wraps the underlying ``Agent`` so that every model request and tool
-    call is automatically a ``@DBOS.step`` — survives process crashes,
-    memoised on workflow replay, no manual ``_wrap_tool_fn`` needed.
+  - Wraps the underlying ``Agent`` so that every **model request** and
+    **MCP toolset op** is automatically a ``@DBOS.step``. Regular
+    ``@SomeAgent.tool`` functions are NOT step-wrapped — they run
+    inline in workflow context. On replay their side effects re-fire,
+    and they don't appear in the DBOS step log. Apps that need
+    idempotency for tools must implement it themselves (e.g.
+    ``INSERT ... ON CONFLICT DO NOTHING`` or manual ``@DBOS.step``).
   - Exposes ``run()`` as a ``@DBOS.workflow`` — the whole agent loop
     is durable end-to-end.
   - Supports ``event_stream_handler`` for streaming AgentStreamEvents
@@ -43,9 +47,7 @@ Apps still subclass ``StateflowDurableAgent`` exactly like
 
 from __future__ import annotations
 
-import functools
 import itertools
-import traceback
 from contextvars import ContextVar
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
@@ -62,7 +64,7 @@ from dbos import (
 from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
 )
-from pydantic_ai_stateflow.runtime.agents import StateflowAgent, _ToolEntry
+from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventNotification,
     EventStream,
@@ -70,7 +72,7 @@ from pydantic_ai_stateflow.runtime.event_stream import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterable, Callable
+    from collections.abc import AsyncIterable
 
     from dbos._dbos import WorkflowHandleAsync
     from pydantic_ai.durable_exec.dbos import DBOSAgent
@@ -174,86 +176,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         self._thread_repo = thread_repo
         self._event_log = event_log
         self._event_stream = event_stream
-
-    def _wrap_tool_fn(
-        self,
-        fn: Callable[..., Any],
-        entry: _ToolEntry,
-    ) -> Callable[..., Any]:
-        """Wrap tools with ``persistent=True`` (default) in ``@DBOS.step``.
-
-        Why: ``DBOSAgent`` only auto-wraps **model requests** and **MCP
-        toolsets** as DBOS steps. Plain ``@SomeAgent.tool`` functions
-        run inline in the workflow context — they would NOT survive
-        crash recovery cleanly (re-execution would re-fire any side
-        effects) AND wouldn't appear in the DBOS step log (so the
-        inspector tree wouldn't show them).
-
-        We restore step-wrapping here so:
-          - Tool side effects are memoised across workflow replay.
-          - Each tool invocation shows up as a step row in
-            ``GET /dbos/workflows/{id}/steps``.
-
-        Opt-out: ``@SomeAgent.tool(persistent=False)`` skips the wrap.
-        Required for tools that spawn child workflows (e.g.
-        ``DurableHITLWorkflow.open``) — DBOS asserts
-        ``cur_ctx.is_workflow()`` and forbids
-        ``start_workflow_async`` from inside a step.
-        """
-        # ``None`` (unset) → DurableAgent default = persist.
-        # ``False`` → explicit opt-out (read-only / workflow-spawning).
-        # ``True`` → explicit opt-in.
-        if entry.persistent is False:
-            return fn
-
-        # ``@DBOS.step`` needs a unique name per registered step. The
-        # tool's qualified name is stable across replays.
-        step_name = f"tool:{fn.__qualname__}"
-        step_wrapped = DBOS.step(name=step_name)(fn)
-
-        @functools.wraps(fn)
-        async def explained(*args: Any, **kwargs: Any) -> Any:
-            """Catch DBOS's bare ``AssertionError`` when a step tries
-            to spawn a workflow and re-raise with an actionable hint.
-
-            DBOS guards ``start_workflow_async`` (and friends) with
-            ``assert cur_ctx.is_workflow()`` — fires from inside a
-            ``@DBOS.step``. Default traceback is opaque. Catch it and
-            point the developer at ``persistent=False``.
-            """
-            try:
-                return await step_wrapped(*args, **kwargs)
-            except AssertionError as exc:
-                tb_text = "".join(traceback.format_tb(exc.__traceback__))
-                if "create_start_workflow_child" not in tb_text:
-                    raise
-                raise RuntimeError(
-                    f"Tool {fn.__qualname__!r} tried to spawn a DBOS "
-                    "workflow (e.g. via DBOS.start_workflow_async, "
-                    "Queue.enqueue, or DurableHITLWorkflow.open) from "
-                    "inside @DBOS.step. DBOS forbids this — steps must "
-                    "be leaf operations.\n\n"
-                    "FIX: mark this tool with "
-                    "@SomeAgent.tool(persistent=False). The spawned "
-                    "workflow is already durable on its own, so the "
-                    "@DBOS.step wrap on the caller adds nothing AND "
-                    "blocks the spawn.\n\n"
-                    "Background: StateflowDurableAgent wraps tools in "
-                    "@DBOS.step by default (persistent=None → True) so "
-                    "tool side-effects are memoised across workflow "
-                    "replay + visible in the inspector tree.",
-                ) from exc
-
-        # Preserve introspection metadata pydantic-ai's tool
-        # registration reads (it derives JSON schemas from
-        # ``get_type_hints`` + the signature).
-        functools.update_wrapper(
-            explained, fn,
-            assigned=("__module__", "__name__", "__qualname__",
-                      "__doc__", "__annotations__"),
-            updated=(),
-        )
-        return explained
 
     @cached_property
     def dbos_agent(self) -> DBOSAgent[Any, Any]:

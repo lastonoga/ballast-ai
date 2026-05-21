@@ -69,22 +69,6 @@ class _ToolEntry:
 
     fn: Callable[..., Any]
     kwargs: dict[str, Any] = field(default_factory=dict)
-    persistent: bool | None = None
-    """Framework-only flag controlling durable replay behavior.
-
-    - ``None``: subclass default (``StateflowDurableAgent`` treats as
-      ``True``, plain ``StateflowAgent`` ignores).
-    - ``True``: ``StateflowDurableAgent`` wraps the tool body in
-      ``@DBOS.step`` so workflow replay returns the memoized result
-      instead of re-executing — required for write tools.
-    - ``False``: explicit opt-out. Read-only tools (list / search)
-      that are cheap to recompute use this to skip persistence
-      overhead.
-
-    Stored separately from ``kwargs`` because pydantic-ai's
-    ``@agent.tool`` doesn't accept this argument; the framework strips
-    it before forwarding the rest.
-    """
 
 
 @dataclass
@@ -132,8 +116,6 @@ class StateflowAgent(ABC):
         cls,
         func: Callable[..., Any] | None = None,
         /,
-        *,
-        persistent: bool | None = None,
         **tool_kwargs: Any,
     ) -> Any:
         """Decorator to register a function as a tool on this agent class.
@@ -151,29 +133,27 @@ class StateflowAgent(ABC):
         functions route to ``Agent.tool`` and plain ones to
         ``Agent.tool_plain``.
 
-        ``persistent`` (framework-only kwarg, stripped before forwarding):
-          - ``None`` (default): subclass decides.
-            ``StateflowDurableAgent`` treats unset as ``True``;
-            plain ``StateflowAgent`` ignores entirely.
-          - ``True``: in ``StateflowDurableAgent`` the tool body is
-            wrapped in ``@DBOS.step`` so workflow replay on crash
-            recovery returns the memoized result instead of
-            re-executing. REQUIRED for tools with external side
-            effects (DB writes, HTTP POSTs, payments).
-          - ``False``: opt out. Read-only tools (``list_notes``,
-            ``search_notes``) use this to skip DBOS-step persistence
-            overhead. Safe because re-executing them on replay
-            produces no side effects.
-
         ``tool_kwargs`` are forwarded verbatim to the pydantic-ai
         decorator: ``name``, ``description``, ``retries``, ``prepare``,
         ``docstring_format``, ``requires_approval``, ``metadata``,
         ``sequential``, ``timeout``, ``strict`` are all supported.
+
+        .. note::
+           Tools run **inline** inside ``StateflowDurableAgent``'s
+           workflow context — they are NOT wrapped in ``@DBOS.step``.
+           ``DBOSAgent`` (the upstream wrapper we delegate to) only
+           step-wraps model requests + MCP toolsets, not regular
+           ``@agent.tool`` functions. Consequence: on workflow replay
+           (crash recovery) tool side effects re-fire, and tools
+           don't appear in the DBOS step log. Apps that need
+           idempotency must implement it themselves (e.g. INSERT ON
+           CONFLICT DO NOTHING) or wrap critical paths in
+           ``@DBOS.step`` manually.
         """
 
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
             cls._tools.append(_ToolEntry(
-                fn=fn, kwargs=dict(tool_kwargs), persistent=persistent,
+                fn=fn, kwargs=dict(tool_kwargs),
             ))
             return fn
 
@@ -256,26 +236,6 @@ class StateflowAgent(ABC):
         """Forwarded to every agent run. Defaults to ``None``."""
         return None
 
-    def _wrap_tool_fn(
-        self,
-        fn: Callable[..., Any],
-        entry: _ToolEntry,
-    ) -> Callable[..., Any]:
-        """Hook for subclasses to wrap tool functions at registration time.
-
-        Default: identity (no wrapping). ``StateflowDurableAgent``
-        overrides this to wrap ``@SomeAgent.tool(metadata={"idempotent":
-        True})``-marked tools in ``@DBOS.step`` so they're memoized
-        across workflow replays on crash recovery.
-
-        Subclasses MUST preserve the function's signature
-        (``__wrapped__`` / ``functools.wraps``) — pydantic-ai's tool
-        registration inspects type hints via ``get_type_hints`` and
-        falls over on un-annotated wrappers.
-        """
-        del entry
-        return fn
-
     # ── lazy Agent construction ──────────────────────────────────────────────
 
     @cached_property
@@ -286,9 +246,10 @@ class StateflowAgent(ABC):
 
         1. ``build_agent()`` constructs the bare Agent.
         2. Tools declared with ``@SomeAgent.tool`` on this class and all
-           its ancestors are registered — each one optionally wrapped
-           by ``_wrap_tool_fn`` (subclasses override; default is
-           pass-through).
+           its ancestors are registered verbatim (no wrapping —
+           ``DBOSAgent`` does NOT step-wrap ``@agent.tool`` functions,
+           so we can't either without losing the ``DBOS.step`` opt-in
+           semantics).
         3. ``register_grounded_tools(agent)`` installs ``prepare`` hooks
            on any tool parameter annotated with
            ``Annotated[Ref[T], Selector(...)]``.
@@ -300,11 +261,10 @@ class StateflowAgent(ABC):
         """
         a = self.build_agent()
         for entry in _collect_inherited_tools(type(self)):
-            fn = self._wrap_tool_fn(entry.fn, entry)
             if _takes_run_context(entry.fn):
-                a.tool(**entry.kwargs)(fn)
+                a.tool(**entry.kwargs)(entry.fn)
             else:
-                a.tool_plain(**entry.kwargs)(fn)
+                a.tool_plain(**entry.kwargs)(entry.fn)
         for sp in _collect_inherited_system_prompts(type(self)):
             a.system_prompt(**sp.kwargs)(sp.fn)
         # Auto-apply grounded ``Ref[T]/Selector`` prepare hooks. Importing

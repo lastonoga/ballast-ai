@@ -264,7 +264,7 @@ async def create_note(
     return await ctx.deps.repo.create(title=title, body=body)
 
 
-@NotesAgent.tool(persistent=False)
+@NotesAgent.tool
 async def list_notes(
     ctx: RunContext[NoteToolDeps], limit: int = 20,
 ) -> list[Note]:
@@ -272,13 +272,11 @@ async def list_notes(
 
     Use this when the user asks "show me my notes" or wants an
     overview. Returns at most ``limit`` notes (default 20).
-
-    Read-only — ``persistent=False`` skips DBOS-step overhead.
     """
     return await ctx.deps.repo.list_(limit=limit)
 
 
-@NotesAgent.tool(persistent=False)
+@NotesAgent.tool
 async def search_notes(
     ctx: RunContext[NoteToolDeps], query: str, limit: int = 20,
 ) -> list[Note]:
@@ -286,8 +284,6 @@ async def search_notes(
 
     Returns matching notes newest-first, at most ``limit``. Use this
     when the user references a note by topic or keyword rather than id.
-
-    Read-only — ``persistent=False``.
     """
     return await ctx.deps.repo.search(query, limit=limit)
 
@@ -312,21 +308,16 @@ async def edit_note(
     return await ctx.deps.repo.update(nid, title=title, body=body)
 
 
-@NotesAgent.tool(persistent=False)
+@NotesAgent.tool
 async def propose_todo(
     ctx: RunContext[NoteToolDeps], title: str, body: str,
 ) -> str:
     """Open a confirmation thread for a todo and return immediately.
 
-    ``persistent=False`` is REQUIRED here even though this tool has
-    side effects (spawns a helper thread + starts a workflow). The
-    side effects are themselves durable — ``todo_flow.open`` is a
-    framework method that wraps thread creation + ``DBOS.start_workflow_async``
-    in its own durability story. Wrapping THIS tool in ``@DBOS.step``
-    would put us inside a step context when we try to spawn the
-    helper workflow, and DBOS forbids ``start_workflow_async`` from
-    inside a step (asserts ``cur_ctx.is_workflow()``).
-
+    Tools run inline in the agent's DBOS workflow context (StateflowDurableAgent
+    does NOT step-wrap them — DBOSAgent only step-wraps model requests
+    and MCP), so calling ``DBOS.start_workflow_async`` here works
+    directly: the spawned helper workflow is itself durable on its own.
 
     Use this INSTEAD of ``create_note`` when the user asks to create a
     TODO specifically. The flow is **fire-and-forget + durable**:
