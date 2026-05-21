@@ -89,7 +89,12 @@ def build_app(
     notes = notes_repo or InMemoryNoteRepository()
     log = event_log or InMemoryEventLogRepository()
     stream = event_stream or InProcessEventStream()
-    flow = todo_flow or TodoApprovalFlow(notes_repo=notes, thread_repo=repo)
+    flow = todo_flow or TodoApprovalFlow(
+        notes_repo=notes,
+        thread_repo=repo,
+        event_log=log,
+        event_stream=stream,
+    )
 
     agent = notes_agent or NotesAgent(
         notes_repo=notes,

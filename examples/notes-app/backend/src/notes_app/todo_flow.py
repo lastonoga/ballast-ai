@@ -11,6 +11,7 @@ Note on annotations: like ``agent.py`` we do NOT use
 resolve concrete types at decoration time.
 """
 
+from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -21,7 +22,15 @@ from pydantic_ai_stateflow.patterns.hitl import (
     ModifiedResponse,
     RejectedResponse,
 )
+from pydantic_ai_stateflow.persistence.events.repository import (
+    EventLogRepository,
+)
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from pydantic_ai_stateflow.runtime.event_stream import (
+    EventNotification,
+    EventStream,
+    thread_channel,
+)
 
 from notes_app.notes.repository import NoteRepository
 from notes_app.todo_approval_agent import TodoApprovalContext
@@ -34,6 +43,12 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     and the parent-thread notification both happen even if T1's
     streaming request handler died long before the helper agent
     finished its conversation.
+
+    ``event_log`` / ``event_stream`` (optional) — when wired, ``_notify``
+    additionally emits a ``message-added`` event into the parent
+    thread's event log + publishes through the signal channel. Any
+    frontend tailing ``GET /threads/{parent_id}/events`` picks the
+    new message up live without a page reload.
     """
 
     def __init__(
@@ -41,6 +56,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         *,
         notes_repo: NoteRepository,
         thread_repo: ThreadRepository,
+        event_log: Optional[EventLogRepository] = None,
+        event_stream: Optional[EventStream] = None,
         config_name: str = "notes-todo-approval-flow",
     ) -> None:
         # Stable ``config_name`` so DBOS can rebind this instance to its
@@ -52,6 +69,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             thread_repo=thread_repo, config_name=config_name,
         )
         self.notes_repo = notes_repo
+        self._event_log = event_log
+        self._event_stream = event_stream
 
     async def on_decision(
         self,
@@ -94,8 +113,29 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             )
 
     async def _notify(self, parent_id: UUID, text: str) -> None:
-        await self.thread_repo.add_message(
+        msg = await self.thread_repo.add_message(
             parent_id,
             role="assistant",
             parts=[{"type": "text", "text": text, "state": "done"}],
         )
+        # Push a ``message-added`` event into the parent thread's event
+        # log + signal channel so any open ``GET /threads/{id}/events``
+        # SSE consumer (frontend tailing for cross-workflow notifications)
+        # receives it live without a page reload. No-op when wiring
+        # isn't provided (e.g. in unit tests).
+        if self._event_log is None:
+            return
+        ev = await self._event_log.append(
+            thread_id=parent_id,
+            kind="message-added",
+            payload={
+                "id": msg.id,
+                "role": msg.role,
+                "parts": msg.parts,
+            },
+        )
+        if self._event_stream is not None:
+            await self._event_stream.publish(
+                thread_channel(parent_id),
+                EventNotification(thread_id=parent_id, seq=ev.seq),
+            )

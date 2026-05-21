@@ -694,6 +694,78 @@ def build_streaming_router(
             ),
         )
 
+    @router.get("/threads/{thread_id}/events")
+    async def thread_events(
+        request: Request,
+        thread_id: UUID,
+    ) -> Response:
+        """Long-lived SSE that tails the thread's event log.
+
+        Distinct from ``POST /threads/{id}/messages`` (per-turn agent
+        stream that closes on ``done``). This one **never terminates
+        on its own** — it keeps flowing every ``ThreadEvent`` written
+        to the log for ``thread_id``, regardless of which workflow
+        produced it. Used by the frontend to receive cross-workflow
+        notifications (e.g. a HITL ``on_decision`` posting a
+        ``message-added`` after saving a todo).
+
+        Resume protocol: ``Last-Event-ID`` header (SSE standard)
+        carries the last seen ``seq``; we replay events after that
+        seq, then live-tail.
+
+        Wire shape per event::
+
+            id: <seq>
+            data: {"kind": "<event_kind>", "seq": <int>, "payload": {...}}
+
+        Closes only when the client disconnects.
+        """
+        if event_log is None:
+            raise HTTPException(
+                status_code=500,
+                detail="event_log not wired into build_streaming_router(...)",
+            )
+
+        thread = await thread_repo.load(thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="thread not found")
+
+        last_event_id = _parse_last_event_id(request)
+        if last_event_id == 0:
+            last_event_id = await event_log.latest_seq(thread_id)
+
+        async def _gen() -> AsyncIterator[bytes]:
+            import asyncio  # noqa: PLC0415
+            import json  # noqa: PLC0415
+
+            # Initial comment line keeps the connection warm + tells
+            # the browser the stream is open before any real event
+            # arrives (some proxies buffer otherwise).
+            yield b": connected\n\n"
+
+            last_seq = last_event_id
+            poll_interval_s = 0.25
+
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = await event_log.read_since(
+                    thread_id, after_seq=last_seq,
+                )
+                for ev in events:
+                    payload = json.dumps({
+                        "kind": ev.kind,
+                        "seq": ev.seq,
+                        "payload": ev.payload,
+                    })
+                    yield (
+                        f"id: {ev.seq}\ndata: {payload}\n\n".encode()
+                    )
+                    last_seq = ev.seq
+                await asyncio.sleep(poll_interval_s)
+
+        return StreamingResponse(_gen(), media_type="text/event-stream")
+
     @router.post("/threads/{thread_id}/cancel", status_code=200)
     @traced(
         TraceName.STREAMING_POST_MESSAGE,

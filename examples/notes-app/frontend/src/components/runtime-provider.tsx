@@ -352,6 +352,61 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
           w.__backendCancelWrapped = true;
         }, [chat]);
 
+        // Cross-workflow notifications via long-lived SSE on the
+        // thread's event log. A separate, durable agent run (e.g.
+        // ``TodoApprovalFlow.on_decision``) that needs to push a
+        // message into this thread emits a ``message-added`` event
+        // into the event log; this SSE delivers it live to the active
+        // chat — no page reload required. Opens for the active
+        // remoteId; closes on switch / unmount.
+        useEffect(() => {
+          if (!remoteId) return;
+          const url = `${apiUrl}/threads/${remoteId}/events`;
+          const es = new EventSource(url);
+          es.onmessage = (ev) => {
+            try {
+              const data = JSON.parse(ev.data) as {
+                kind?: string;
+                payload?: {
+                  id: string;
+                  role: "user" | "assistant" | "system" | "tool";
+                  parts: Array<Record<string, unknown>>;
+                };
+              };
+              if (data.kind !== "message-added" || !data.payload) return;
+              const newMsg = data.payload;
+              // Append to useChat state — skip if it's already there
+              // (an event-log replay after reconnect would otherwise
+              // duplicate). Uses chat.setMessages with the functional
+              // updater pattern so we don't race with concurrent
+              // useChat-driven updates (streaming etc).
+              const w = chat as unknown as {
+                setMessages: (
+                  updater: (prev: UIMessage[]) => UIMessage[],
+                ) => void;
+              };
+              w.setMessages((prev) => {
+                if (prev.some((m) => m.id === newMsg.id)) return prev;
+                return [...prev, newMsg as unknown as UIMessage];
+              });
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                "[runtime-provider] thread-events parse failed",
+                err,
+              );
+            }
+          };
+          es.onerror = () => {
+            // EventSource auto-reconnects with Last-Event-ID — no
+            // manual handling needed. The error fires on transient
+            // disconnects which the browser recovers from.
+          };
+          return () => {
+            es.close();
+          };
+        }, [remoteId, chat]);
+
         // History adapter MUST be built inside PerThreadRuntime (not in
         // an outer provider): ``useNotesAppThreadHistoryAdapter`` calls
         // ``useAui()`` which is only available once the
