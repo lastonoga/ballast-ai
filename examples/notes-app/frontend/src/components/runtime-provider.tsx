@@ -213,12 +213,13 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   // for why (UI duplicate prevention).
   const justInitialized = useMemo(() => createJustInitializedSink(), []);
 
-  // Stable callback that re-fetches the thread list from the backend.
-  // Populated once the outer ``useRemoteThreadListRuntime`` runtime
-  // exists (see below) — PerThreadRuntime calls it on incoming
-  // ``thread-created`` events to refresh the sidebar live without
-  // page reload.
-  const reloadThreadListRef = useRef<(() => void) | null>(null);
+  // Stable callback that adds a freshly-created side thread to the
+  // sidebar + switches focus to it. Populated once the outer
+  // ``useRemoteThreadListRuntime`` runtime exists (see below).
+  // PerThreadRuntime calls it on incoming ``thread-created`` events
+  // so the helper conversation appears live and becomes the active
+  // thread without a page reload.
+  const showNewThreadRef = useRef<((threadId: string) => void) | null>(null);
 
   // assistant-ui's `useRemoteThreadListRuntime` re-invokes `runtimeHook`
   // for each thread. To pass `apiUrl`/`headers` in without closing over
@@ -399,16 +400,29 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
                 };
               };
               if (data.kind === "thread-created") {
-                // A workflow on this thread spawned a side thread —
-                // refresh the sidebar so the new helper conversation
-                // appears without F5. The runtime's threads.reload
-                // re-fetches via thread-list-adapter.list().
+                // A workflow on this thread spawned a side thread.
+                // Pull just THIS thread into the sidebar via
+                // ``runtime.threads.switchToThread`` — the runtime's
+                // ``getItemById(newId)``-then-``adapter.fetch`` path
+                // appends only the new entry (spread merge over
+                // existing ``threadData``). We deliberately avoid a
+                // full list reload here: ``getLoadThreadsPromise``
+                // re-classifies threads from scratch and overwrites
+                // the existing ``threadIdMap[remoteId] →
+                // __LOCALID_…`` mappings produced by ``initialize()``
+                // earlier in the session, orphaning the locally-keyed
+                // hook instance (the user's currently-active thread
+                // re-mounts empty when they navigate back).
+                const newId = (
+                  data as unknown as { payload?: { thread_id?: string } }
+                ).payload?.thread_id;
                 // eslint-disable-next-line no-console
                 console.debug(
-                  "[thread-events] thread-created → reload",
-                  reloadThreadListRef.current ? "have-fn" : "NO-FN",
+                  "[thread-events] thread-created → switchToThread",
+                  newId,
+                  showNewThreadRef.current ? "have-fn" : "NO-FN",
                 );
-                reloadThreadListRef.current?.();
+                if (newId) showNewThreadRef.current?.(newId);
                 return;
               }
               if (data.kind !== "message-added" || !data.payload) return;
@@ -506,46 +520,40 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     initialThreadId,
   });
 
-  // Publish a non-destructive thread-list refresher to the per-thread
-  // closure. ``runtime.threads.reload()`` is destructive — it does
-  // ``state.update({...baseValue})`` BEFORE refetching, which
-  // momentarily empties ``threadData[currentId]``. That tears down the
-  // active thread's useChat instance via
-  // ``RemoteThreadListHookInstanceManager``, and the user sees the
-  // current chat go blank.
+  // Publish a "show this new thread" callback to the per-thread closure.
   //
-  // Workaround: bypass ``reload()`` and directly clear the cached
-  // ``_loadThreadsPromise`` + bump ``_loadGeneration``, then call
-  // ``getLoadThreadsPromise()``. The MERGED state update in the
-  // resulting promise's "then" reducer keeps existing thread entries
-  // in ``threadData`` (merge, not replace) so the active thread
-  // survives the refresh.
+  // Why ``switchToThread(newId)`` and NOT ``runtime.threads.reload()``
+  // or a manual ``getLoadThreadsPromise()``: assistant-ui's
+  // ``classifyThreads`` rebuilds the ``threadIdMap`` from scratch with
+  // ``threadIdMap[remoteId] = remoteId``. Any thread that the user
+  // created locally in this session (via ``switchToNewThread`` +
+  // ``initialize``) has its mapping stored as
+  // ``threadIdMap[remoteId] = __LOCALID_XXX`` AND a hook instance keyed
+  // by ``__LOCALID_XXX``. A list refresh OVERWRITES the LOCALID
+  // mapping with ``remoteId → remoteId``; the next click in the sidebar
+  // calls ``startThreadRuntime(remoteId)`` and creates a fresh EMPTY
+  // hook instance — the messages-bearing LOCALID instance is orphaned.
+  //
+  // ``switchToThread`` takes the safe path: when ``getItemById(newId)``
+  // returns undefined it calls ``adapter.fetch`` and spread-merges the
+  // single new entry into ``threadData`` without touching existing
+  // mappings.
   useEffect(() => {
-    // ``runtime.threads`` is a ``ThreadListRuntimeImpl`` wrapper.
-    // Its ``_core`` is the ``RemoteThreadListThreadListRuntimeCore``
-    // where ``_loadThreadsPromise`` + ``_loadGeneration`` actually
-    // live. Drill through the wrapper to clear the cache.
-    const core = (runtime as unknown as {
-      threads?: {
-        _core?: {
-          _loadThreadsPromise?: Promise<unknown> | undefined;
-          _loadGeneration?: number;
-          getLoadThreadsPromise?: () => Promise<unknown>;
-        };
-      };
-    }).threads?._core;
-    reloadThreadListRef.current =
-      core && typeof core.getLoadThreadsPromise === "function"
-        ? () => {
+    const threads = (runtime as unknown as {
+      threads?: { switchToThread?: (id: string) => Promise<void> | void };
+    }).threads;
+    showNewThreadRef.current = threads && typeof threads.switchToThread === "function"
+      ? (newId: string) => {
+          // eslint-disable-next-line no-console
+          console.debug("[show-new-thread] switchToThread", newId);
+          void Promise.resolve(threads.switchToThread!(newId)).catch((err) => {
             // eslint-disable-next-line no-console
-            console.debug("[reload-threads] forcing list refetch");
-            core._loadThreadsPromise = undefined;
-            core._loadGeneration = (core._loadGeneration ?? 0) + 1;
-            void core.getLoadThreadsPromise!();
-          }
-        : null;
+            console.warn("[show-new-thread] switchToThread failed", err);
+          });
+        }
+      : null;
     return () => {
-      reloadThreadListRef.current = null;
+      showNewThreadRef.current = null;
     };
   }, [runtime]);
 
