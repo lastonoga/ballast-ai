@@ -312,7 +312,7 @@ async def edit_note(
     return await ctx.deps.repo.update(nid, title=title, body=body)
 
 
-@NotesAgent.tool(persistent=False)
+@NotesAgent.tool
 async def propose_todo(
     ctx: RunContext[NoteToolDeps], title: str, body: str,
 ) -> str:
