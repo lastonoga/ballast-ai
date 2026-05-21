@@ -7,8 +7,7 @@ from typing import TypeVar
 from uuid import UUID, uuid5
 from uuid import uuid4 as _uuid4
 
-from dbos import DBOS
-
+from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
 
 T = TypeVar("T")
@@ -32,17 +31,17 @@ class Det:
     """
 
     @staticmethod
-    @DBOS.step()
+    @Durable.step()
     async def now() -> datetime:
         return datetime.now(tz=UTC)
 
     @staticmethod
-    @DBOS.step()
+    @Durable.step()
     async def uuid4() -> UUID:
         return _uuid4()
 
     @staticmethod
-    @DBOS.step()
+    @Durable.step()
     async def random_choice(seq: Sequence[T]) -> T:
         # Accepts any Sequence (list, tuple, etc.) — broader than list-only.
         # CPython random.choice is thread-safe (module-level Random instance
@@ -50,7 +49,7 @@ class Det:
         return random.choice(seq)
 
     @staticmethod
-    @DBOS.step()
+    @Durable.step()
     async def uuid_for(inputs: IdempotencyInput) -> UUID:
         """Deterministic UUID5 from a strict-typed input.
 
