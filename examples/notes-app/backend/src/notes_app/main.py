@@ -114,6 +114,11 @@ def build_app(
                 environment="dev",
                 instrument_pydantic_ai=True,
                 instrument_httpx=True,
+                # FastAPI route spans pollute traces with one root span
+                # per HTTP request — irrelevant for agent observability.
+                # Agent runs already have their own spans via
+                # ``instrument_pydantic_ai``.
+                instrument_fastapi=False,
             ),
             EventStreamProvider(stream=stream, log=log),
         ],
