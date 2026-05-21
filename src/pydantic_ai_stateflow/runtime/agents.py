@@ -342,24 +342,15 @@ def _takes_run_context(fn: Callable[..., Any]) -> bool:
     return origin is RunContext
 
 
-# ── Registry ─────────────────────────────────────────────────────────────────
-
-_registry: dict[str, StateflowAgent] = {}
-
-
 # ── ``@sf.stateflow_agent`` decorator + class registry ──────────────────
 #
-# The decorator-based registration model. Apps decorate their
-# ``StateflowAgent`` subclasses with ``@sf.stateflow_agent`` — the
-# decorator derives a kebab-case name from the class name (e.g.
-# ``NotesAgent`` → ``notes-agent``) and stores the class in
-# ``_class_registry``. Instances are constructed by the app and passed
-# to ``sf.create_app(agents=[NotesAgent(...)])``; create_app uses
-# ``type(instance).__name__`` to look up the kebab-name set by the
-# decorator and register the instance in ``app.state.agents[name]``.
-#
-# The legacy ``register_agent(instance)`` is kept for the migration
-# window; SP1 T11 deletes it.
+# Apps decorate their ``StateflowAgent`` subclasses with
+# ``@sf.stateflow_agent`` — the decorator derives a kebab-case name
+# from the class name (e.g. ``NotesAgent`` → ``notes-agent``) and
+# stores the class in ``_class_registry``. Instances are constructed
+# by the app and passed to ``sf.create_app(agents=[NotesAgent(...)])``;
+# create_app populates ``app.state.agents[name]`` so the streaming
+# router can resolve per-request.
 
 _class_registry: dict[str, type[StateflowAgent]] = {}
 _AGENT_NAME_ATTR = "_sf_agent_name"
@@ -429,73 +420,11 @@ def clear_agent_class_registry() -> None:
     _class_registry.clear()
 
 
-def register_agent(agent: StateflowAgent) -> None:
-    """Register an agent instance under its ``type(agent).name``.
-
-    Idempotent: re-registering the same name overwrites — useful for
-    tests that swap implementations between cases. Apps register exactly
-    once per agent class at startup.
-    """
-    cls = type(agent)
-    if not hasattr(cls, "name") or not isinstance(cls.name, str) or not cls.name:
-        raise ValueError(
-            f"{cls.__name__}.name must be a non-empty ClassVar[str]",
-        )
-    _registry[cls.name] = agent
-
-
-def get_agent(name: str) -> StateflowAgent:
-    """Return the registered agent instance for ``name``.
-
-    Raises ``KeyError`` with a helpful message listing known names when
-    the lookup fails — most often this means the app forgot to call
-    ``register_agent(...)`` during startup or wrote a typo in
-    ``Thread.agent``.
-    """
-    try:
-        return _registry[name]
-    except KeyError as exc:
-        known = sorted(_registry)
-        raise KeyError(
-            f"No StateflowAgent registered for name {name!r}. "
-            f"Known agents: {known}. "
-            f"Did you call register_agent(...) at app startup?",
-        ) from exc
-
-
-def list_agents() -> list[StateflowAgent]:
-    """Return all registered agents (snapshot, stable iteration order)."""
-    return [_registry[name] for name in sorted(_registry)]
-
-
-def clear_agent_registry() -> None:
-    """Drop every registered agent. Tests use this in fixtures; apps never call it."""
-    _registry.clear()
-
-
 # ── Selector + metadata validation ──────────────────────────────────────────
 
 AgentRef = "type[StateflowAgent] | StateflowAgent | str"
 """What ``validate_thread_metadata`` and friends accept as an agent
 selector. The class itself, an instance, or the registered string name."""
-
-
-def _resolve_agent_name(ref: Any) -> str:
-    """Coerce ``AgentRef`` → registered name string.
-
-    Accepts the string itself, a ``StateflowAgent`` subclass, or an
-    instance of one. Anything else raises ``TypeError``.
-    """
-    if isinstance(ref, str):
-        return ref
-    if isinstance(ref, type) and issubclass(ref, StateflowAgent):
-        return ref.name
-    if isinstance(ref, StateflowAgent):
-        return type(ref).name
-    raise TypeError(
-        f"AgentRef must be str | type[StateflowAgent] | StateflowAgent, "
-        f"got {type(ref).__name__}",
-    )
 
 
 def validate_thread_metadata(
@@ -538,12 +467,8 @@ __all__ = [
     "AgentRef",
     "StateflowAgent",
     "clear_agent_class_registry",
-    "clear_agent_registry",
-    "get_agent",
     "get_agent_class",
     "list_agent_classes",
-    "list_agents",
-    "register_agent",
     "stateflow_agent",
     "validate_thread_metadata",
 ]

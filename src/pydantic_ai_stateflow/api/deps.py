@@ -6,10 +6,6 @@ populated by ``sf.create_app()``. Routes import these and use
 
 Test-time override: standard FastAPI pattern,
 ``app.dependency_overrides[get_thread_repo] = lambda: my_test_repo``.
-
-Legacy helpers (``get_container`` / ``get_engine``) are retained for
-backwards-compat during the migration window; SP1 T11 deletes them
-along with ``Container`` / ``Engine``.
 """
 from __future__ import annotations
 
@@ -24,9 +20,6 @@ if TYPE_CHECKING:
         EventLogRepository,
     )
     from pydantic_ai_stateflow.runtime.event_stream import EventStream
-    # Legacy types — only imported lazily during the migration window.
-    from pydantic_ai_stateflow.runtime import Engine
-    from pydantic_ai_stateflow.runtime.container import Container
 
 
 def _get_state(request: Request, attr: str, friendly: str) -> Any:
@@ -106,45 +99,8 @@ def get_agent_instance(name: str):
     return _resolver
 
 
-# ── Legacy (deleted in SP1 T11) ────────────────────────────────────────
-
-
-def get_container(request: Request) -> "Container":
-    """Resolve the framework Container from ``app.state.container``.
-
-    DEPRECATED — Container is being deleted in SP1 T11. Migrate to
-    ``get_thread_repo`` / ``get_event_log`` / ``get_event_stream``
-    or ``get_workflow_instance(name)``.
-    """
-    container = getattr(request.app.state, "container", None)
-    if container is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Container not attached to app.state — call Engine.fastapi_app()",
-        )
-    from pydantic_ai_stateflow.runtime.container import Container as _C
-    return cast(_C, container)
-
-
-def get_engine(request: Request) -> "Engine":
-    """Resolve the Engine from ``app.state.engine``.
-
-    DEPRECATED — Engine is being deleted in SP1 T11.
-    """
-    engine = getattr(request.app.state, "engine", None)
-    if engine is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Engine not attached to app.state — call Engine.fastapi_app()",
-        )
-    from pydantic_ai_stateflow.runtime import Engine as _E
-    return cast(_E, engine)
-
-
 __all__ = [
     "get_agent_instance",
-    "get_container",
-    "get_engine",
     "get_event_log",
     "get_event_stream",
     "get_thread_repo",

@@ -14,10 +14,7 @@ from pydantic_ai_stateflow.observability.cost import (
     install_cost_fallback_patch,
     register_cost_extractor,
 )
-from pydantic_ai_stateflow.observability.provider import (
-    ObservabilityProvider,
-    has_logfire,
-)
+from pydantic_ai_stateflow.observability.provider import has_logfire
 from pydantic_ai_stateflow.observability.otel_carrier import (
     attach_otel_carrier,
     detach_otel_carrier,
@@ -29,7 +26,6 @@ from pydantic_ai_stateflow.observability.trace_names import TraceName
 
 __all__ = [
     "CostExtractor",
-    "ObservabilityProvider",
     "OpenRouterCostExtractor",
     "OpenRouterUpstreamCostExtractor",
     "ProviderDetailsCostExtractor",

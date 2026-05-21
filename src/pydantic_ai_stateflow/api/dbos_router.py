@@ -127,9 +127,9 @@ class _ForkBody(BaseModel):
     queue_partition_key: str | None = None
 
 
-def build_dbos_router(*, prefix: str = "") -> APIRouter:
-    """Mount the DBOS introspection + control router."""
-    router = APIRouter(prefix=prefix)
+def _build_dbos_router() -> APIRouter:
+    """Build the DBOS introspection + control router."""
+    router = APIRouter()
 
     @router.get("/dbos/threads/{thread_id}/workflows")
     async def list_thread_workflows(
@@ -256,11 +256,11 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
     return router
 
 
-# ── Module-level router (SP1 T3) ─────────────────────────────────────
-# The factory captures no per-app deps (Durable is a static facade), so
-# the module-level router is just a default invocation.
+# ── Module-level router ──────────────────────────────────────────────
+# The router captures no per-app deps (Durable is a static facade), so
+# it's built once at import.
 
-dbos_router = build_dbos_router()
+dbos_router = _build_dbos_router()
 
 
-__all__ = ["build_dbos_router", "dbos_router"]
+__all__ = ["dbos_router"]
