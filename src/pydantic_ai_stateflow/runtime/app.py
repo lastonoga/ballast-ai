@@ -207,6 +207,10 @@ def create_app(
     if observability is not None:
         observability.instrument_app(app)
 
+    # SP2 — install structured error handlers.
+    from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
+    install_error_handlers(app)
+
     return app
 
 
