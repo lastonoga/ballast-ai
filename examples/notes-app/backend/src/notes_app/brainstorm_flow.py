@@ -1,7 +1,7 @@
 """Notes-app brainstorm flow — thin user of the framework.
 
 End-to-end: user clicks "Brainstorm todo" → POST /workflows/brainstorm-todo
-→ ``BrainstormFlow.run(topic, parent_thread_id)`` →
+→ ``BrainstormFlow.run(BrainstormTask(...))`` →
 ``DivergentConvergent`` fans out to N different LLM agents (each with
 its own model, temperature, system prompt), optionally dedups,
 optionally verifies, picks one ``TodoIdea`` → opens
@@ -18,11 +18,9 @@ All the heavy lifting lives in the framework:
 App-specific glue here:
 - ``BrainstormDivergentAgent`` / ``BrainstormSynthesizerAgent``
   (``brainstorm_agents.py``) are real ``StateflowAgent`` subclasses
-  so we reuse the codebase's existing OpenRouter wiring + model
-  settings + capabilities slot.
-- Tiny adapters turn each ``StateflowAgent`` into the framework's
-  ``DivergentAgent`` / ``Synthesizer`` protocols (which are
-  pydantic-ai-agnostic by design).
+  that ALSO implement the framework's structural ``DivergentAgent`` /
+  ``Synthesizer`` protocols directly (``.diverge`` / ``.synthesize``).
+  No separate adapter layer — the agent IS the branch.
 - ``BrainstormFlow`` workflow chains divergent-convergent into
   ``TodoApprovalFlow.open`` for HITL.
 
@@ -47,7 +45,12 @@ from pydantic_ai_stateflow import (
     ThreadEventType,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.runtime import StateflowAgent
+from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
+    BranchCompleted,
+    BranchEnqueued,
+    BranchFailed,
+    DivergentEvent,
+)
 
 from notes_app.brainstorm_agents import (
     BrainstormDivergentAgent,
@@ -59,52 +62,6 @@ from notes_app.todo_approval_agent import (
     TodoApprovalContext,
 )
 from notes_app.todo_flow import TodoApprovalFlow
-
-
-# ── Stateflow ⇄ framework Protocol adapters ──────────────────────────────
-
-@dataclass(frozen=True)
-class _StateflowDivergentAgent:
-    """Adapts a ``StateflowAgent`` to the framework's
-    ``DivergentAgent[str, TodoIdea]`` protocol.
-
-    The framework intentionally doesn't depend on ``StateflowAgent``
-    (let alone pydantic-ai) — it accepts any object with
-    ``async def diverge(task) -> list[Hypothesis]``. This adapter is
-    the seam: it calls into ``stateflow_agent.agent.run(...)`` so
-    we automatically pick up ``model_settings()`` and any capabilities
-    the StateflowAgent layered on top.
-    """
-    stateflow_agent: StateflowAgent
-
-    async def diverge(self, task: str) -> list[TodoIdea]:
-        result = await self.stateflow_agent.agent.run(
-            task, model_settings=self.stateflow_agent.model_settings(),
-        )
-        ideas: TodoIdeas = result.output
-        return ideas.ideas
-
-
-@dataclass(frozen=True)
-class _StateflowSynthesizer:
-    """Adapts a ``StateflowAgent`` to the framework's
-    ``Synthesizer[str, TodoIdea, TodoIdea]`` protocol."""
-    stateflow_agent: StateflowAgent
-
-    async def synthesize(self, *, task: str, candidates: list[TodoIdea]) -> TodoIdea:
-        prompt = _format_synth_prompt(task, candidates)
-        result = await self.stateflow_agent.agent.run(
-            prompt, model_settings=self.stateflow_agent.model_settings(),
-        )
-        chosen: TodoIdea = result.output
-        return chosen
-
-
-def _format_synth_prompt(task: str, candidates: list[TodoIdea]) -> str:
-    lines = [f"Тема: {task}", "", "Кандидаты:"]
-    for i, idea in enumerate(candidates, 1):
-        lines.append(f"{i}. {idea.title} — {idea.body}")
-    return "\n".join(lines)
 
 
 # ── Default agent specs for the notes-app demo ───────────────────────────
@@ -189,7 +146,105 @@ BRAINSTORM_PROGRESS = ThreadEventType("brainstorm-progress", BrainstormProgress)
 suffix (assistant-ui strips the ``data-`` prefix internally)."""
 
 
+class BrainstormBranchProgress(BaseModel):
+    """Per-branch live status during the divergent fan-out.
+
+    One of these mutates per ``(label, sample_idx)`` pair as the
+    branch transitions ``running → ok|failed``. Frontend renders the
+    bundle so the user sees individual proposers tick off in parallel
+    rather than a single opaque "brainstorming" spinner.
+    """
+    label: str
+    sample_idx: int
+    status: Literal["running", "ok", "failed"]
+    pool_size: Optional[int] = None
+    error_type: Optional[str] = None
+
+
+BRAINSTORM_BRANCH = ThreadEventType("brainstorm-branch", BrainstormBranchProgress)
+"""Wire name ``data-brainstorm-branch``. Each (label, sample_idx) pair
+gets a deterministic ``message_id`` so the row reused across the
+``running → ok|failed`` updates instead of stacking up."""
+
+
+def _branch_message_id(parent_thread_id: UUID, label: str, sample_idx: int) -> str:
+    """Deterministic message id per branch — stable across workflow
+    replay (same parent thread + same branch identity → same id), so
+    DBOS retries don't multiply rows in the UI."""
+    return f"brainstorm-branch::{parent_thread_id}::{label}::{sample_idx}"
+
+
+def _make_branch_progress_callback(
+    broadcaster: ThreadEventBroadcaster, parent_thread_id: UUID,
+):
+    """Build an ``on_progress`` callback that maps framework
+    ``DivergentEvent``s to per-branch thread events.
+
+    Only branch-level events fan out as ``BRAINSTORM_BRANCH``; the
+    coarse-grained ``BRAINSTORM_PROGRESS`` stream still narrates
+    diverge/converge/hitl on its own message.
+    """
+    async def on_progress(event: DivergentEvent) -> None:
+        if isinstance(event, BranchEnqueued):
+            await BRAINSTORM_BRANCH.emit(
+                broadcaster, parent_thread_id,
+                BrainstormBranchProgress(
+                    label=event.label, sample_idx=event.sample_idx,
+                    status="running",
+                ),
+                message_id=_branch_message_id(
+                    parent_thread_id, event.label, event.sample_idx,
+                ),
+            )
+        elif isinstance(event, BranchCompleted):
+            await BRAINSTORM_BRANCH.emit(
+                broadcaster, parent_thread_id,
+                BrainstormBranchProgress(
+                    label=event.label, sample_idx=event.sample_idx,
+                    status="ok", pool_size=event.pool_size,
+                ),
+                message_id=_branch_message_id(
+                    parent_thread_id, event.label, event.sample_idx,
+                ),
+            )
+        elif isinstance(event, BranchFailed):
+            await BRAINSTORM_BRANCH.emit(
+                broadcaster, parent_thread_id,
+                BrainstormBranchProgress(
+                    label=event.label, sample_idx=event.sample_idx,
+                    status="failed", error_type=event.error_type,
+                ),
+                message_id=_branch_message_id(
+                    parent_thread_id, event.label, event.sample_idx,
+                ),
+            )
+    return on_progress
+
+
 # ── BrainstormFlow ───────────────────────────────────────────────────────
+
+class BrainstormTask(BaseModel):
+    """Input to ``BrainstormFlow.run`` — one pydantic envelope so the
+    workflow's call signature stays stable as the inputs grow (extra
+    knobs like ``best_of_n_override``, ``locale`` etc. can be added
+    without breaking callers)."""
+    topic: str
+    parent_thread_id: UUID
+
+
+class BrainstormOutcome(BaseModel):
+    """Output of ``BrainstormFlow.run``.
+
+    The flow is fire-and-forget w.r.t. HITL: ``run`` returns AFTER the
+    approval thread is opened but BEFORE the user approves/rejects.
+    ``helper_thread_id`` is what the UI needs to scroll the sidebar
+    to. ``proposed_title`` / ``proposed_body`` are included so
+    observability (and any caller that wants to log what was
+    proposed) doesn't need to peek into the helper thread."""
+    helper_thread_id: UUID
+    proposed_title: str
+    proposed_body: str
+
 
 @Durable.dbos_class()
 class BrainstormFlow(DBOSConfiguredInstance):
@@ -209,7 +264,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
         self,
         *,
         todo_flow: TodoApprovalFlow,
-        divergent: DivergentConvergent[str, TodoIdea, TodoIdea],
+        divergent: DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea],
         broadcaster: ThreadEventBroadcaster,
         config_name: str = "notes-brainstorm-flow",
     ) -> None:
@@ -219,13 +274,19 @@ class BrainstormFlow(DBOSConfiguredInstance):
         self._broadcaster = broadcaster
 
     @Durable.workflow()
-    async def run(self, *, topic: str, parent_thread_id: UUID) -> UUID:
-        """Run the brainstorm + open HITL. Returns helper thread id.
+    async def run(self, task: BrainstormTask) -> BrainstormOutcome:
+        """Run the brainstorm + open HITL. Returns the proposed idea
+        and the helper thread id (fire-and-forget on the actual
+        approval — see ``TodoApprovalFlow.on_decision`` for the
+        approve/reject side effects).
 
-        Emits live ``brainstorm-progress`` events into ``parent_thread_id``
-        through a single stream session: same ``message_id`` across all
-        updates → the UI sees ONE animating row instead of N rows.
+        Emits live ``brainstorm-progress`` events into the parent
+        thread through a single stream session: same ``message_id``
+        across all updates → the UI sees ONE animating row instead
+        of N rows.
         """
+        parent_thread_id = task.parent_thread_id
+        topic = task.topic
         async with BRAINSTORM_PROGRESS.stream(
             self._broadcaster, parent_thread_id,
         ) as progress:
@@ -233,7 +294,12 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 step="diverge", status="running",
                 detail=f'Topic: "{topic}"',
             ))
-            chosen: TodoIdea = await self._divergent.run(topic)
+            branch_callback = _make_branch_progress_callback(
+                self._broadcaster, parent_thread_id,
+            )
+            chosen: TodoIdea = await self._divergent.run(
+                topic, on_progress=branch_callback,
+            )
             await progress.update(BrainstormProgress(
                 step="diverge", status="ok",
             ))
@@ -262,10 +328,28 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 step="hitl", status="ok",
                 detail="Approval thread opened in sidebar →",
             ))
-        return helper_thread.id
+        return BrainstormOutcome(
+            helper_thread_id=helper_thread.id,
+            proposed_title=chosen.title,
+            proposed_body=chosen.body,
+        )
 
 
 # ── Factory — assembles the demo wiring ──────────────────────────────────
+
+def _format_synth_prompt(task: str, candidates: list[TodoIdea]) -> str:
+    """Render the candidate pool into a synthesis prompt.
+
+    Lives in the factory module (not on the agent) — it's part of how
+    THIS app wires the pattern, not part of the synthesizer's own
+    behaviour. The pattern receives it as ``format_synth_prompt`` so
+    the unwrap (envelope → list) and the prompt-rendering both live
+    at the same boundary."""
+    lines = [f"Тема: {task}", "", "Кандидаты:"]
+    for i, idea in enumerate(candidates, 1):
+        lines.append(f"{i}. {idea.title} — {idea.body}")
+    return "\n".join(lines)
+
 
 def build_brainstorm_flow(
     *,
@@ -285,9 +369,11 @@ def build_brainstorm_flow(
     """One-call wiring for the notes-app demo.
 
     Builds one ``BrainstormDivergentAgent`` per spec and one
-    ``BrainstormSynthesizerAgent``, wraps each in an adapter, hands
-    the bundle to ``DivergentConvergent``. Pass ``embedder`` to enable
-    semantic dedup; leave ``None`` to skip dedup entirely.
+    ``BrainstormSynthesizerAgent`` — these implement the framework's
+    ``DivergentAgent`` / ``Synthesizer`` structural protocols directly,
+    so they're handed to ``DivergentConvergent`` without an adapter
+    layer. Pass ``embedder`` to enable semantic dedup; leave ``None``
+    to skip dedup entirely.
 
     Apps doing serious work should construct ``DivergentConvergent``
     + ``SemanticDedup`` themselves (custom verifier, mocks for tests,
@@ -296,23 +382,19 @@ def build_brainstorm_flow(
     branches = tuple(
         DivergentBranch(
             label=spec.label,
-            agent=_StateflowDivergentAgent(
-                stateflow_agent=BrainstormDivergentAgent(
-                    model_name=spec.model,
-                    system_prompt=spec.system_prompt,
-                    temperature=spec.temperature,
-                ),
+            agent=BrainstormDivergentAgent(
+                model_name=spec.model,
+                system_prompt=spec.system_prompt,
+                temperature=spec.temperature,
             ),
         )
         for spec in divergent_specs
     )
 
-    synthesizer = _StateflowSynthesizer(
-        stateflow_agent=BrainstormSynthesizerAgent(
-            model_name=synth_model,
-            system_prompt=CONVERGENT_PROMPT,
-            temperature=synth_temperature,
-        ),
+    synthesizer = BrainstormSynthesizerAgent(
+        model_name=synth_model,
+        system_prompt=CONVERGENT_PROMPT,
+        temperature=synth_temperature,
     )
 
     deduper: SemanticDedup[TodoIdea] | None = None
@@ -323,9 +405,11 @@ def build_brainstorm_flow(
             config=SemanticDedupConfig(threshold=dedup_threshold, keep="longest"),
         )
 
-    divergent = DivergentConvergent[str, TodoIdea, TodoIdea](
+    divergent = DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea](
         branches=branches,
         synthesizer=synthesizer,
+        hypotheses=lambda env: env.ideas,
+        format_synth_prompt=_format_synth_prompt,
         deduper=deduper,
         best_of_n=best_of_n,
         min_hypotheses=min_hypotheses,
@@ -345,6 +429,8 @@ def build_brainstorm_flow(
 __all__ = [
     "BrainstormAgentSpec",
     "BrainstormFlow",
+    "BrainstormOutcome",
+    "BrainstormTask",
     "DEFAULT_DIVERGENT_SPECS",
     "TodoIdea",
     "TodoIdeas",
