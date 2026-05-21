@@ -46,7 +46,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from dbos import DBOS, DBOSConfiguredInstance, SetWorkflowID
+from dbos import DBOS, DBOSConfiguredInstance, SetEnqueueOptions, SetWorkflowID
 from pydantic import BaseModel, TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
@@ -208,7 +208,19 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         context_class_fqn = (
             f"{metadata_model.__module__}.{metadata_model.__qualname__}"
         )
-        with SetWorkflowID(workflow_id):
+        # **Clear inherited queue partition** before spawning the HITL
+        # workflow. ``DBOS.start_workflow_async`` (``_core.py:991``)
+        # inherits ``queue_partition_key`` from the parent workflow's
+        # local context. If the caller (e.g. a tool inside an agent
+        # workflow that's running in a partitioned queue like
+        # ``AGENT_RUN_QUEUE`` with concurrency=1) has a partition_key
+        # set, the HITL workflow inherits it AND ENQUEUED state, but
+        # without a matching queue worker it sits forever (status
+        # ``ENQUEUED``, never ``PENDING``). Force partition_key=None so
+        # the child runs on the default executor regardless of caller.
+        with SetWorkflowID(workflow_id), SetEnqueueOptions(
+            queue_partition_key=None,
+        ):
             await DBOS.start_workflow_async(
                 self.run,
                 context_dict=context.model_dump(mode="json"),
