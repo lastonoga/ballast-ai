@@ -33,7 +33,6 @@ decoration time, and postponed-evaluation annotations have bitten this
 codebase before (see ``project_pydantic_ai_api_quirks.md``).
 """
 
-import os
 import re
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -50,6 +49,7 @@ from pydantic_ai_stateflow.capabilities import (
     RegexDetector,
     StateflowCapability,
 )
+from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.grounded import Ref, Selector
 from pydantic_ai_stateflow.persistence import (
     EventLogRepository,
@@ -63,6 +63,7 @@ from pydantic_ai_stateflow.runtime import (
     InProcessEventStream,
     StateflowDurableAgent,
 )
+from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
@@ -187,13 +188,21 @@ class NotesAgent(StateflowDurableAgent):
         self._api_key = api_key
 
     def build_agent(self) -> Agent[NoteToolDeps, Any]:
-        resolved_model = self._model_name or os.environ.get(
-            "OPENROUTER_MODEL", DEFAULT_MODEL,
+        settings = get_settings()
+        resolved_model = (
+            self._model_name
+            or (settings.llm.openrouter.default_model if settings.llm.openrouter.default_model else None)
+            or DEFAULT_MODEL
         )
-        resolved_key = self._api_key or os.environ.get("OPENROUTER_API_KEY")
+        resolved_key = (
+            self._api_key
+            or (settings.llm.openrouter.api_key.get_secret_value() if settings.llm.openrouter.api_key else None)
+        )
         if not resolved_key:
-            raise RuntimeError(
-                "OPENROUTER_API_KEY env var is required to build NotesAgent",
+            raise MissingDependencyError(
+                "OpenRouter API key required to build NotesAgent",
+                hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
+                context={"setting": "llm.openrouter.api_key"},
             )
 
         model = OpenRouterModel(

@@ -46,13 +46,16 @@ load_dotenv()
 def _dbos_db_url() -> str:
     """Default DBOS system DB path for the notes-app demo (SQLite).
 
-    Honors ``DBOS_DATABASE_URL`` env var when set (e.g. for Postgres).
-    Otherwise uses a per-process SQLite file under the system tempdir so
-    repeated dev restarts don't accumulate state in the project root.
+    Reads from ``settings.dbos.database_url`` (which honors both
+    ``STATEFLOW_DBOS__DATABASE_URL`` and the legacy ``DBOS_DATABASE_URL``
+    env var via the settings alias map). Falls back to a per-process
+    SQLite file under the system tempdir so repeated dev restarts don't
+    accumulate state in the project root.
     """
-    override = os.environ.get("DBOS_DATABASE_URL")
-    if override:
-        return override
+    from pydantic_ai_stateflow.settings import get_settings
+    url = get_settings().dbos.database_url
+    if url:
+        return url
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 

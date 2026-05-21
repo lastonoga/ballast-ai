@@ -41,27 +41,32 @@ No ``from __future__ import annotations``: pydantic-ai introspects
 ``get_type_hints()`` at decoration time.
 """
 
-import os
 from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
+from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.brainstorm_types import TodoIdea, TodoIdeas
 from notes_app.openrouter_profile import profile_for
 
 
 def _resolve_api_key(explicit: str | None) -> str:
-    api_key = explicit or os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY env var is required to build brainstorm agents",
-        )
-    return api_key
+    if explicit:
+        return explicit
+    settings = get_settings()
+    if settings.llm.openrouter.api_key:
+        return settings.llm.openrouter.api_key.get_secret_value()
+    raise MissingDependencyError(
+        "OpenRouter API key required to build brainstorm agents",
+        hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
+        context={"setting": "llm.openrouter.api_key"},
+    )
 
 
 class BrainstormDivergentAgent(StateflowAgent):

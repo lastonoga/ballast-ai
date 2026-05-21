@@ -22,7 +22,6 @@ Note on annotations: like ``agent.py`` we do NOT use
 can resolve concrete types via ``get_type_hints()`` at module load.
 """
 
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +36,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.patterns.hitl import (
     ApprovedResponse,
     ModifiedResponse,
@@ -45,6 +45,7 @@ from pydantic_ai_stateflow.patterns.hitl import (
 from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
+from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.notes.repository import NoteRepository
 
@@ -144,14 +145,21 @@ class NotesTodoApprovalAgent(StateflowAgent):
         self._api_key = api_key
 
     def build_agent(self) -> Agent[TodoApprovalDeps, Any]:
-        resolved_model = self._model_name or os.environ.get(
-            "OPENROUTER_MODEL", DEFAULT_MODEL,
+        settings = get_settings()
+        resolved_model = (
+            self._model_name
+            or (settings.llm.openrouter.default_model if settings.llm.openrouter.default_model else None)
+            or DEFAULT_MODEL
         )
-        resolved_key = self._api_key or os.environ.get("OPENROUTER_API_KEY")
+        resolved_key = (
+            self._api_key
+            or (settings.llm.openrouter.api_key.get_secret_value() if settings.llm.openrouter.api_key else None)
+        )
         if not resolved_key:
-            raise RuntimeError(
-                "OPENROUTER_API_KEY env var is required to build "
-                "NotesTodoApprovalAgent",
+            raise MissingDependencyError(
+                "OpenRouter API key required to build NotesTodoApprovalAgent",
+                hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
+                context={"setting": "llm.openrouter.api_key"},
             )
 
         model = OpenRouterModel(
