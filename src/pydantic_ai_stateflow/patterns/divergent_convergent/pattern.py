@@ -6,6 +6,10 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from dbos import DBOS, DBOSConfiguredInstance, Queue
 
+from pydantic_ai_stateflow.observability.otel_carrier import (
+    inject_otel_carrier,
+    otel_context_from,
+)
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.divergent_convergent.primitives import (
@@ -176,12 +180,23 @@ class DivergentConvergent(
         "best_of_n": self._best_of_n,
     })
     async def run(self, task: InT) -> OutT:
+        # OTel context propagation across the DBOS queue boundary:
+        # ``Queue.enqueue_async`` hands the worker function off to a
+        # different asyncio fiber, so the OTel ``ContextVar`` doesn't
+        # carry through. We capture the current trace context into a
+        # plain ``traceparent`` dict and pass it as the first arg —
+        # the worker re-attaches it before doing anything that emits
+        # spans (chat calls, nested ``@traced`` blocks, etc). Without
+        # this, every divergent sample becomes its own root trace in
+        # Logfire instead of nesting under ``pattern.divergent_convergent``.
+        carrier = inject_otel_carrier()
+
         # 1. Divergent fan-out.
         handles: list[tuple[str, int, Any]] = []
         for label in self._branches:
             for sample_idx in range(self._best_of_n):
                 handle = await self._divergent_queue.enqueue_async(
-                    self._diverge_one, label, sample_idx, task,
+                    self._diverge_one, carrier, label, sample_idx, task,
                 )
                 handles.append((label, sample_idx, handle))
 
@@ -231,7 +246,11 @@ class DivergentConvergent(
 
     @DBOS.step()
     async def _diverge_one(
-        self, label: str, sample_idx: int, task: InT,
+        self,
+        carrier: dict[str, str] | None,
+        label: str,
+        sample_idx: int,
+        task: InT,
     ) -> list[HypothesisT]:
         # ``sample_idx`` is unused in the body — it's there so each
         # best-of-N sample becomes a DISTINCT step invocation (DBOS
@@ -239,8 +258,13 @@ class DivergentConvergent(
         # of the same branch would share the cached first result on
         # workflow replay).
         del sample_idx
-        branch = self._branches[label]
-        return await branch.agent.diverge(task)
+        # Re-attach the caller's OTel trace context so any spans this
+        # step emits (chat calls, ``@traced`` blocks) nest under the
+        # workflow that enqueued us. See ``inject_otel_carrier``
+        # docstring for the why.
+        with otel_context_from(carrier):
+            branch = self._branches[label]
+            return await branch.agent.diverge(task)
 
     @DBOS.step()
     async def _score_one(self, task: InT, hypothesis: HypothesisT) -> float:
