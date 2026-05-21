@@ -28,11 +28,9 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
     ThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import (
-    DefaultContainer,
     EventStream,
     InProcessEventStream,
     ThreadEventBroadcaster,
-    register_agent,
 )
 
 from notes_app.agent import NotesAgent
@@ -110,12 +108,6 @@ def build_app(
         todo_flow=flow, broadcaster=broadcaster,
     )
 
-    # Streaming router still resolves agents via the process-global
-    # ``get_agent(...)`` registry — keep registering until that path
-    # migrates to ``app.state.agents`` lookups.
-    register_agent(agent)
-    register_agent(approval_agent)
-
     dbos_config = (
         DBOSConfig(name="notes-app", system_database_url=_dbos_db_url())
         if manage_dbos_lifecycle
@@ -123,15 +115,6 @@ def build_app(
     )
 
     notes_router = build_notes_router(repo)
-
-    # Back-compat hook: legacy ``test_note_repository_is_bound_in_container``
-    # introspects ``app.state.container``. SP1 T10/T11 deletes both the
-    # container and that test. Until then, mint a container on startup and
-    # bind ``NoteRepository`` onto it.
-    async def _bind_legacy_container(app: FastAPI) -> None:
-        container = DefaultContainer()
-        container.bind(NoteRepository, notes)
-        app.state.container = container
 
     app = sf.create_app(
         workflows=[bstorm],
@@ -154,7 +137,6 @@ def build_app(
             instrument_fastapi=False,
         ),
         extra_routers=[notes_router],
-        on_startup=[_bind_legacy_container],
     )
 
     # Tests introspect these via ``app.state``.

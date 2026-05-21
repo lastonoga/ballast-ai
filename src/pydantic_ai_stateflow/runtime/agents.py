@@ -509,13 +509,26 @@ def validate_thread_metadata(
     - Otherwise: ``model_validate(raw)`` → ``model_dump(mode="json")``
       so the persisted shape is canonical JSON.
 
-    Raises ``KeyError`` if no agent is registered for ``ref``, or
-    ``ValidationError`` (from pydantic) if the metadata is invalid.
+    ``ref`` may be the registered name (string), an agent class, or an
+    instance. Class-based refs resolve directly; string refs go through
+    the ``@sf.stateflow_agent`` class registry.
+
+    Raises ``KeyError`` if no agent class is registered for ``ref``,
+    or ``ValidationError`` (from pydantic) if the metadata is invalid.
     """
     payload: dict[str, Any] = dict(raw or {})
-    name = _resolve_agent_name(ref)
-    instance = get_agent(name)
-    model = type(instance).metadata_model
+    if isinstance(ref, type) and issubclass(ref, StateflowAgent):
+        cls = ref
+    elif isinstance(ref, StateflowAgent):
+        cls = type(ref)
+    elif isinstance(ref, str):
+        cls = get_agent_class(ref)
+    else:
+        raise TypeError(
+            f"AgentRef must be str | type[StateflowAgent] | StateflowAgent, "
+            f"got {type(ref).__name__}",
+        )
+    model = cls.metadata_model
     if model is None:
         return payload
     return model.model_validate(payload).model_dump(mode="json")

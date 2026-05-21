@@ -148,9 +148,9 @@ def _parse_sse_types(body: str) -> list[str]:
     return types
 
 
-def test_note_repository_is_bound_in_container() -> None:
-    from notes_app.notes.repository import NoteRepository
-
+def test_note_repository_attached_to_app_state() -> None:
+    """``build_app`` must publish ``notes_repo`` on ``app.state`` so
+    custom routers (and tests) can pick it up without a DI container."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = _unique_flow(notes_repo, thread_repo)
@@ -162,8 +162,7 @@ def test_note_repository_is_bound_in_container() -> None:
         brainstorm_flow=_unique_brainstorm(flow, thread_repo),
     )
     with TestClient(app):
-        assert app.state.container.has(NoteRepository)
-        assert app.state.container.get(NoteRepository) is notes_repo
+        assert app.state.notes_repo is notes_repo
 
 
 def test_threads_crud_and_streaming_fake() -> None:
