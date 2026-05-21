@@ -20,11 +20,9 @@ from pydantic_ai_stateflow.persistence import (
 from pydantic_ai_stateflow.runtime import (
     EventNotification,
     EventStream,
-    EventStreamProvider,
     InProcessEventStream,
     thread_channel,
 )
-from pydantic_ai_stateflow.runtime.container import DefaultContainer
 
 
 @pytest.mark.asyncio
@@ -149,36 +147,3 @@ async def test_event_log_isolates_threads() -> None:
     assert [e.seq for e in events_b] == [1]
 
 
-@pytest.mark.asyncio
-async def test_provider_binds_stream_and_log() -> None:
-    """``EventStreamProvider`` binds both interfaces onto the container."""
-    provider = EventStreamProvider()
-    container = DefaultContainer()
-    await provider.register(container)
-
-    assert container.has(EventStream)
-    assert container.has(EventLogRepository)
-    assert isinstance(container.get(EventStream), InProcessEventStream)
-    assert isinstance(
-        container.get(EventLogRepository), InMemoryEventLogRepository,
-    )
-
-
-@pytest.mark.asyncio
-async def test_provider_accepts_custom_impls() -> None:
-    """Apps inject their own transport / log via constructor args."""
-
-    class _FakeStream:
-        async def publish(self, channel: str, n: EventNotification) -> None: ...
-        def subscribe(self, channel: str):  # type: ignore[no-untyped-def]
-            raise NotImplementedError
-
-    fake_stream = _FakeStream()
-    log = InMemoryEventLogRepository()
-    provider = EventStreamProvider(stream=fake_stream, log=log)  # type: ignore[arg-type]
-
-    container = DefaultContainer()
-    await provider.register(container)
-
-    assert container.get(EventStream) is fake_stream
-    assert container.get(EventLogRepository) is log

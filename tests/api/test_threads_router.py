@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.threads import build_threads_router
+from pydantic_ai_stateflow.api.threads import threads_router
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
@@ -15,7 +15,8 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 
 def _app(repo: InMemoryThreadRepository) -> FastAPI:
     app = FastAPI()
-    app.include_router(build_threads_router(thread_repo=repo))
+    app.state.thread_repo = repo
+    app.include_router(threads_router)
     return app
 
 
@@ -64,7 +65,8 @@ async def test_router_respects_prefix():
     repo = InMemoryThreadRepository()
     th = await repo.create(agent="conversation", metadata={})
     app = FastAPI()
-    app.include_router(build_threads_router(thread_repo=repo, prefix="/api"))
+    app.state.thread_repo = repo
+    app.include_router(threads_router, prefix="/api")
     with TestClient(app) as c:
         r = c.get(f"/api/threads/{th.id}")
     assert r.status_code == 200

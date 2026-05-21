@@ -18,14 +18,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.test import TestModel
 
 from pydantic_ai_stateflow.grounded import Ref, Selector
-from pydantic_ai_stateflow.runtime import StateflowAgent, clear_agent_registry
-
-
-@pytest.fixture(autouse=True)
-def _isolated_registry() -> Any:
-    clear_agent_registry()
-    yield
-    clear_agent_registry()
+from pydantic_ai_stateflow.runtime import StateflowAgent
 
 
 # ── Toolly: mixed ctx and plain tools ────────────────────────────────────────
