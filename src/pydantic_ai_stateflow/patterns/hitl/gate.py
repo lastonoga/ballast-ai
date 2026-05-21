@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
 from dbos import DBOS, DBOSConfiguredInstance
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.observability.spans import traced
@@ -36,7 +38,7 @@ _KIND_TO_VERDICT = {
 _instance_counter = itertools.count()
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class HITLGate(DBOSConfiguredInstance):
     """HITL pause + authz (defense-in-depth on receive).
 
@@ -72,7 +74,7 @@ class HITLGate(DBOSConfiguredInstance):
         # doesn't need thread persistence at the gate level.
         self.thread_repo = thread_repo
 
-    @DBOS.workflow()
+    @Durable.workflow()
     @traced(TraceName.PATTERN_HITL_GATE, attrs=lambda self, prompt, *, request_id=None: {
         "pattern": self.name,
         "request_id": str(request_id) if request_id is not None else "<auto>",

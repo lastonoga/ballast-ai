@@ -200,6 +200,7 @@ from pydantic_ai_stateflow.patterns.mutation import (
     RejectPolicy,
     Stage,
 )
+from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai_stateflow.providers import CoreProvider, PersistenceProvider
 from pydantic_ai_stateflow.runtime import (
     AgentRef,
@@ -246,6 +247,7 @@ __all__ = [
     "DenyAll",
     "DepsFactory",
     "Det",
+    "Durable",
     "DivergentAgent",
     "DivergentBranch",
     "DivergentConvergent",

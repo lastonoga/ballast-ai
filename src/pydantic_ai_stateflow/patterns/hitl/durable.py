@@ -47,13 +47,9 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from dbos import DBOS, DBOSConfiguredInstance, SetEnqueueOptions, SetWorkflowID
-
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_start_workflow,
-    traced_workflow_step,
-)
 from pydantic import BaseModel, TypeAdapter
 
+from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
@@ -90,7 +86,7 @@ _instance_counter = itertools.count()
 _NO_TIMEOUT_SECONDS: float = 365 * 24 * 60 * 60.0
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class DurableHITLWorkflow(DBOSConfiguredInstance):
     """Abstract base for fire-and-forget durable HITL flows.
 
@@ -252,7 +248,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=None,
         ):
-            await traced_start_workflow(
+            await Durable.start_workflow(
                 self.run,
                 context_dict=context.model_dump(mode="json"),
                 request_id=str(request_id),
@@ -292,8 +288,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
 
         return thread
 
-    @DBOS.workflow()
-    @traced_workflow_step
+    @Durable.workflow()
     async def run(
         self,
         *,

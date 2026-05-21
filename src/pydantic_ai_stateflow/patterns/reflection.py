@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Generic, TypeVar
 
 from dbos import DBOS, DBOSConfiguredInstance
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.capabilities.helpers import (
@@ -40,7 +42,7 @@ async def _ensure_async(fn: Callable[..., Any], *args: Any) -> Any:
 _instance_counter = itertools.count()
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
     """Writer -> Critic -> optional loop-guard -> repeat (bounded).
 
@@ -81,7 +83,7 @@ class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
         self.loop_recovery: LoopRecoveryPolicy[OutT] = loop_recovery or AbortOnLoop()
         self.feedback_renderer = feedback_renderer
 
-    @DBOS.workflow()
+    @Durable.workflow()
     @traced(TraceName.PATTERN_REFLECTION, attrs=lambda self, task: {
         "pattern": self.name,
     })
@@ -105,12 +107,12 @@ class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
             iterations=self.max_iterations, last_feedback=feedback
         )
 
-    @DBOS.step()
+    @Durable.step()
     async def _write(self, rendered: InT) -> OutT:
         result: OutT = await _ensure_async(self.writer, rendered)
         return result
 
-    @DBOS.step()
+    @Durable.step()
     async def _critique(self, draft: OutT) -> Critique:
         payload = draft.model_dump() if isinstance(draft, BaseModel) else draft
         verdict = await _ensure_async(self.critic, payload)

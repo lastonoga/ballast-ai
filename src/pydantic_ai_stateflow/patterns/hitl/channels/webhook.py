@@ -9,6 +9,8 @@ from uuid import UUID
 
 import httpx
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import BaseModel, ConfigDict, HttpUrl, TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
@@ -43,7 +45,7 @@ def sign_payload(payload: bytes, *, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload, sha256).hexdigest()
 
 
-@DBOS.step()
+@Durable.step()
 async def post_webhook(*, url: str, body: bytes, signature: str) -> None:
     """POST ``body`` to ``url`` with the signature header.
 

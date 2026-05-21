@@ -53,10 +53,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_enqueue,
-    traced_workflow_step,
-)
 from dbos import (
     DBOS,
     DBOSConfiguredInstance,
@@ -64,6 +60,8 @@ from dbos import (
     SetEnqueueOptions,
     SetWorkflowID,
 )
+
+from pydantic_ai_stateflow.durable import Durable
 
 from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
@@ -137,7 +135,7 @@ _current_thread_id: ContextVar[UUID | None] = ContextVar(
 )
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
     """``StateflowAgent`` whose agent loop runs as a DBOS workflow.
 
@@ -241,7 +239,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 thread_id=thread_id, event=event,
             )
 
-    @DBOS.step()
+    @Durable.step()
     async def _translate_event_step(
         self,
         *,
@@ -404,7 +402,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
         ):
-            return await traced_enqueue(
+            return await Durable.enqueue(
                 AGENT_RUN_QUEUE,
                 self._run_with_tracking,
                 thread_id_str=str(thread_id),
@@ -433,7 +431,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
         ):
-            return await traced_enqueue(
+            return await Durable.enqueue(
                 AGENT_RUN_QUEUE,
                 self._run_with_tracking,
                 thread_id_str=str(thread_id),
@@ -470,8 +468,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         )
         return cancelled
 
-    @DBOS.workflow()
-    @traced_workflow_step
+    @Durable.workflow()
     async def _run_with_tracking(
         self,
         *,
@@ -595,7 +592,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             thread_id=thread_id, kind="done", payload={},
         )
 
-    @DBOS.step()
+    @Durable.step()
     async def _persist_assistant_turn(
         self,
         *,

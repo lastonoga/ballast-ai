@@ -6,12 +6,11 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_workflow_step,
-)
 from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
@@ -55,7 +54,7 @@ class HelperSessionRunner(Protocol):
     async def run(self, input: HelperSessionInput) -> None: ...
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class DefaultHelperSessionRunner(DBOSConfiguredInstance):
     """Default helper-session driver — bounded loop on inbound messages."""
 
@@ -80,8 +79,7 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
         # production resolves the base agent via FQN from the workflow input.
         self._base_agent_for_test: Agent[HelperDeps, str] | None = None
 
-    @DBOS.workflow()
-    @traced_workflow_step
+    @Durable.workflow()
     async def run(self, input: HelperSessionInput) -> None:
         prompt = HITLPrompt.model_validate(input.prompt_payload)
         context_type = (

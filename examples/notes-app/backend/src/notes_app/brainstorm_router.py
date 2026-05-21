@@ -14,9 +14,7 @@ from uuid import UUID
 from dbos import SetWorkflowID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_start_workflow,
-)
+from pydantic_ai_stateflow import Durable
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 from notes_app.brainstorm_flow import BrainstormFlow
@@ -63,7 +61,7 @@ def build_brainstorm_router(
         # concurrently, identical retries collapse to the same workflow.
         workflow_id = f"brainstorm:{req.thread_id}:{abs(hash(topic))}"
         with SetWorkflowID(workflow_id):
-            handle = await traced_start_workflow(
+            handle = await Durable.start_workflow(
                 flow.run, topic=topic, parent_thread_id=req.thread_id,
             )
 

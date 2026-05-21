@@ -34,17 +34,15 @@ No ``from __future__ import annotations``: pydantic-ai introspects
 from dataclasses import dataclass
 from uuid import UUID
 
-from dbos import DBOS, DBOSConfiguredInstance
+from dbos import DBOSConfiguredInstance
 from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
+    Durable,
     SemanticDedup,
     SemanticDedupConfig,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_workflow_step,
-)
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
 from notes_app.brainstorm_agents import (
@@ -161,7 +159,7 @@ DEFAULT_SYNTH_TEMPERATURE = 0.2
 
 # ── BrainstormFlow ───────────────────────────────────────────────────────
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class BrainstormFlow(DBOSConfiguredInstance):
     """Glue between ``DivergentConvergent`` and ``TodoApprovalFlow``.
 
@@ -186,8 +184,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
         self._todo_flow = todo_flow
         self._divergent = divergent
 
-    @DBOS.workflow()
-    @traced_workflow_step
+    @Durable.workflow()
     async def run(self, *, topic: str, parent_thread_id: UUID) -> UUID:
         """Run the brainstorm + open HITL. Returns helper thread id."""
         chosen: TodoIdea = await self._divergent.run(topic)

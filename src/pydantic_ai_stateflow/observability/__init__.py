@@ -26,11 +26,6 @@ from pydantic_ai_stateflow.observability.otel_carrier import (
 )
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_enqueue,
-    traced_start_workflow,
-    traced_workflow_step,
-)
 
 __all__ = [
     "CostExtractor",
@@ -48,9 +43,6 @@ __all__ = [
     "otel_context_from",
     "register_cost_extractor",
     "traced",
-    "traced_enqueue",
-    "traced_start_workflow",
-    "traced_workflow_step",
 ]
 
 

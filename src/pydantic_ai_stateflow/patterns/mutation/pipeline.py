@@ -7,6 +7,8 @@ from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
 
+from pydantic_ai_stateflow.durable import Durable
+
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.mutation.primitives import (
@@ -30,7 +32,7 @@ T = TypeVar("T")
 _instance_counter = itertools.count()
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
     """Stages sequentially → first reject halts → apply in one UoW transaction.
 
@@ -76,7 +78,7 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
             },
         ))
 
-    @DBOS.workflow()
+    @Durable.workflow()
     @traced(TraceName.PATTERN_MUTATION_PIPELINE, attrs=lambda self, proposal: {
         "pattern": self.name,
     })
@@ -100,7 +102,7 @@ class MutationPipeline(DBOSConfiguredInstance, Generic[T]):
                 current = result.proposal
         return await self._apply_and_emit(current)
 
-    @DBOS.step()
+    @Durable.step()
     async def _apply_and_emit(
         self, proposal: Proposal[T],
     ) -> AcceptedResult[T]:

@@ -8,6 +8,8 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from dbos import DBOS, DBOSConfiguredInstance
 
+from pydantic_ai_stateflow.durable import Durable
+
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.mapreduce.primitives import Chunker, Reducer
@@ -29,7 +31,7 @@ async def _ensure_async(fn: Callable[..., Any], *args: Any) -> Any:
 _instance_counter = itertools.count()
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class MapReduce(DBOSConfiguredInstance, Generic[Doc, Chunk, Item]):
     """Chunk -> parallel-extract -> reduce, bounded by ``concurrency``.
 
@@ -60,7 +62,7 @@ class MapReduce(DBOSConfiguredInstance, Generic[Doc, Chunk, Item]):
         self.reducer = reducer
         self.concurrency = concurrency
 
-    @DBOS.workflow()
+    @Durable.workflow()
     @traced(TraceName.PATTERN_MAP_REDUCE, attrs=lambda self, doc: {
         "pattern": self.name,
     })
@@ -78,14 +80,14 @@ class MapReduce(DBOSConfiguredInstance, Generic[Doc, Chunk, Item]):
         non_null = [r for r in results if r is not None]
         return await self._reduce(non_null)
 
-    @DBOS.step()
+    @Durable.step()
     async def _chunk(self, doc: Doc) -> list[Chunk]:
         return self.chunker.chunk(doc)
 
-    @DBOS.step()
+    @Durable.step()
     async def _extract_one(self, chunk: Chunk) -> Item | None:
         return await _ensure_async(self.extractor, chunk)  # type: ignore[no-any-return]
 
-    @DBOS.step()
+    @Durable.step()
     async def _reduce(self, items: list[Item]) -> list[Item]:
         return await self.reducer.reduce(items)

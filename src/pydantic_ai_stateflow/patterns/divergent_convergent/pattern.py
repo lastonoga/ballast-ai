@@ -4,14 +4,11 @@ import itertools
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Literal, TypeVar
 
-from dbos import DBOS, DBOSConfiguredInstance, Queue
+from dbos import DBOSConfiguredInstance, Queue
 
+from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
-from pydantic_ai_stateflow.observability.workflow_tracing import (
-    traced_enqueue,
-    traced_workflow_step,
-)
 from pydantic_ai_stateflow.patterns.divergent_convergent.primitives import (
     DivergentBranch,
     Synthesizer,
@@ -40,7 +37,7 @@ class _ScoredHypothesis(Generic[HypothesisT]):
 _instance_counter = itertools.count()
 
 
-@DBOS.dbos_class()
+@Durable.dbos_class()
 class DivergentConvergent(
     DBOSConfiguredInstance, Generic[InT, HypothesisT, OutT],
 ):
@@ -173,14 +170,14 @@ class DivergentConvergent(
 
     # ── public entrypoint ────────────────────────────────────────────────
 
-    @DBOS.workflow()
+    @Durable.workflow()
     @traced(TraceName.PATTERN_DIVERGENT_CONVERGENT, attrs=lambda self, task: {
         "pattern": self.name,
         "branch_count": len(self._branches),
         "best_of_n": self._best_of_n,
     })
     async def run(self, task: InT) -> OutT:
-        # 1. Divergent fan-out via ``traced_enqueue`` — auto-injects
+        # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
         #    enqueued worker (``_diverge_one`` + pydantic-ai chat
         #    spans) nests under THIS workflow in Logfire instead of
@@ -188,7 +185,7 @@ class DivergentConvergent(
         handles: list[tuple[str, int, Any]] = []
         for label in self._branches:
             for sample_idx in range(self._best_of_n):
-                handle = await traced_enqueue(
+                handle = await Durable.enqueue(
                     self._divergent_queue,
                     self._diverge_one, label, sample_idx, task,
                 )
@@ -238,8 +235,7 @@ class DivergentConvergent(
 
     # ── steps ────────────────────────────────────────────────────────────
 
-    @DBOS.step()
-    @traced_workflow_step
+    @Durable.step()
     async def _diverge_one(
         self, label: str, sample_idx: int, task: InT,
     ) -> list[HypothesisT]:
@@ -249,19 +245,19 @@ class DivergentConvergent(
         # of the same branch would share the cached first result on
         # workflow replay).
         #
-        # OTel context propagation is handled by ``@traced_workflow_step``
-        # — the carrier travels in a magic kwarg from ``traced_enqueue``
+        # OTel context propagation is handled by ``@Durable.step`` —
+        # the carrier travels in a magic kwarg from ``Durable.enqueue``
         # and is attached to this fiber before the body runs.
         del sample_idx
         branch = self._branches[label]
         return await branch.agent.diverge(task)
 
-    @DBOS.step()
+    @Durable.step()
     async def _score_one(self, task: InT, hypothesis: HypothesisT) -> float:
         assert self._verifier is not None  # checked at run() level
         return await self._verifier.score(task=task, hypothesis=hypothesis)
 
-    @DBOS.step()
+    @Durable.step()
     async def _converge(
         self, task: InT, candidates: list[HypothesisT],
     ) -> OutT:
