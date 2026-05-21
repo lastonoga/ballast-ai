@@ -133,13 +133,22 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     ) -> None:
         """App-specific post-decision logic.
 
-        Runs inside the durable workflow with a fully-rehydrated typed
-        ``context`` (the ``helper_agent.metadata_model`` instance the
-        caller passed to ``open``) and the validated ``response``.
-        Implementations should persist whatever they need, notify
-        whoever needs it, and return — any exception aborts the
-        workflow (and triggers DBOS's retry/dead-letter behaviour
-        according to the configured policy).
+        Runs with a fully-rehydrated typed ``context`` (the
+        ``helper_agent.metadata_model`` instance the caller passed to
+        ``open``) and the validated ``response``. Implementations
+        should persist whatever they need, notify whoever needs it,
+        and return — any exception aborts the workflow (and triggers
+        DBOS's retry/dead-letter behaviour according to the configured
+        policy).
+
+        **Durability semantics**: the framework invokes ``on_decision``
+        from inside a ``@Durable.step``, so its return value (``None``)
+        is memoised on first invocation. On workflow replay (recovery
+        after a crash) the step is skipped and the body does NOT
+        re-execute — side effects ARE durable / exactly-once provided
+        the body's effects are themselves atomic at the I/O layer
+        (database INSERTs, etc). Implementations therefore do NOT need
+        manual idempotency guards.
         """
         raise NotImplementedError
 
@@ -156,13 +165,12 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         timeout: timedelta | None = None,
         notify_parent_thread_id: UUID | None = None,
     ) -> Thread:
-        """Spawn the helper thread + start the durable workflow.
+        """Spawn the helper thread + start the durable decision workflow.
 
         Returns the new helper ``Thread``. The caller MAY embed its id
         in their own response (e.g. so a UI can deep-link to the side
-        thread); they MUST NOT await the decision — that happens inside
-        the workflow which this method has already detached from the
-        caller's lifetime.
+        thread); they MUST NOT await the decision — that happens
+        inside the durable workflow this method spawns.
 
         ``context`` must be an instance of
         ``helper_agent.metadata_model``. ``opening_message`` (optional)
@@ -178,6 +186,22 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         ``thread-created`` event into that parent thread's event log
         so a frontend listening on ``GET /threads/{parent}/events``
         can refresh its thread list immediately (no F5).
+
+        ----------------------------------------------------------------
+        **Atomicity / crash recovery**:
+        ``open`` is a thin validating shim that immediately delegates
+        to ``_open_workflow`` — a ``@Durable.workflow`` whose body
+        does **all** the side effects (thread.create, opening message,
+        start of the decision workflow, thread-created event). DBOS
+        records ``_open_workflow`` in its workflow log, so a crash
+        between ``thread_repo.create`` and ``Durable.start_workflow``
+        is recovered: on restart DBOS replays the same workflow and
+        the step-level memoisation skips already-completed effects.
+
+        We allocate uuids HERE (in the caller fiber) and pass them
+        IN as workflow inputs — generating uuids inside the durable
+        body would be non-deterministic across replays.
+        ----------------------------------------------------------------
         """
         metadata_model = helper_agent.metadata_model
         if metadata_model is None:
@@ -193,100 +217,167 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
                 f"({metadata_model.__name__}), got {type(context).__name__}",
             )
 
+        # Pre-allocate routing ids in the CALLER fiber so the workflow
+        # body uses stable values across replay (uuid4 inside the
+        # workflow body would diverge on every replay).
         request_id = uuid4()
-        workflow_id = str(uuid4())
+        decision_workflow_id = str(uuid4())
 
-        # Helper thread metadata is the union of (user-facing context
-        # fields) + (framework routing keys). The helper agent's tools
-        # read all three from raw ``thread.metadata_``; its
-        # ``metadata_model`` validation ignores the extras (pydantic
-        # default ``extra="ignore"``).
-        thread_metadata: dict[str, Any] = context.model_dump(mode="json")
-        thread_metadata["request_id"] = str(request_id)
-        thread_metadata["workflow_id"] = workflow_id
-
-        thread = await self.thread_repo.create(
-            agent=helper_agent.name,
-            metadata=thread_metadata,
+        # FQN of the ``metadata_model`` class so the durable workflow
+        # can rehydrate ``context`` to a typed object on the recovery
+        # side WITHOUT depending on ``StateflowAgent`` registry state.
+        context_class_fqn = (
+            f"{metadata_model.__module__}.{metadata_model.__qualname__}"
         )
-        if opening_message:
-            await self.thread_repo.add_message(
-                thread.id,
-                role="assistant",
-                parts=[{
-                    "type": "text",
-                    "text": opening_message,
-                    "state": "done",
-                }],
-            )
 
-        # Pre-allocate the workflow id via ``SetWorkflowID`` so it
-        # matches what we wrote into thread metadata BEFORE starting —
-        # the helper's tools read that field to address ``DBOS.send``.
         timeout_seconds = (
             timeout.total_seconds() if timeout is not None
             else _NO_TIMEOUT_SECONDS
         )
-        # FQN of the ``metadata_model`` class so the workflow can
-        # rehydrate ``context`` to a typed object on the other side
-        # WITHOUT depending on ``StateflowAgent`` registry state (which
-        # may not be populated in tests or worker processes that don't
-        # register agents at boot).
-        context_class_fqn = (
-            f"{metadata_model.__module__}.{metadata_model.__qualname__}"
+
+        return await self._open_workflow(
+            helper_agent_name=helper_agent.name,
+            context_dict=context.model_dump(mode="json"),
+            context_class_fqn=context_class_fqn,
+            opening_message=opening_message,
+            request_id=str(request_id),
+            decision_workflow_id=decision_workflow_id,
+            timeout_seconds=timeout_seconds,
+            notify_parent_thread_id=(
+                str(notify_parent_thread_id)
+                if notify_parent_thread_id is not None else None
+            ),
         )
-        # **Clear inherited queue partition** before spawning the HITL
-        # workflow. ``DBOS.start_workflow_async`` (``_core.py:991``)
-        # inherits ``queue_partition_key`` from the parent workflow's
-        # local context. If the caller (e.g. a tool inside an agent
-        # workflow that's running in a partitioned queue like
-        # ``AGENT_RUN_QUEUE`` with concurrency=1) has a partition_key
-        # set, the HITL workflow inherits it AND ENQUEUED state, but
-        # without a matching queue worker it sits forever (status
-        # ``ENQUEUED``, never ``PENDING``). Force partition_key=None so
-        # the child runs on the default executor regardless of caller.
-        with SetWorkflowID(workflow_id), SetEnqueueOptions(
+
+    @Durable.workflow()
+    async def _open_workflow(
+        self,
+        *,
+        helper_agent_name: str,
+        context_dict: dict[str, Any],
+        context_class_fqn: str,
+        opening_message: str | None,
+        request_id: str,
+        decision_workflow_id: str,
+        timeout_seconds: float,
+        notify_parent_thread_id: str | None,
+    ) -> Thread:
+        """Durable body of :meth:`open` — every side effect is a step.
+
+        DBOS records this workflow + all its constituent steps. A
+        crash anywhere in the body recovers correctly on restart: the
+        recorded steps are skipped (memoised) and only the unfinished
+        tail re-runs. The decision workflow started below has a
+        deterministic id (passed in by the caller) so re-issuing the
+        ``Durable.start_workflow`` call is idempotent — DBOS dedupes
+        by ``workflow_id``."""
+        # Helper thread metadata = user-facing context fields + framework
+        # routing keys. The helper agent's tools read all three from raw
+        # ``thread.metadata_``; ``metadata_model`` validation ignores
+        # extras (pydantic ``extra="ignore"`` default).
+        thread_metadata: dict[str, Any] = dict(context_dict)
+        thread_metadata["request_id"] = request_id
+        thread_metadata["workflow_id"] = decision_workflow_id
+
+        thread = await self._create_helper_thread(
+            agent_name=helper_agent_name,
+            metadata=thread_metadata,
+        )
+
+        if opening_message:
+            await self._seed_opening_message(thread.id, opening_message)
+
+        # **Clear inherited queue partition** before spawning the
+        # decision workflow. ``Durable.start_workflow`` inherits
+        # ``queue_partition_key`` from the local DBOS context. If
+        # we're already running inside a partitioned queue (e.g.
+        # ``AGENT_RUN_QUEUE`` with concurrency=1 from a tool call),
+        # the decision workflow inherits it AND stays ENQUEUED
+        # forever without a matching worker. Force partition_key=None
+        # so the child runs on the default executor.
+        with SetWorkflowID(decision_workflow_id), SetEnqueueOptions(
             queue_partition_key=None,
         ):
             await Durable.start_workflow(
                 self.run,
-                context_dict=context.model_dump(mode="json"),
-                request_id=str(request_id),
+                context_dict=context_dict,
+                request_id=request_id,
                 context_class_fqn=context_class_fqn,
                 timeout_seconds=timeout_seconds,
             )
 
-        # Emit ``thread-created`` on the parent thread's event log so
-        # a frontend listening on its long-lived SSE can refresh the
-        # thread list immediately. No-op when notify_parent_thread_id
-        # or event_log isn't wired.
+        if notify_parent_thread_id is not None:
+            await self._emit_thread_created(
+                parent_thread_id_str=notify_parent_thread_id,
+                helper_thread_id=thread.id,
+                helper_agent_name=helper_agent_name,
+                thread_metadata=thread_metadata,
+            )
+
+        return thread
+
+    # ── per-step writes (memoised) ───────────────────────────────────
+
+    @Durable.step()
+    async def _create_helper_thread(
+        self, *, agent_name: str, metadata: dict[str, Any],
+    ) -> Thread:
+        return await self.thread_repo.create(
+            agent=agent_name, metadata=metadata,
+        )
+
+    @Durable.step()
+    async def _seed_opening_message(
+        self, thread_id: UUID, opening_message: str,
+    ) -> None:
+        await self.thread_repo.add_message(
+            thread_id,
+            role="assistant",
+            parts=[{
+                "type": "text",
+                "text": opening_message,
+                "state": "done",
+            }],
+        )
+
+    @Durable.step()
+    async def _emit_thread_created(
+        self,
+        *,
+        parent_thread_id_str: str,
+        helper_thread_id: UUID,
+        helper_agent_name: str,
+        thread_metadata: dict[str, Any],
+    ) -> None:
+        """Emit ``thread-created`` into the parent thread's event log.
+
+        No-op when ``event_log`` isn't wired (e.g. unit tests that
+        don't need cross-thread SSE notifications)."""
+        parent_id = UUID(parent_thread_id_str)
         _log.info(
             "DurableHITLWorkflow.open notify_parent=%s event_log_wired=%s "
             "event_stream_wired=%s helper_thread=%s",
-            notify_parent_thread_id,
+            parent_id,
             self._event_log is not None,
             self._event_stream is not None,
-            thread.id,
+            helper_thread_id,
         )
-        if notify_parent_thread_id is not None and self._event_log is not None:
-            ev = await self._event_log.append(
-                thread_id=notify_parent_thread_id,
-                kind="thread-created",
-                payload={
-                    "thread_id": str(thread.id),
-                    "agent": helper_agent.name,
-                    "metadata": thread_metadata,
-                },
+        if self._event_log is None:
+            return
+        ev = await self._event_log.append(
+            thread_id=parent_id,
+            kind="thread-created",
+            payload={
+                "thread_id": str(helper_thread_id),
+                "agent": helper_agent_name,
+                "metadata": thread_metadata,
+            },
+        )
+        if self._event_stream is not None:
+            await self._event_stream.publish(
+                thread_channel(parent_id),
+                EventNotification(thread_id=parent_id, seq=ev.seq),
             )
-            if self._event_stream is not None:
-                await self._event_stream.publish(
-                    thread_channel(notify_parent_thread_id),
-                    EventNotification(
-                        thread_id=notify_parent_thread_id, seq=ev.seq,
-                    ),
-                )
-
-        return thread
 
     @Durable.workflow()
     async def run(
@@ -324,6 +415,28 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         context_cls = _resolve_class(context_class_fqn)
         context = context_cls.model_validate(context_dict)
 
+        # Route through ``_dispatch_on_decision`` (a step) so the
+        # body's side effects are memoised across workflow replay.
+        # Without the step wrapper, an in-flight workflow that gets
+        # recovered after a crash would re-execute ``on_decision``
+        # from scratch — and the typical implementations (notify
+        # parent thread, persist domain entity) would double-fire.
+        await self._dispatch_on_decision(response=response, context=context)
+
+    @Durable.step()
+    async def _dispatch_on_decision(
+        self,
+        *,
+        response: HITLResponse,
+        context: BaseModel,
+    ) -> None:
+        """Step wrapper around ``on_decision`` for replay idempotency.
+
+        DBOS memoises step return values (``None`` here) by step name
+        + args. On workflow replay the step is skipped without
+        re-invoking the body, which means ``on_decision`` runs
+        exactly once across the workflow's lifetime — including
+        across crashes and restarts."""
         await self.on_decision(response=response, context=context)
 
 
