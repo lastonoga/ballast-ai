@@ -103,6 +103,7 @@ def _build_app(
     Uses the module-level ``streaming_router`` + ``app.state``-based
     agent resolution (no process-global registry).
     """
+    from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
     from pydantic_ai_stateflow.persistence import (
         InMemoryEventLogRepository,
     )
@@ -120,6 +121,7 @@ def _build_app(
         ),
     }
     app.include_router(streaming_router)
+    install_error_handlers(app)
     return app
 
 

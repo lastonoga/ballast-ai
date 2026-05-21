@@ -43,6 +43,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
+from pydantic_ai_stateflow.errors import ThreadNotFound
 from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
@@ -552,7 +553,7 @@ async def _post_message(
             "POST /threads/%s/messages → 404 (thread not found)",
             thread_id,
         )
-        raise HTTPException(status_code=404, detail="thread not found")
+        raise ThreadNotFound(thread_id=str(thread_id))
 
     stateflow_agent = _resolve_agent_from_app(request, thread.agent)
 
@@ -685,7 +686,7 @@ async def _thread_events(
     """Long-lived SSE that tails the thread's event log."""
     thread = await thread_repo.load(thread_id)
     if thread is None:
-        raise HTTPException(status_code=404, detail="thread not found")
+        raise ThreadNotFound(thread_id=str(thread_id))
 
     last_event_id = _parse_last_event_id(request)
     if last_event_id == 0:
@@ -737,7 +738,7 @@ async def _cancel_thread(
     """Cancel every active workflow for ``thread_id``."""
     thread = await thread_repo.load(thread_id)
     if thread is None:
-        raise HTTPException(status_code=404, detail="thread not found")
+        raise ThreadNotFound(thread_id=str(thread_id))
 
     stateflow_agent = _resolve_agent_from_app(request, thread.agent)
     if not isinstance(stateflow_agent, StateflowDurableAgent):

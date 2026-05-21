@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Query, Response
 
+from pydantic_ai_stateflow.errors import ThreadNotFound
 from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
@@ -52,7 +53,7 @@ async def _get_thread(
 ) -> dict[str, Any]:
     thread = await thread_repo.load(thread_id)
     if thread is None:
-        raise HTTPException(status_code=404, detail="thread not found")
+        raise ThreadNotFound(thread_id=str(thread_id))
     return thread.model_dump(mode="json", by_alias=True)
 
 
@@ -72,7 +73,7 @@ async def _get_messages(
     """Return the thread's linear message list, ordered by ``created_at``."""
     thread = await thread_repo.load(thread_id)
     if thread is None:
-        raise HTTPException(status_code=404, detail="thread not found")
+        raise ThreadNotFound(thread_id=str(thread_id))
     msgs = await thread_repo.history(thread_id, limit=limit)
     return [m.model_dump(mode="json") for m in msgs]
 
@@ -85,7 +86,7 @@ async def _archive_thread(
     try:
         thread = await thread_repo.archive(thread_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="thread not found") from exc
+        raise ThreadNotFound(thread_id=str(thread_id)) from exc
     return thread.model_dump(mode="json", by_alias=True)
 
 
@@ -97,7 +98,7 @@ async def _unarchive_thread(
     try:
         thread = await thread_repo.unarchive(thread_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="thread not found") from exc
+        raise ThreadNotFound(thread_id=str(thread_id)) from exc
     return thread.model_dump(mode="json", by_alias=True)
 
 
