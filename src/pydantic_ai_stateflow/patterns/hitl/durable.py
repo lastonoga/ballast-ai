@@ -47,6 +47,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from dbos import DBOS, DBOSConfiguredInstance, SetEnqueueOptions, SetWorkflowID
+
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_start_workflow,
+    traced_workflow_step,
+)
 from pydantic import BaseModel, TypeAdapter
 
 from pydantic_ai_stateflow.logging import get_logger
@@ -247,7 +252,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=None,
         ):
-            await DBOS.start_workflow_async(
+            await traced_start_workflow(
                 self.run,
                 context_dict=context.model_dump(mode="json"),
                 request_id=str(request_id),
@@ -288,6 +293,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         return thread
 
     @DBOS.workflow()
+    @traced_workflow_step
     async def run(
         self,
         *,

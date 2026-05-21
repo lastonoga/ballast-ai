@@ -53,6 +53,10 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_enqueue,
+    traced_workflow_step,
+)
 from dbos import (
     DBOS,
     DBOSConfiguredInstance,
@@ -400,7 +404,8 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
         ):
-            return await AGENT_RUN_QUEUE.enqueue_async(
+            return await traced_enqueue(
+                AGENT_RUN_QUEUE,
                 self._run_with_tracking,
                 thread_id_str=str(thread_id),
                 prompt=prompt,
@@ -428,7 +433,8 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
         ):
-            return await AGENT_RUN_QUEUE.enqueue_async(
+            return await traced_enqueue(
+                AGENT_RUN_QUEUE,
                 self._run_with_tracking,
                 thread_id_str=str(thread_id),
                 prompt="",
@@ -465,6 +471,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         return cancelled
 
     @DBOS.workflow()
+    @traced_workflow_step
     async def _run_with_tracking(
         self,
         *,

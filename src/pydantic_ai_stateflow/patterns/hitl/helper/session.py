@@ -9,6 +9,9 @@ from dbos import DBOS, DBOSConfiguredInstance
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_workflow_step,
+)
 from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
@@ -78,6 +81,7 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
         self._base_agent_for_test: Agent[HelperDeps, str] | None = None
 
     @DBOS.workflow()
+    @traced_workflow_step
     async def run(self, input: HelperSessionInput) -> None:
         prompt = HITLPrompt.model_validate(input.prompt_payload)
         context_type = (

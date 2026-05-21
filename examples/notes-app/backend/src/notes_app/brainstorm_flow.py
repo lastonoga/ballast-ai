@@ -42,6 +42,9 @@ from pydantic_ai_stateflow import (
     SemanticDedupConfig,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_workflow_step,
+)
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
 from notes_app.brainstorm_agents import (
@@ -184,6 +187,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
         self._divergent = divergent
 
     @DBOS.workflow()
+    @traced_workflow_step
     async def run(self, *, topic: str, parent_thread_id: UUID) -> UUID:
         """Run the brainstorm + open HITL. Returns helper thread id."""
         chosen: TodoIdea = await self._divergent.run(topic)

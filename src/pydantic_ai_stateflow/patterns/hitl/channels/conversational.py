@@ -10,6 +10,9 @@ from pydantic import TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_start_workflow,
+)
 from pydantic_ai_stateflow.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
@@ -33,9 +36,15 @@ async def start_workflow_async(
     *,
     idempotency_key: str,
 ) -> None:
-    """Thin wrapper around ``DBOS.start_workflow_async`` + ``SetWorkflowID``."""
+    """Thin wrapper around ``traced_start_workflow`` + ``SetWorkflowID``.
+
+    Uses ``traced_start_workflow`` so the OTel trace context the caller
+    is in (e.g. ``pattern.hitl_gate``) becomes the parent of every span
+    emitted by the spawned helper-session workflow — visible as one
+    tree in Logfire instead of a detached root.
+    """
     with SetWorkflowID(idempotency_key):
-        await DBOS.start_workflow_async(workflow_fn, input)
+        await traced_start_workflow(workflow_fn, input)
 
 
 class ConversationalChannel:

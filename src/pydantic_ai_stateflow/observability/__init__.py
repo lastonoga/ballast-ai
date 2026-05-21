@@ -18,8 +18,19 @@ from pydantic_ai_stateflow.observability.provider import (
     ObservabilityProvider,
     has_logfire,
 )
+from pydantic_ai_stateflow.observability.otel_carrier import (
+    attach_otel_carrier,
+    detach_otel_carrier,
+    inject_otel_carrier,
+    otel_context_from,
+)
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
+from pydantic_ai_stateflow.observability.workflow_tracing import (
+    traced_enqueue,
+    traced_start_workflow,
+    traced_workflow_step,
+)
 
 __all__ = [
     "CostExtractor",
@@ -28,11 +39,18 @@ __all__ = [
     "OpenRouterUpstreamCostExtractor",
     "ProviderDetailsCostExtractor",
     "TraceName",
+    "attach_otel_carrier",
     "configure_cost_extractors",
+    "detach_otel_carrier",
     "has_logfire",
+    "inject_otel_carrier",
     "install_cost_fallback_patch",
+    "otel_context_from",
     "register_cost_extractor",
     "traced",
+    "traced_enqueue",
+    "traced_start_workflow",
+    "traced_workflow_step",
 ]
 
 
