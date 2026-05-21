@@ -40,3 +40,11 @@ def build_health_router(
         return {"status": overall, "checks": results}
 
     return router
+
+
+# ── Module-level router (SP1 T3) ─────────────────────────────────────
+# Default health router with no custom checks. Apps with checks should
+# pass ``health_checks=`` to ``sf.create_app`` which builds a fresh
+# router via ``build_health_router(checks=...)``.
+
+health_router = build_health_router(checks=None)

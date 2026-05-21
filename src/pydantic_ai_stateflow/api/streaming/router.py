@@ -805,9 +805,257 @@ def build_streaming_router(
     return router
 
 
+# ── Module-level router (SP1 T3) ─────────────────────────────────────
+#
+# Same handlers as ``build_streaming_router(...)`` but resolves
+# ``thread_repo`` / ``event_log`` / ``event_stream`` via ``Depends``
+# from ``app.state``. ``sf.create_app()`` mounts THIS router; the
+# factory is retained for the migration window and deleted in SP1 T11.
+#
+# Encoder factory is fixed to ``VercelAIWireEncoder`` — apps needing a
+# different wire format keep using ``build_streaming_router(...)`` for
+# now. ``history_limit`` is the default (200).
+
+from fastapi import Depends as _Depends  # noqa: E402
+
+from pydantic_ai_stateflow.api.deps import (  # noqa: E402
+    get_event_log as _get_event_log,
+    get_event_stream as _get_event_stream,
+    get_thread_repo as _get_thread_repo,
+)
+
+streaming_router = APIRouter()
+
+
+@streaming_router.post("/threads/{thread_id}/messages")
+@traced(
+    TraceName.STREAMING_POST_MESSAGE,
+    attrs=lambda _request, thread_id, **__: {
+        "thread_id": str(thread_id),
+    },
+)
+async def _post_message(
+    request: Request,
+    thread_id: UUID,
+    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
+    event_log: EventLogRepository = _Depends(_get_event_log),
+    event_stream: EventStream = _Depends(_get_event_stream),
+) -> Response:
+    from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
+
+    _log.info("POST /threads/%s/messages received", thread_id)
+    thread = await thread_repo.load(thread_id)
+    if thread is None:
+        _log.warning(
+            "POST /threads/%s/messages → 404 (thread not found)",
+            thread_id,
+        )
+        raise HTTPException(status_code=404, detail="thread not found")
+
+    stateflow_agent = get_agent(thread.agent)
+
+    if isinstance(stateflow_agent, StateflowDurableAgent):
+        return await _durable_post_message(
+            request=request,
+            thread_id=thread_id,
+            stateflow_agent=stateflow_agent,
+            thread_repo=thread_repo,
+            event_log=event_log,
+            event_stream=event_stream,
+            encoder=VercelAIWireEncoder(),
+            history_limit=_DEFAULT_HISTORY_LIMIT,
+        )
+
+    # ── Non-durable path ────────────────────────────────────────
+    body_messages = await _parse_body_messages(request)
+    rows = await _sync_db_with_body(
+        thread_id=thread_id,
+        body_messages=body_messages,
+        thread_repo=thread_repo,
+        history_limit=_DEFAULT_HISTORY_LIMIT,
+    )
+
+    agent = stateflow_agent.agent
+    model_settings = stateflow_agent.model_settings()
+
+    adapter = await VercelAIAdapter.from_request(
+        request, agent=agent, sdk_version=6,
+    )
+
+    last_message = adapter.messages[-1] if adapter.messages else None
+    prompt_text = (
+        extract_text(rows[-1].parts)
+        if rows and rows[-1].role == "user"
+        else ""
+    )
+    deferred_results = adapter.deferred_tool_results
+
+    if deferred_results is None:
+        _trim_adapter_messages_to_last_user_prompt(adapter)
+    else:
+        _log.info(
+            "post_message: deferred_tool_results present "
+            "(approvals=%d, calls=%d) — skipping trim",
+            len(deferred_results.approvals or {}),
+            len(deferred_results.calls or {}),
+        )
+
+    history = messages_to_model_history(rows, drop_prompt=prompt_text)
+
+    resolved_deps = await stateflow_agent.build_deps(
+        thread=thread,
+        message=last_message,
+    )
+
+    async def on_complete(result: AgentRunResult[Any]) -> None:
+        from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
+        from pydantic_ai.ui.vercel_ai import (  # noqa: PLC0415
+            VercelAIAdapter as _VercelAIAdapter,
+        )
+
+        output = result.output
+        if isinstance(output, DeferredToolRequests):
+            _log.info(
+                "on_complete: agent paused with DeferredToolRequests "
+                "(thread=%s) — skipping assistant persist",
+                thread_id,
+            )
+            return
+
+        all_msgs = result.all_messages()
+        ui_msgs = _VercelAIAdapter.dump_messages(
+            all_msgs, sdk_version=6,
+        )
+        last_user_idx = -1
+        for i, m in enumerate(ui_msgs):
+            if m.role == "user":
+                last_user_idx = i
+        asst_parts: list[dict[str, Any]] = []
+        for m in ui_msgs[last_user_idx + 1:]:
+            if m.role != "assistant":
+                continue
+            for p in m.parts:
+                asst_parts.append(
+                    p.model_dump(
+                        mode="json",
+                        by_alias=True,
+                        exclude_none=True,
+                    ),
+                )
+
+        if not asst_parts:
+            _log.warning(
+                "on_complete: dump_messages returned no assistant "
+                "parts (thread=%s output=%r) — nothing persisted",
+                thread_id, output,
+            )
+            return
+
+        persisted = await thread_repo.add_message(
+            thread_id,
+            role="assistant",
+            parts=asst_parts,
+        )
+        _log.info(
+            "on_complete: persisted assistant msg id=%s parts=%d "
+            "(kinds=%s)",
+            persisted.id, len(asst_parts),
+            [p.get("type") for p in asst_parts],
+        )
+
+    return adapter.streaming_response(
+        adapter.run_stream(
+            message_history=history,
+            deps=resolved_deps,
+            model_settings=model_settings,
+            on_complete=on_complete,
+        ),
+    )
+
+
+@streaming_router.get("/threads/{thread_id}/events")
+async def _thread_events(
+    request: Request,
+    thread_id: UUID,
+    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
+    event_log: EventLogRepository = _Depends(_get_event_log),
+) -> Response:
+    """Long-lived SSE that tails the thread's event log."""
+    thread = await thread_repo.load(thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="thread not found")
+
+    last_event_id = _parse_last_event_id(request)
+    if last_event_id == 0:
+        last_event_id = await event_log.latest_seq(thread_id)
+
+    async def _gen() -> AsyncIterator[bytes]:
+        import asyncio  # noqa: PLC0415
+        import json  # noqa: PLC0415
+
+        yield b": connected\n\n"
+
+        last_seq = last_event_id
+        poll_interval_s = 0.25
+
+        while True:
+            if await request.is_disconnected():
+                return
+            events = await event_log.read_since(
+                thread_id, after_seq=last_seq,
+            )
+            for ev in events:
+                payload = json.dumps({
+                    "kind": ev.kind,
+                    "seq": ev.seq,
+                    "payload": ev.payload,
+                })
+                yield (
+                    f"id: {ev.seq}\ndata: {payload}\n\n".encode()
+                )
+                last_seq = ev.seq
+            await asyncio.sleep(poll_interval_s)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@streaming_router.post("/threads/{thread_id}/cancel", status_code=200)
+@traced(
+    TraceName.STREAMING_POST_MESSAGE,
+    attrs=lambda _request, thread_id, **__: {
+        "thread_id": str(thread_id),
+        "op": "cancel",
+    },
+)
+async def _cancel_thread(
+    request: Request,
+    thread_id: UUID,
+    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
+) -> dict[str, Any]:
+    """Cancel every active workflow for ``thread_id``."""
+    del request
+    thread = await thread_repo.load(thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="thread not found")
+
+    stateflow_agent = get_agent(thread.agent)
+    if not isinstance(stateflow_agent, StateflowDurableAgent):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "cancel is only meaningful for StateflowDurableAgent "
+                "threads; non-durable agents don't have cancellable "
+                "workflows"
+            ),
+        )
+    cancelled = await stateflow_agent.cancel_thread_runs(thread_id)
+    return {"cancelled": cancelled}
+
+
 __all__ = [
     "DepsFactory",
     "build_streaming_router",
     "extract_text",
     "messages_to_model_history",
+    "streaming_router",
 ]

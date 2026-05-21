@@ -256,4 +256,11 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
     return router
 
 
-__all__ = ["build_dbos_router"]
+# ── Module-level router (SP1 T3) ─────────────────────────────────────
+# The factory captures no per-app deps (Durable is a static facade), so
+# the module-level router is just a default invocation.
+
+dbos_router = build_dbos_router()
+
+
+__all__ = ["build_dbos_router", "dbos_router"]
