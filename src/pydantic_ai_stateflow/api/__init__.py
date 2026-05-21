@@ -4,6 +4,7 @@ from pydantic_ai_stateflow.api.a2a import (
     build_a2a_router,
 )
 from pydantic_ai_stateflow.api.cors import CORSConfig
+from pydantic_ai_stateflow.api.dbos_router import build_dbos_router
 from pydantic_ai_stateflow.api.deps import get_container, get_engine
 from pydantic_ai_stateflow.api.health import build_health_router
 from pydantic_ai_stateflow.api.streaming import (
@@ -20,6 +21,7 @@ __all__ = [
     "CORSConfig",
     "DepsFactory",
     "build_a2a_router",
+    "build_dbos_router",
     "build_health_router",
     "build_streaming_router",
     "build_threads_router",

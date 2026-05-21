@@ -25,6 +25,7 @@ from dbos import DBOS, DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
+from pydantic_ai_stateflow.api.dbos_router import build_dbos_router
 from pydantic_ai_stateflow.api.streaming import build_streaming_router
 from pydantic_ai_stateflow.api.threads import build_threads_router
 from pydantic_ai_stateflow.observability import ObservabilityProvider
@@ -131,6 +132,10 @@ def build_app(
         event_log=log,
         event_stream=stream,
     )
+    # DBOS introspection + control (workflow tree, cancel/resume/fork).
+    # Thread-scoped via ``/dbos/threads/{id}/workflows`` (filters by the
+    # ``agent-run:{thread_id}:`` prefix that StateflowDurableAgent mints).
+    dbos_router = build_dbos_router()
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
@@ -165,7 +170,7 @@ def build_app(
 
     app: FastAPI = engine.fastapi_app(
         extra_routers=[
-            notes_router, threads_router, streaming_router,
+            notes_router, threads_router, streaming_router, dbos_router,
         ],
         cors=CORSConfig.permissive_dev(),
         on_startup=startup_hooks,
