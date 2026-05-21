@@ -23,6 +23,9 @@ dev = [
     "mypy>=1.10",
 ]
 
+[tool.stateflow]
+app = "notes_app.main:app"
+
 [tool.uv.sources]
 pydantic-ai-stateflow = { path = "../../..", editable = true }
 
