@@ -521,19 +521,27 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
   // in ``threadData`` (merge, not replace) so the active thread
   // survives the refresh.
   useEffect(() => {
-    const threads = (runtime as unknown as {
+    // ``runtime.threads`` is a ``ThreadListRuntimeImpl`` wrapper.
+    // Its ``_core`` is the ``RemoteThreadListThreadListRuntimeCore``
+    // where ``_loadThreadsPromise`` + ``_loadGeneration`` actually
+    // live. Drill through the wrapper to clear the cache.
+    const core = (runtime as unknown as {
       threads?: {
-        _loadThreadsPromise?: Promise<unknown> | undefined;
-        _loadGeneration?: number;
-        getLoadThreadsPromise?: () => Promise<unknown>;
+        _core?: {
+          _loadThreadsPromise?: Promise<unknown> | undefined;
+          _loadGeneration?: number;
+          getLoadThreadsPromise?: () => Promise<unknown>;
+        };
       };
-    }).threads;
+    }).threads?._core;
     reloadThreadListRef.current =
-      threads && typeof threads.getLoadThreadsPromise === "function"
+      core && typeof core.getLoadThreadsPromise === "function"
         ? () => {
-            threads._loadThreadsPromise = undefined;
-            threads._loadGeneration = (threads._loadGeneration ?? 0) + 1;
-            void threads.getLoadThreadsPromise!();
+            // eslint-disable-next-line no-console
+            console.debug("[reload-threads] forcing list refetch");
+            core._loadThreadsPromise = undefined;
+            core._loadGeneration = (core._loadGeneration ?? 0) + 1;
+            void core.getLoadThreadsPromise!();
           }
         : null;
     return () => {
