@@ -1,9 +1,11 @@
 """Pytest plugin: ``engine`` + ``client`` fixtures for stateflow apps.
 
 Apps opt in via ``pytest_plugins = ["pydantic_ai_stateflow.testing.pytest_plugin"]``
-in conftest.py.
+in their ``conftest.py``.
 
-SKELETON — fixtures raise NotImplementedError. Filled in by SP1 T6.
+The ``engine`` fixture yields a ``TestEngine.default()`` (in-memory
+repos, no workflows/agents). Tests that need additional registrations
+or overrides do so on the fixture before entering ``client``.
 """
 from __future__ import annotations
 
