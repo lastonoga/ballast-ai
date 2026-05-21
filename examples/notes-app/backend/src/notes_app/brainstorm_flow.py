@@ -3,10 +3,10 @@
 End-to-end: user clicks "Brainstorm todo" → POST /workflows/brainstorm-todo
 → ``BrainstormFlow.run(topic, parent_thread_id)`` →
 ``DivergentConvergent`` fans out to N different LLM agents (each with
-its own model, temperature, system prompt), optionally dedups, optionally
-verifies, picks one ``TodoIdea`` → opens ``TodoApprovalFlow`` for HITL →
-on user approve the note saves and a "Saved your todo" message lands in
-the parent thread.
+its own model, temperature, system prompt), optionally dedups,
+optionally verifies, picks one ``TodoIdea`` → opens
+``TodoApprovalFlow`` for HITL → on user approve the note saves and a
+"Saved your todo" message lands in the parent thread.
 
 All the heavy lifting lives in the framework:
 - ``pydantic_ai_stateflow.patterns.DivergentConvergent`` —
@@ -15,27 +15,26 @@ All the heavy lifting lives in the framework:
 - ``pydantic_ai_stateflow.patterns.hitl.DurableHITLWorkflow`` —
   ``TodoApprovalFlow`` already subclasses it.
 
-This file does ONLY app-specific gluing: pydantic schemas for ideas,
-``DivergentAgent`` / ``Synthesizer`` adapters over pydantic-ai
-``Agent`` (so the framework stays pydantic-ai-free), the default
-divergent specs we ship with the demo, and a tiny BrainstormFlow class
-that calls DivergentConvergent then TodoApprovalFlow.open.
+App-specific glue here:
+- ``BrainstormDivergentAgent`` / ``BrainstormSynthesizerAgent``
+  (``brainstorm_agents.py``) are real ``StateflowAgent`` subclasses
+  so we reuse the codebase's existing OpenRouter wiring + model
+  settings + capabilities slot.
+- Tiny adapters turn each ``StateflowAgent`` into the framework's
+  ``DivergentAgent`` / ``Synthesizer`` protocols (which are
+  pydantic-ai-agnostic by design).
+- ``BrainstormFlow`` workflow chains divergent-convergent into
+  ``TodoApprovalFlow.open`` for HITL.
 
-No annotations-future import: pydantic-ai's tool decoration / output
-schema introspection needs concrete types at decoration time (same
-constraint as ``agent.py`` / ``todo_approval_agent.py``).
+No ``from __future__ import annotations``: pydantic-ai introspects
+``get_type_hints()`` at decoration time (same as ``agent.py`` /
+``todo_approval_agent.py``).
 """
 
-import os
 from dataclasses import dataclass
-from typing import Any, Optional
 from uuid import UUID
 
 from dbos import DBOS, DBOSConfiguredInstance
-from pydantic import BaseModel, Field
-from pydantic_ai import Agent
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
-from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
@@ -43,7 +42,13 @@ from pydantic_ai_stateflow import (
     SemanticDedupConfig,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
+from pydantic_ai_stateflow.runtime import StateflowAgent
 
+from notes_app.brainstorm_agents import (
+    BrainstormDivergentAgent,
+    BrainstormSynthesizerAgent,
+)
+from notes_app.brainstorm_types import TodoIdea, TodoIdeas
 from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
@@ -51,54 +56,43 @@ from notes_app.todo_approval_agent import (
 from notes_app.todo_flow import TodoApprovalFlow
 
 
-# ── Domain types ─────────────────────────────────────────────────────────
-
-class TodoIdea(BaseModel):
-    """One proposed todo. ``rationale`` is optional and mostly used by
-    the synthesizer (it explains which candidate it picked and why)."""
-    title: str = Field(min_length=1, max_length=120)
-    body: str = Field(min_length=1, max_length=2000)
-    rationale: Optional[str] = None
-
-
-class TodoIdeas(BaseModel):
-    """One divergent agent's batch. 1-5 ideas per call — enough variety
-    without blowing the synthesizer's attention budget per the
-    CreativeDC quantity-distinctiveness tradeoff."""
-    ideas: list[TodoIdea] = Field(min_length=1, max_length=5)
-
-
-# ── Pydantic-AI ⇄ framework Protocol adapters ────────────────────────────
+# ── Stateflow ⇄ framework Protocol adapters ──────────────────────────────
 
 @dataclass(frozen=True)
-class _PydanticAIDivergentAgent:
-    """Adapts a pydantic-ai ``Agent`` to the framework's
+class _StateflowDivergentAgent:
+    """Adapts a ``StateflowAgent`` to the framework's
     ``DivergentAgent[str, TodoIdea]`` protocol.
 
-    Why an adapter and not a Protocol-satisfying Agent: the framework
-    intentionally doesn't import pydantic-ai (it accepts any object
-    with ``async def diverge(task) -> list[Hypothesis]``). Apps wrap
-    their concrete agent in a one-liner here. Same pattern works for
-    StateflowAgent / StateflowDurableAgent — use their ``.agent``
-    property to grab the underlying pydantic-ai Agent.
+    The framework intentionally doesn't depend on ``StateflowAgent``
+    (let alone pydantic-ai) — it accepts any object with
+    ``async def diverge(task) -> list[Hypothesis]``. This adapter is
+    the seam: it calls into ``stateflow_agent.agent.run(...)`` so
+    we automatically pick up ``model_settings()`` and any capabilities
+    the StateflowAgent layered on top.
     """
-    agent: Agent[None, TodoIdeas]
+    stateflow_agent: StateflowAgent
 
     async def diverge(self, task: str) -> list[TodoIdea]:
-        result = await self.agent.run(task)
-        return result.output.ideas
+        result = await self.stateflow_agent.agent.run(
+            task, model_settings=self.stateflow_agent.model_settings(),
+        )
+        ideas: TodoIdeas = result.output
+        return ideas.ideas
 
 
 @dataclass(frozen=True)
-class _PydanticAISynthesizer:
-    """Adapts pydantic-ai ``Agent`` to the framework's
+class _StateflowSynthesizer:
+    """Adapts a ``StateflowAgent`` to the framework's
     ``Synthesizer[str, TodoIdea, TodoIdea]`` protocol."""
-    agent: Agent[None, TodoIdea]
+    stateflow_agent: StateflowAgent
 
     async def synthesize(self, *, task: str, candidates: list[TodoIdea]) -> TodoIdea:
         prompt = _format_synth_prompt(task, candidates)
-        result = await self.agent.run(prompt)
-        return result.output
+        result = await self.stateflow_agent.agent.run(
+            prompt, model_settings=self.stateflow_agent.model_settings(),
+        )
+        chosen: TodoIdea = result.output
+        return chosen
 
 
 def _format_synth_prompt(task: str, candidates: list[TodoIdea]) -> str:
@@ -137,39 +131,14 @@ CONVERGENT_PROMPT = (
 )
 
 
-def _build_openrouter_agent(
-    *,
-    model_name: str,
-    system_prompt: str,
-    temperature: float,
-    output_type: type,
-) -> Agent[None, Any]:
-    """Plain pydantic-ai Agent factory over OpenRouter.
-
-    Lives here (not in framework) on purpose — the framework's
-    DivergentConvergent / SemanticDedup are provider-agnostic.
-    Apps pick their own model SDK and build agents however they like.
-    """
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY required for brainstorm flow")
-    model = OpenRouterModel(
-        model_name,
-        provider=OpenRouterProvider(api_key=api_key),
-        settings=OpenRouterModelSettings(temperature=temperature),
-    )
-    return Agent(model=model, output_type=output_type, system_prompt=system_prompt)
-
-
 @dataclass(frozen=True)
 class BrainstormAgentSpec:
     """User-facing spec for one branch in the divergent fan-out.
 
     App passes a tuple of these to ``build_brainstorm_flow`` and the
-    factory wraps each in the framework's ``DivergentBranch`` /
-    ``DivergentAgent`` plumbing. Apps that want a different provider
-    just construct their own ``DivergentBranch`` directly and bypass
-    this helper.
+    factory wraps each in a ``BrainstormDivergentAgent``. Apps that
+    want a different provider construct their own ``DivergentBranch``
+    directly with a custom ``StateflowAgent`` and bypass this helper.
     """
     label: str
     model: str
@@ -179,11 +148,11 @@ class BrainstormAgentSpec:
 
 DEFAULT_DIVERGENT_SPECS: tuple[BrainstormAgentSpec, ...] = (
     BrainstormAgentSpec("practical", "qwen/qwen3.6-plus", PRACTICAL_PROMPT),
-    BrainstormAgentSpec("creative", "deepseek/deepseek-v3", CREATIVE_PROMPT),
+    BrainstormAgentSpec("creative", "deepseek/deepseek-chat-v3.1", CREATIVE_PROMPT),
     BrainstormAgentSpec("analyst", "openai/gpt-4o-mini", ANALYTICAL_PROMPT),
 )
 
-DEFAULT_SYNTH_MODEL = "anthropic/claude-3.7-sonnet"
+DEFAULT_SYNTH_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_SYNTH_TEMPERATURE = 0.2
 
 
@@ -248,36 +217,34 @@ def build_brainstorm_flow(
 ) -> BrainstormFlow:
     """One-call wiring for the notes-app demo.
 
-    All knobs surfaced here are forwarded to the framework. Pass
-    ``embedder`` to enable semantic dedup; leave ``None`` to skip the
-    dedup stage entirely (the framework treats deduper as optional).
+    Builds one ``BrainstormDivergentAgent`` per spec and one
+    ``BrainstormSynthesizerAgent``, wraps each in an adapter, hands
+    the bundle to ``DivergentConvergent``. Pass ``embedder`` to enable
+    semantic dedup; leave ``None`` to skip dedup entirely.
 
     Apps doing serious work should construct ``DivergentConvergent``
-    + ``SemanticDedup`` themselves to plug a custom verifier, a
-    different model SDK, mocks for tests, etc — this factory is just
-    the default wiring.
+    + ``SemanticDedup`` themselves (custom verifier, mocks for tests,
+    different model SDKs) — this factory is just the demo wiring.
     """
     branches = tuple(
         DivergentBranch(
             label=spec.label,
-            agent=_PydanticAIDivergentAgent(
-                agent=_build_openrouter_agent(
+            agent=_StateflowDivergentAgent(
+                stateflow_agent=BrainstormDivergentAgent(
                     model_name=spec.model,
                     system_prompt=spec.system_prompt,
                     temperature=spec.temperature,
-                    output_type=TodoIdeas,
                 ),
             ),
         )
         for spec in divergent_specs
     )
 
-    synthesizer = _PydanticAISynthesizer(
-        agent=_build_openrouter_agent(
+    synthesizer = _StateflowSynthesizer(
+        stateflow_agent=BrainstormSynthesizerAgent(
             model_name=synth_model,
             system_prompt=CONVERGENT_PROMPT,
             temperature=synth_temperature,
-            output_type=TodoIdea,
         ),
     )
 
