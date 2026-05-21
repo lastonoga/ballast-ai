@@ -58,9 +58,30 @@ from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
 )
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.runtime.agents import get_agent
+from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 from pydantic_ai_stateflow.runtime.durable_agent import StateflowDurableAgent
 from pydantic_ai_stateflow.runtime.event_stream import EventStream
+
+
+def _resolve_agent_from_app(request: Request, name: str) -> StateflowAgent:
+    """Resolve a ``StateflowAgent`` instance by name from ``app.state.agents``.
+
+    Replaces the legacy process-global ``get_agent(name)`` registry —
+    ``sf.create_app()`` populates ``app.state.agents`` from the
+    ``agents=`` kwarg, and routes now look it up per-request.
+    """
+    agents = getattr(request.app.state, "agents", None)
+    if not agents or name not in agents:
+        known = sorted(agents) if agents else []
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No agent registered under name {name!r}. "
+                f"Known agents: {known}. "
+                f"Did you pass it to sf.create_app(agents=[...])?"
+            ),
+        )
+    return agents[name]
 
 _log = get_logger(__name__)
 
@@ -552,7 +573,7 @@ def build_streaming_router(
             )
             raise HTTPException(status_code=404, detail="thread not found")
 
-        stateflow_agent = get_agent(thread.agent)
+        stateflow_agent = _resolve_agent_from_app(request, thread.agent)
 
         if isinstance(stateflow_agent, StateflowDurableAgent):
             if event_log is None or event_stream is None:
@@ -784,12 +805,11 @@ def build_streaming_router(
         synthetic ``cancelled`` event so attached SSE consumers close
         their stream cleanly.
         """
-        del request
         thread = await thread_repo.load(thread_id)
         if thread is None:
             raise HTTPException(status_code=404, detail="thread not found")
 
-        stateflow_agent = get_agent(thread.agent)
+        stateflow_agent = _resolve_agent_from_app(request, thread.agent)
         if not isinstance(stateflow_agent, StateflowDurableAgent):
             raise HTTPException(
                 status_code=400,
@@ -852,7 +872,7 @@ async def _post_message(
         )
         raise HTTPException(status_code=404, detail="thread not found")
 
-    stateflow_agent = get_agent(thread.agent)
+    stateflow_agent = _resolve_agent_from_app(request, thread.agent)
 
     if isinstance(stateflow_agent, StateflowDurableAgent):
         return await _durable_post_message(
@@ -1033,12 +1053,11 @@ async def _cancel_thread(
     thread_repo: ThreadRepository = _Depends(_get_thread_repo),
 ) -> dict[str, Any]:
     """Cancel every active workflow for ``thread_id``."""
-    del request
     thread = await thread_repo.load(thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="thread not found")
 
-    stateflow_agent = get_agent(thread.agent)
+    stateflow_agent = _resolve_agent_from_app(request, thread.agent)
     if not isinstance(stateflow_agent, StateflowDurableAgent):
         raise HTTPException(
             status_code=400,

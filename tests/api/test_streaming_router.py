@@ -32,23 +32,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_stateflow.api.streaming import build_streaming_router
+from pydantic_ai_stateflow.api.streaming.router import streaming_router
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import (
-    StateflowAgent,
-    clear_agent_registry,
-    register_agent,
-)
-
-
-@pytest.fixture(autouse=True)
-def _clear_registry() -> Any:
-    """Per-test isolation: blow away the process-wide agent registry."""
-    clear_agent_registry()
-    yield
-    clear_agent_registry()
+from pydantic_ai_stateflow.runtime import StateflowAgent
 
 
 class _TestStateflowAgent(StateflowAgent):
@@ -109,17 +97,29 @@ def _build_app(
     deps_factory: Any = None,
     model_settings: Any = None,
 ) -> FastAPI:
-    """Register ``agent`` as the ``"conversation"`` StateflowAgent and
-    build a streaming-router-only FastAPI app over ``repo``."""
-    register_agent(
-        _TestStateflowAgent(
+    """Wire ``agent`` as the ``"conversation"`` StateflowAgent and
+    build a streaming-router-only FastAPI app over ``repo``.
+
+    Uses the module-level ``streaming_router`` + ``app.state``-based
+    agent resolution (no process-global registry).
+    """
+    from pydantic_ai_stateflow.persistence import (
+        InMemoryEventLogRepository,
+    )
+    from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+
+    app = FastAPI()
+    app.state.thread_repo = repo
+    app.state.event_log = InMemoryEventLogRepository()
+    app.state.event_stream = InProcessEventStream()
+    app.state.agents = {
+        "conversation": _TestStateflowAgent(
             agent,
             deps_factory=deps_factory,
             model_settings=model_settings,
         ),
-    )
-    app = FastAPI()
-    app.include_router(build_streaming_router(thread_repo=repo))
+    }
+    app.include_router(streaming_router)
     return app
 
 
