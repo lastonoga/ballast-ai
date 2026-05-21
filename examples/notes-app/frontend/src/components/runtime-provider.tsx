@@ -366,6 +366,16 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         // into the event log; this SSE delivers it live to the active
         // chat — no page reload required. Opens for the active
         // remoteId; closes on switch / unmount.
+        // Capture ``chat`` in a ref so the SSE-opening effect doesn't
+        // re-fire on every chat identity change (which happens on
+        // every render — useChat returns a new object each time).
+        // The effect only depends on ``remoteId`` now; the ref gives
+        // the handler access to the LATEST chat for setMessages.
+        const chatRef = useRef(chat);
+        useEffect(() => {
+          chatRef.current = chat;
+        }, [chat]);
+
         useEffect(() => {
           if (!remoteId) return;
           const url = `${apiUrl}/threads/${remoteId}/events`;
@@ -408,7 +418,7 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               // duplicate). Uses chat.setMessages with the functional
               // updater pattern so we don't race with concurrent
               // useChat-driven updates (streaming etc).
-              const w = chat as unknown as {
+              const w = chatRef.current as unknown as {
                 setMessages: (
                   updater: (prev: UIMessage[]) => UIMessage[],
                 ) => void;
@@ -435,7 +445,7 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
           return () => {
             es.close();
           };
-        }, [remoteId, chat]);
+        }, [remoteId]);
 
         // History adapter MUST be built inside PerThreadRuntime (not in
         // an outer provider): ``useNotesAppThreadHistoryAdapter`` calls
