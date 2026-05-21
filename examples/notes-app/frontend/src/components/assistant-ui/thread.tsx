@@ -320,6 +320,14 @@ const AssistantMessage: FC = () => {
                 return debug ? <Reasoning {...part} /> : null;
               case "tool-call":
                 return debug ? (part.toolUI ?? <ToolFallback {...part} />) : null;
+              case "data":
+                // Custom data parts (e.g. ``data-brainstorm-progress``).
+                // ``GroupedParts`` pre-resolves the registered renderer
+                // from ``makeAssistantDataUI`` into ``part.dataRendererUI``
+                // — null when no renderer is registered for the name,
+                // in which case we silently drop instead of rendering
+                // raw JSON in the chat.
+                return part.dataRendererUI ?? null;
               default:
                 return null;
             }
