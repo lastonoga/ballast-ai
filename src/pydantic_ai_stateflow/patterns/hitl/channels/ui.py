@@ -5,6 +5,8 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import TypeAdapter
 
 from pydantic_ai_stateflow.observability.spans import traced
@@ -56,7 +58,7 @@ class UIChannel:
                 topic, timeout_seconds=cast(Any, timeout_seconds),
             )
         else:  # pragma: no cover — older dbos releases
-            payload = await DBOS.recv(
+            payload = await Durable.recv(
                 topic, timeout_seconds=cast(Any, timeout_seconds),
             )
         if payload is None:

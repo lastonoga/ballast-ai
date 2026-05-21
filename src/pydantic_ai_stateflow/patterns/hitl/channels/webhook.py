@@ -100,7 +100,7 @@ class WebhookChannel:
         timeout_seconds = (
             prompt.timeout.total_seconds() if prompt.timeout is not None else None
         )
-        payload = await DBOS.recv(topic, timeout_seconds=cast(Any, timeout_seconds))
+        payload = await Durable.recv(topic, timeout_seconds=cast(Any, timeout_seconds))
         if payload is None:
             return TimeoutResponse(answered_at=datetime.now(tz=UTC))
         return _RESPONSE_ADAPTER.validate_python(payload)

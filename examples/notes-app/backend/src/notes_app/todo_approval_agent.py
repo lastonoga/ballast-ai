@@ -29,6 +29,8 @@ from typing import Any
 from uuid import UUID
 
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
@@ -106,7 +108,7 @@ class TodoApprovalDeps:
     ``workflow_id`` is the DBOS workflow id of the durable
     ``TodoApprovalFlow.run`` that's currently blocked on the HITL
     response. Helper tools send their decision there via
-    ``DBOS.send_async(destination_id=workflow_id, ...)``.
+    ``Durable.send_async(destination_id=workflow_id, ...)``.
     """
 
     notes_repo: NoteRepository
@@ -207,7 +209,7 @@ async def _send_to_workflow(
     while an event loop is running" inside pydantic-ai's asyncio task
     on dbos 2.22+).
     """
-    await DBOS.send_async(
+    await Durable.send_async(
         destination_id=workflow_id,
         message=response.model_dump(mode="json"),
         topic=_hitl_topic(request_id),

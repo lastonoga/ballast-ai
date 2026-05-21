@@ -62,10 +62,12 @@ import functools
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from pydantic_ai_stateflow.observability.otel_carrier import (
-    inject_otel_carrier,
-    otel_context_from,
-)
+# OTel-carrier helpers are imported LAZILY at call time. Importing them
+# eagerly at module load triggers ``observability/__init__.py``, which
+# transitively pulls in ``runtime`` modules that themselves want
+# ``Durable`` (e.g. ``StateflowDurableAgent``) — a circular import.
+# Lazy import inside the wrapper functions sidesteps the cycle and has
+# negligible per-call cost (Python caches module imports).
 
 if TYPE_CHECKING:
     from dbos import Queue
@@ -94,11 +96,23 @@ def _wrap_with_carrier_attach(
 
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> R:
+        from pydantic_ai_stateflow.observability.otel_carrier import (  # noqa: PLC0415
+            otel_context_from,
+        )
+
         carrier = kwargs.pop(_CARRIER_KWARG, None)
         with otel_context_from(carrier):
             return await fn(*args, **kwargs)
 
     return wrapper
+
+
+def _inject_carrier() -> dict[str, str] | None:
+    """Local indirection so the OTel import stays lazy."""
+    from pydantic_ai_stateflow.observability.otel_carrier import (  # noqa: PLC0415
+        inject_otel_carrier,
+    )
+    return inject_otel_carrier()
 
 
 class Durable:
@@ -177,7 +191,7 @@ class Durable:
         ``@Durable.workflow``) — the magic kwarg this helper adds will
         otherwise hit the body as an unexpected argument.
         """
-        kwargs[_CARRIER_KWARG] = inject_otel_carrier()
+        kwargs[_CARRIER_KWARG] = _inject_carrier()
         return await queue.enqueue_async(fn, *args, **kwargs)
 
     @staticmethod
@@ -196,8 +210,151 @@ class Durable:
         """
         from dbos import DBOS  # noqa: PLC0415
 
-        kwargs[_CARRIER_KWARG] = inject_otel_carrier()
+        kwargs[_CARRIER_KWARG] = _inject_carrier()
         return await DBOS.start_workflow_async(fn, *args, **kwargs)
+
+    # ── inter-workflow messaging ────────────────────────────────────
+    #
+    # ``send``/``recv`` happen INSIDE a workflow's own fiber — they
+    # don't spawn anything, so they don't need OTel carrier
+    # propagation. They're re-exposed on ``Durable`` purely so pattern
+    # authors never have to import ``dbos`` directly (the framework
+    # owns its dependency on DBOS through this one facade).
+
+    @staticmethod
+    async def send_async(
+        destination_id: str, message: Any, topic: str | None = None,
+    ) -> None:
+        """``DBOS.send_async`` — message to another workflow's recv channel."""
+        from dbos import DBOS  # noqa: PLC0415
+        await DBOS.send_async(destination_id, message, topic)
+
+    @staticmethod
+    def send(
+        destination_id: str, message: Any, topic: str | None = None,
+    ) -> None:
+        """``DBOS.send`` — sync sibling of :meth:`send_async`.
+
+        Aborts with "called sync from async" inside a workflow body —
+        use :meth:`send_async` from inside ``@Durable.workflow``."""
+        from dbos import DBOS  # noqa: PLC0415
+        DBOS.send(destination_id, message, topic)
+
+    @staticmethod
+    async def recv_async(
+        topic: str | None = None, timeout_seconds: float | None = None,
+    ) -> Any:
+        """``DBOS.recv_async`` — block until a matching message arrives."""
+        from dbos import DBOS  # noqa: PLC0415
+        if timeout_seconds is None:
+            return await DBOS.recv_async(topic)
+        return await DBOS.recv_async(topic, timeout_seconds=timeout_seconds)
+
+    @staticmethod
+    async def recv(
+        topic: str | None = None, timeout_seconds: float | None = None,
+    ) -> Any:
+        """``DBOS.recv`` — sync sibling of :meth:`recv_async`.
+
+        Pydantic-ai's DBOS recv is implemented via ``recv`` (not
+        ``recv_async``) inside some channel implementations; that's
+        intentional and fine because those channels run on a sync
+        fiber. Most new code should prefer :meth:`recv_async`."""
+        from dbos import DBOS  # noqa: PLC0415
+        if timeout_seconds is None:
+            return await DBOS.recv(topic)
+        return await DBOS.recv(topic, timeout_seconds=timeout_seconds)
+
+    # ── control plane / introspection ───────────────────────────────
+
+    @staticmethod
+    async def list_workflows(**kwargs: Any) -> Any:
+        """``DBOS.list_workflows_async`` — query the workflow log."""
+        from dbos import DBOS  # noqa: PLC0415
+        return await DBOS.list_workflows_async(**kwargs)
+
+    @staticmethod
+    async def list_workflow_steps(
+        workflow_id: str, **kwargs: Any,
+    ) -> Any:
+        """``DBOS.list_workflow_steps_async``."""
+        from dbos import DBOS  # noqa: PLC0415
+        return await DBOS.list_workflow_steps_async(workflow_id, **kwargs)
+
+    @staticmethod
+    async def cancel_workflow(workflow_id: str) -> None:
+        """``DBOS.cancel_workflow_async``."""
+        from dbos import DBOS  # noqa: PLC0415
+        await DBOS.cancel_workflow_async(workflow_id)
+
+    @staticmethod
+    async def resume_workflow(workflow_id: str) -> Any:
+        """``DBOS.resume_workflow_async`` — returns a workflow handle."""
+        from dbos import DBOS  # noqa: PLC0415
+        return await DBOS.resume_workflow_async(workflow_id)
+
+    @staticmethod
+    async def fork_workflow(
+        workflow_id: str, start_step: int, **kwargs: Any,
+    ) -> Any:
+        """``DBOS.fork_workflow_async`` — returns the forked handle."""
+        from dbos import DBOS  # noqa: PLC0415
+        return await DBOS.fork_workflow_async(workflow_id, start_step, **kwargs)
+
+    @staticmethod
+    async def retrieve_workflow(workflow_id: str) -> Any:
+        """``DBOS.retrieve_workflow_async`` — handle for an existing
+        workflow id (used by tests / callers waiting on results)."""
+        from dbos import DBOS  # noqa: PLC0415
+        return await DBOS.retrieve_workflow_async(workflow_id)
+
+    # ── context accessor ────────────────────────────────────────────
+
+    @staticmethod
+    def current_workflow_id() -> str:
+        """Workflow id of the currently-executing ``@Durable.workflow``
+        body. Equivalent to reading ``DBOS.workflow_id``.
+
+        Use inside a workflow body to mint child-workflow ids that
+        encode the parent's id, or to address ``send_async`` calls
+        back to the current workflow."""
+        from typing import cast  # noqa: PLC0415
+
+        from dbos import DBOS  # noqa: PLC0415
+        return cast(str, DBOS.workflow_id)
+
+    # ── lifecycle ───────────────────────────────────────────────────
+
+    @staticmethod
+    def init(config: Any) -> None:
+        """``DBOS(config=config)`` — register the singleton.
+
+        Call at app boot, BEFORE :meth:`launch`. ``config`` is a
+        ``DBOSConfig`` instance (re-imported from ``dbos`` by the app;
+        not wrapped here to avoid pinning the type to a specific DBOS
+        version)."""
+        from dbos import DBOS  # noqa: PLC0415
+        DBOS(config=config)
+
+    @staticmethod
+    def launch() -> None:
+        """``DBOS.launch()`` — start the workflow runtime + queue
+        workers. Call after :meth:`init` and after every workflow /
+        step / configured-instance has been declared (DBOS warns
+        otherwise)."""
+        from dbos import DBOS  # noqa: PLC0415
+        DBOS.launch()
+
+    @staticmethod
+    def destroy(*, destroy_registry: bool = False) -> None:
+        """``DBOS.destroy(...)`` — tear down the runtime.
+
+        ``destroy_registry=False`` (default) leaves the workflow /
+        step / queue registrations in place so the same process can
+        re-launch DBOS later (used by tests that re-create the
+        FastAPI app per case)."""
+        from dbos import DBOS  # noqa: PLC0415
+        DBOS.destroy(destroy_registry=destroy_registry)
 
 
 __all__ = ["Durable"]

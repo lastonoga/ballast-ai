@@ -113,7 +113,7 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
         tools_invoked: list[str] = []
 
         for turn in range(self.max_turns):
-            msg = await DBOS.recv(
+            msg = await Durable.recv(
                 msg_topic,
                 timeout_seconds=self.message_recv_timeout_seconds,
             )
@@ -139,7 +139,7 @@ class DefaultHelperSessionRunner(DBOSConfiguredInstance):
             await agent.run(user_text, deps=deps)
 
             if toolbox.response is not None:
-                DBOS.send(
+                Durable.send(
                     destination_id=str(input.gate_workflow_id),
                     message=toolbox.response.model_dump(mode="json"),
                     topic=gate_topic,

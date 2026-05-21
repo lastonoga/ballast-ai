@@ -11,6 +11,8 @@ import pytest
 import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
+from pydantic_ai_stateflow.durable import Durable
+
 from notes_app.notes.repository import InMemoryNoteRepository
 
 
@@ -39,17 +41,17 @@ def dbos_runtime() -> Iterator[type[DBOS]]:
     """
     tmpdir = tempfile.mkdtemp(prefix="dbos-notes-app-")
     db_path = Path(tmpdir) / "dbos.sqlite"
-    DBOS(
-        config=DBOSConfig(
+    Durable.init(
+        DBOSConfig(
             name="notes-app-test",
             system_database_url=f"sqlite:///{db_path}",
         ),
     )
-    DBOS.launch()
+    Durable.launch()
     try:
         yield DBOS
     finally:
-        DBOS.destroy(destroy_registry=False)
+        Durable.destroy(destroy_registry=False)
 
 
 @pytest_asyncio.fixture

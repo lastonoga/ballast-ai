@@ -21,7 +21,9 @@ import os
 import tempfile
 from pathlib import Path
 
-from dbos import DBOS, DBOSConfig
+from dbos import DBOSConfig
+
+from pydantic_ai_stateflow.durable import Durable
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from pydantic_ai_stateflow.api import CORSConfig
@@ -156,24 +158,24 @@ def build_app(
 
     if manage_dbos_lifecycle:
         async def _launch_dbos(_app: FastAPI) -> None:
-            # ``DBOS(...)`` registers the singleton; ``launch()`` starts
-            # the workflow runtime. Both must happen before any
-            # @DBOS.workflow runs — including the durable
-            # ``TodoApprovalFlow.run`` that ``propose_todo`` kicks off
-            # via ``DBOS.start_workflow_async``.
-            DBOS(
-                config=DBOSConfig(
+            # ``Durable.init(...)`` registers the singleton;
+            # ``Durable.launch()`` starts the workflow runtime. Both must
+            # happen before any ``@Durable.workflow`` runs — including
+            # the durable ``TodoApprovalFlow.run`` that ``propose_todo``
+            # kicks off via ``Durable.start_workflow``.
+            Durable.init(
+                DBOSConfig(
                     name="notes-app",
                     system_database_url=_default_dbos_database_url(),
                 ),
             )
-            DBOS.launch()
+            Durable.launch()
 
         async def _destroy_dbos(_app: FastAPI) -> None:
             # ``destroy_registry=False`` — leave @DBOS.workflow
             # registrations intact for tests / subsequent boots in the
             # same process.
-            DBOS.destroy(destroy_registry=False)
+            Durable.destroy(destroy_registry=False)
 
         startup_hooks.append(_launch_dbos)
         shutdown_hooks.append(_destroy_dbos)

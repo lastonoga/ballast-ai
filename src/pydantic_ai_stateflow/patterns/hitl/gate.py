@@ -48,7 +48,7 @@ class HITLGate(DBOSConfiguredInstance):
 
     The DBOS workflow id of THIS gate run is stored as
     ``BlockingRequirement.workflow_id`` so the endpoint can route the
-    response back via ``DBOS.send(destination_id=workflow_id, ...)``.
+    response back via ``Durable.send(destination_id=workflow_id, ...)``.
 
     Apps that need tenant/workspace scoping carry it inside their
     ``HITLPrompt`` subclass and the ``Policy`` (which receives
@@ -82,12 +82,12 @@ class HITLGate(DBOSConfiguredInstance):
     async def run(
         self, prompt: HITLPrompt, *, request_id: UUID | None = None,
     ) -> HITLResponse:
-        # Inside a @DBOS.workflow, ``DBOS.workflow_id`` is the current
+        # Inside a @DBOS.workflow, ``Durable.current_workflow_id()`` is the current
         # workflow's id — what responders need to ``DBOS.send`` back to.
         # DBOS auto-generated nested workflow ids may not be UUIDs (they
         # take the form ``{parent}-{ordinal}``); coerce non-UUID ids to a
         # deterministic UUID so the BlockingRequirement column accepts them.
-        raw_id = cast(str, DBOS.workflow_id)
+        raw_id = cast(str, Durable.current_workflow_id())
         try:
             workflow_id = UUID(raw_id)
         except (ValueError, AttributeError, TypeError):
@@ -180,7 +180,7 @@ class HITLGate(DBOSConfiguredInstance):
              validates the dict against ``helper_agent.metadata_model``.
           2. The blocking requirement is persisted with the pre-allocated
              ``request_id`` so the helper agent's tools can route their
-             response back via ``DBOS.send(_hitl_topic(request_id), …)``.
+             response back via ``Durable.send(_hitl_topic(request_id), …)``.
           3. A thin ``HITLPrompt`` wrapper is built from ``context`` so
              existing ``run`` plumbing (channel.ask → policy.can →
              persist_response) keeps working — the channel's

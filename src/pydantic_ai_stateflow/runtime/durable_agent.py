@@ -94,7 +94,7 @@ _instance_counter = itertools.count()
 # a thread (no two parallel agent runs writing assistant turns over
 # each other) without blocking the whole app.
 #
-# Module-level so DBOS sees the registration BEFORE ``DBOS.launch()``.
+# Module-level so DBOS sees the registration BEFORE ``Durable.launch()``.
 AGENT_RUN_QUEUE: Queue = Queue(
     name="stateflow-agent-runs",
     concurrency=1,
@@ -444,14 +444,14 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         """Cancel every active workflow for ``thread_id`` + emit ``cancelled``."""
         active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
         prefix = _agent_run_prefix(thread_id)
-        workflows = await DBOS.list_workflows_async(
+        workflows = await Durable.list_workflows(
             workflow_id_prefix=prefix,
             status=active_statuses,
             limit=100,
         )
         cancelled = 0
         for wf in workflows:
-            await DBOS.cancel_workflow_async(wf.workflow_id)
+            await Durable.cancel_workflow(wf.workflow_id)
             cancelled += 1
 
         # Synthetic terminal event so the SSE consumer closes — the

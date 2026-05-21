@@ -7,6 +7,8 @@ from typing import Any
 from uuid import UUID
 
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import TypeAdapter
 
@@ -66,7 +68,7 @@ def build_hitl_router(
             )
             raise HTTPException(status_code=403, detail=verdict.summary())
 
-        DBOS.send(
+        Durable.send(
             destination_id=str(request.workflow_id),
             message=response.model_dump(mode="json"),
             topic=_hitl_topic(request_id),

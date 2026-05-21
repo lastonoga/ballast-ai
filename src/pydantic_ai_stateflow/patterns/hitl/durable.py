@@ -17,7 +17,7 @@ stays alive, fatal for long ones (user closes tab → request cancelled →
   2. The durable workflow blocks on ``DBOS.recv_async`` for the
      helper's decision. Helper agent's tools route their
      ``HITLResponse`` to the workflow via
-     ``DBOS.send_async(destination_id=workflow_id, ...)`` — the
+     ``Durable.send_async(destination_id=workflow_id, ...)`` — the
      framework writes both ``request_id`` and ``workflow_id`` onto the
      helper thread's metadata so the helper's tool body can read them.
 
@@ -310,7 +310,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         registry state.
         """
         topic = _hitl_topic(UUID(request_id))
-        payload = await DBOS.recv_async(topic, timeout_seconds=timeout_seconds)
+        payload = await Durable.recv_async(topic, timeout_seconds=timeout_seconds)
 
         if payload is None:
             from datetime import UTC, datetime  # noqa: PLC0415

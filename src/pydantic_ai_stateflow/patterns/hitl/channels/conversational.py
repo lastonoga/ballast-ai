@@ -97,11 +97,11 @@ class ConversationalChannel:
 
         topic = _hitl_topic(request_id)
         if prompt.timeout is not None:
-            payload = await DBOS.recv(
+            payload = await Durable.recv(
                 topic, timeout_seconds=prompt.timeout.total_seconds(),
             )
         else:
-            payload = await DBOS.recv(topic)
+            payload = await Durable.recv(topic)
         if payload is None:
             return TimeoutResponse(answered_at=datetime.now(tz=UTC))
         return _RESPONSE_ADAPTER.validate_python(payload)

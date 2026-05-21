@@ -25,6 +25,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
@@ -204,7 +206,7 @@ async def test_approve_saves_note_and_notifies_parent(
     # Wait for the durable workflow to consume the DBOS message and
     # finish its work (save + notify). ``get_result()`` blocks until the
     # workflow completes (or raises).
-    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    handle = await Durable.retrieve_workflow(workflow_id)
     await handle.get_result()
 
     listed = await notes_repo.list_()
@@ -244,7 +246,7 @@ async def test_modify_saves_note_with_overrides(
         new_body="milk, eggs, bread",
     )
 
-    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    handle = await Durable.retrieve_workflow(workflow_id)
     await handle.get_result()
 
     listed = await notes_repo.list_()
@@ -283,7 +285,7 @@ async def test_reject_skips_note_and_notifies_parent(
         reason="too vague",
     )
 
-    handle = await DBOS.retrieve_workflow_async(workflow_id)
+    handle = await Durable.retrieve_workflow(workflow_id)
     await handle.get_result()
 
     assert await notes_repo.list_() == []
@@ -331,7 +333,7 @@ async def test_propose_todo_returns_before_helper_decision(
         t2_metadata=t2_meta,
         notes_repo=notes_repo,
     )
-    handle = await DBOS.retrieve_workflow_async(t2_meta["workflow_id"])
+    handle = await Durable.retrieve_workflow(t2_meta["workflow_id"])
     await handle.get_result()
 
 

@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from dbos import DBOS
+
+from pydantic_ai_stateflow.durable import Durable
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -155,7 +157,7 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
         Newest-first.
         """
         prefixes = prefix if prefix else [_thread_workflow_prefix(thread_id)]
-        wfs = await DBOS.list_workflows_async(
+        wfs = await Durable.list_workflows(
             workflow_id_prefix=prefixes,
             sort_desc=True,
             limit=limit,
@@ -177,7 +179,7 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
         in combination with the steps endpoint to render the full
         execution tree (steps + nested workflows) of a pattern like
         ``DivergentConvergent``."""
-        wfs = await DBOS.list_workflows_async(
+        wfs = await Durable.list_workflows(
             parent_workflow_id=workflow_id,
             sort_desc=False,  # preserve enqueue order so fan-out reads left-to-right
             limit=limit,
@@ -189,7 +191,7 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
     @router.get("/dbos/workflows/{workflow_id}")
     async def get_workflow(workflow_id: str) -> dict[str, Any]:
         """Status + IO for one workflow."""
-        wfs = await DBOS.list_workflows_async(
+        wfs = await Durable.list_workflows(
             workflow_ids=[workflow_id],
             limit=1,
             load_input=True,
@@ -208,7 +210,7 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         """List recorded steps for one workflow (durable execution log)."""
-        steps = await DBOS.list_workflow_steps_async(
+        steps = await Durable.list_workflow_steps(
             workflow_id, limit=limit, offset=offset,
         )
         return [_step_to_dict(s) for s in steps]
@@ -216,13 +218,13 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
     @router.post("/dbos/workflows/{workflow_id}/cancel")
     async def cancel_workflow(workflow_id: str) -> dict[str, Any]:
         """Mark a workflow as cancelled. Idempotent on terminal workflows."""
-        await DBOS.cancel_workflow_async(workflow_id)
+        await Durable.cancel_workflow(workflow_id)
         return {"workflow_id": workflow_id, "cancelled": True}
 
     @router.post("/dbos/workflows/{workflow_id}/resume")
     async def resume_workflow(workflow_id: str) -> dict[str, Any]:
         """Resume execution of a cancelled / interrupted workflow."""
-        handle = await DBOS.resume_workflow_async(workflow_id)
+        handle = await Durable.resume_workflow(workflow_id)
         return {
             "workflow_id": workflow_id,
             "resumed": True,
@@ -239,7 +241,7 @@ def build_dbos_router(*, prefix: str = "") -> APIRouter:
         completed steps before ``start_step`` are reused; everything
         from ``start_step`` onward re-executes fresh under the new id.
         """
-        handle = await DBOS.fork_workflow_async(
+        handle = await Durable.fork_workflow(
             workflow_id,
             body.start_step,
             queue_name=body.queue_name,
