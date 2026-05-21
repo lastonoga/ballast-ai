@@ -188,13 +188,19 @@ class BrainstormFlow(DBOSConfiguredInstance):
     async def run(self, *, topic: str, parent_thread_id: UUID) -> UUID:
         """Run the brainstorm + open HITL. Returns helper thread id."""
         chosen: TodoIdea = await self._divergent.run(topic)
+        context = TodoApprovalContext(
+            proposed_title=chosen.title,
+            proposed_body=chosen.body,
+            parent_thread_id=parent_thread_id,
+        )
         helper_thread = await self._todo_flow.open(
             helper_agent=NotesTodoApprovalAgent,
-            context=TodoApprovalContext(
-                proposed_title=chosen.title,
-                proposed_body=chosen.body,
-                parent_thread_id=parent_thread_id,
-            ),
+            context=context,
+            # Seed an assistant message so the user opening the helper
+            # thread sees what's being proposed — without this the
+            # thread is silently blank until they type. Same affordance
+            # NotesAgent.propose_todo provides.
+            opening_message=context.to_opening_message(),
             notify_parent_thread_id=parent_thread_id,
         )
         return helper_thread.id
