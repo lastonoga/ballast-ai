@@ -472,18 +472,27 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               }
               if (data.kind !== "message-added" || !data.payload) return;
               const newMsg = data.payload;
-              // Append to useChat state — skip if it's already there
-              // (an event-log replay after reconnect would otherwise
-              // duplicate). Uses chat.setMessages with the functional
-              // updater pattern so we don't race with concurrent
-              // useChat-driven updates (streaming etc).
+              // Upsert into useChat state — replace the message if its
+              // id already exists, otherwise append. The replace path
+              // is required for streaming custom thread events
+              // (``ThreadEventStream.update``) which emit the SAME
+              // message_id repeatedly with mutated parts; without the
+              // replace, only the first update would be visible.
+              //
+              // Event-log replay after reconnect therefore also
+              // converges idempotently: the last-known version wins.
               const w = chatRef.current as unknown as {
                 setMessages: (
                   updater: (prev: UIMessage[]) => UIMessage[],
                 ) => void;
               };
               w.setMessages((prev) => {
-                if (prev.some((m) => m.id === newMsg.id)) return prev;
+                const idx = prev.findIndex((m) => m.id === newMsg.id);
+                if (idx >= 0) {
+                  const next = prev.slice();
+                  next[idx] = newMsg as unknown as UIMessage;
+                  return next;
+                }
                 return [...prev, newMsg as unknown as UIMessage];
               });
             } catch (err) {

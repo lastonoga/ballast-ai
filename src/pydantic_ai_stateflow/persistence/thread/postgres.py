@@ -111,6 +111,41 @@ class PostgresThreadRepository:
         )
         return msg
 
+    async def upsert_message(
+        self,
+        thread_id: UUID,
+        *,
+        id: str,
+        role: str,
+        parts: list[dict[str, Any]],
+    ) -> Message:
+        thread = await self.load(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        if thread.status == ThreadStatus.CLOSED:
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot upsert message",
+            )
+        existing_stmt = select(Message).where(col(Message.id) == id)
+        existing = (
+            await self._session.execute(existing_stmt)
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.role = role
+            existing.parts = list(parts)
+            await self._session.flush()
+            return existing
+        msg = Message(
+            id=id,
+            thread_id=thread_id,
+            role=role,
+            parts=list(parts),
+        )
+        self._session.add(msg)
+        await self._session.flush()
+        await self._session.refresh(msg)
+        return msg
+
     @traced(
         TraceName.THREAD_HISTORY,
         attrs=lambda _self, thread_id, *, limit=1000, **__: {

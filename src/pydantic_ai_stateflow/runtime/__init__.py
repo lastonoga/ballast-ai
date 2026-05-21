@@ -23,6 +23,11 @@ from pydantic_ai_stateflow.runtime.event_stream_provider import (
 )
 from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, IdempotencyValue
 from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from pydantic_ai_stateflow.runtime.thread_events import (
+    ThreadEventBroadcaster,
+    ThreadEventStream,
+    ThreadEventType,
+)
 
 __all__ = [
     "AgentRef",
@@ -41,6 +46,9 @@ __all__ = [
     "InProcessEventStream",
     "ServiceProvider",
     "StateflowAgent",
+    "ThreadEventBroadcaster",
+    "ThreadEventStream",
+    "ThreadEventType",
     "build_dbos_config",
     "clear_agent_registry",
     "get_agent",

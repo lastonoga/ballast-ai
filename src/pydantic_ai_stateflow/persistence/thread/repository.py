@@ -68,6 +68,26 @@ class ThreadRepository(Protocol):
     ) -> list[Message]:
         """Linear message list for ``thread_id`` ordered by ``created_at``."""
         ...
+    async def upsert_message(
+        self,
+        thread_id: UUID,
+        *,
+        id: str,
+        role: str,
+        parts: list[dict[str, Any]],
+    ) -> Message:
+        """Insert or replace a message by id.
+
+        Same semantics as ``add_message`` for first-time inserts, but
+        an existing row with the same id has its ``role`` and ``parts``
+        REPLACED in place — ``created_at`` is preserved so the message
+        keeps its position in the linear history.
+
+        Used by streaming-event APIs (see
+        ``runtime.thread_events.ThreadEventStream``) to mutate a single
+        UI-visible message across multiple snapshots without appending
+        N rows."""
+        ...
     async def delete_messages(
         self, thread_id: UUID, *, ids: list[str],
     ) -> None:
@@ -171,6 +191,40 @@ class InMemoryThreadRepository:
             "parts=%d",
             thread_id, msg.id, role, len(msg.parts),
         )
+        return msg
+
+    async def upsert_message(
+        self,
+        thread_id: UUID,
+        *,
+        id: str,
+        role: str,
+        parts: list[dict[str, Any]],
+    ) -> Message:
+        thread = self._threads.get(thread_id)
+        if thread is None:
+            raise KeyError(f"Thread {thread_id} not found")
+        if thread.status == ThreadStatus.CLOSED:
+            raise ThreadClosedError(
+                f"Thread {thread_id} is closed; cannot upsert message",
+            )
+        existing = next(
+            (m for m in self._messages[thread_id] if m.id == id), None,
+        )
+        if existing is not None:
+            # In-place replace; preserve created_at so linear position
+            # in history doesn't shift.
+            existing.role = role
+            existing.parts = list(parts)
+            return existing
+        msg = Message(
+            id=id,
+            thread_id=thread_id,
+            role=role,
+            parts=list(parts),
+            created_at=datetime.now(tz=UTC),
+        )
+        self._messages[thread_id].append(msg)
         return msg
 
     @traced(
