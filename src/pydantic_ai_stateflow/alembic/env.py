@@ -8,7 +8,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
@@ -20,6 +20,20 @@ import pydantic_ai_stateflow.persistence.tenant.persistence  # noqa: F401
 import pydantic_ai_stateflow.persistence.thread.persistence  # noqa: F401
 
 config = context.config
+
+# SP3: SP2 settings override — when STATEFLOW_DBOS__DATABASE_URL (or any
+# of the legacy aliases) is set, prefer it over the alembic.ini
+# placeholder. Guarded so env.py stays standalone-usable when settings
+# are not available in the process (e.g. CI smoke `alembic check`).
+try:
+    from pydantic_ai_stateflow.settings import get_settings
+
+    _settings = get_settings()
+    if _settings.dbos.database_url:
+        config.set_main_option("sqlalchemy.url", _settings.dbos.database_url)
+except Exception:
+    # Settings unavailable — keep ini fallback.
+    pass
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -45,7 +59,7 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_migrations_online() -> None:
+async def run_migrations_online_async() -> None:
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -56,7 +70,27 @@ async def run_migrations_online() -> None:
     await connectable.dispose()
 
 
+def run_migrations_online_sync() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
+    connectable.dispose()
+
+
+def _is_async_url(url: str | None) -> bool:
+    """Branch on URL scheme: only `+asyncpg` / `+aiosqlite` need the async path."""
+    if not url:
+        return False
+    return "+asyncpg" in url or "+aiosqlite" in url or "+asyncmy" in url
+
+
 if context.is_offline_mode():
     run_migrations_offline()
+elif _is_async_url(config.get_main_option("sqlalchemy.url")):
+    asyncio.run(run_migrations_online_async())
 else:
-    asyncio.run(run_migrations_online())
+    run_migrations_online_sync()
