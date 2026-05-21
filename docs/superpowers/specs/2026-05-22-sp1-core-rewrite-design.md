@@ -209,9 +209,10 @@ do so explicitly to override the auto-derived name (escape hatch for
 backwards compat with serialized `Thread.agent` strings); the decorator
 respects an explicit non-default `name` ClassVar.
 
-Instance registration: `create_app(agents=[NotesAgent(...)])` accepts already-
-constructed instances. For zero-arg agents `create_app(agents=[NotesAgent])`
-constructs the instance itself.
+Instance registration: `create_app(agents=[NotesAgent(...)])` accepts **only
+already-constructed instances** — no auto-instantiation. The decorator
+mapped the class name to the kebab-name; `type(instance).__name__` is used
+to look up the kebab-name + register the instance in `app.state.agents[name]`.
 
 **`register_agent(instance)` is deleted.** All call sites move to
 `@stateflow_agent` + passing the instance to `create_app(agents=[...])`.
@@ -321,14 +322,31 @@ class BrainstormFlow:
         return f"brainstorm:{task.parent_thread_id}:{abs(hash(task.topic))}"
 ```
 
-**Instance resolution.** Workflow registrations carry a class, not an
-instance. `create_app(workflows=[BrainstormFlow])` accepts either:
-
-- a class — framework attempts zero-arg construction; raises at boot time if
-  `__init__` requires arguments;
-- an instance — used verbatim.
+**Instance resolution.** `create_app(workflows=[brainstorm_instance, ...])`
+takes **already-constructed instances only** — no auto-instantiation, no
+factory callbacks, no DI magic. The decorator stored `(name, input_type,
+output_type)` as ClassVars on the class; `create_app` looks them up via
+`type(instance)` and uses the kebab-name as the registry key.
 
 Resolved instances are stored in `app.state.workflows[name] = instance`.
+
+Apps that need **dynamic workflow construction** (per-tenant, per-request)
+do NOT register such workflows with `@sf.workflow` for HTTP autogen.
+They just construct + invoke at runtime:
+
+```python
+async def per_tenant_brainstorm(tenant_id: str, task: BrainstormTask) -> BrainstormOutcome:
+    flow = BrainstormFlow(
+        todo_flow=get_tenant_todo_flow(tenant_id),
+        broadcaster=get_tenant_broadcaster(tenant_id),
+        config_name=f"brainstorm-{tenant_id}",
+    )
+    handle = await sf.Durable.start_workflow(flow.run, task)
+    return await handle.get_result()
+```
+
+The decorator is for HTTP-exposed singleton workflows; dynamic workflows
+just use the class as a normal Python class.
 The auto-generated endpoint resolves via:
 
 ```python
@@ -537,9 +555,9 @@ e.g. only the threads router get `sf.routers.threads` exposed.
 
 def create_app(
     *,
-    # Construction targets
-    workflows: Sequence[type | object] = (),
-    agents: Sequence[type | object] = (),
+    # Construction targets — INSTANCES ONLY (no classes, no factories).
+    workflows: Sequence[object] = (),
+    agents: Sequence[StateflowAgent] = (),
 
     # Cross-cutting infra (sane defaults; apps override)
     thread_repo: ThreadRepository | None = None,
@@ -567,10 +585,13 @@ def create_app(
        if instrumentation is misconfigured.
     2. Repos resolve (defaults to InMemory* when not supplied).
     3. ``app.state`` populated with repos for ``Depends(get_*)`` resolution.
-    4. Workflow registry walked; for each registered class, an instance
-       is acquired (from ``workflows=`` arg, or auto-constructed if
-       zero-arg, or raises). Instances stored at ``app.state.workflows[name]``.
-    5. Agent registry walked; same story, stored at ``app.state.agents[name]``.
+    4. For each instance in ``workflows=``: read ``(name, input_type,
+       output_type)`` from ClassVars set by ``@sf.workflow`` decorator
+       on ``type(instance)``; store at ``app.state.workflows[name]``.
+       Raises if instance's class lacks the decorator metadata.
+    5. For each instance in ``agents=``: read kebab-name from
+       ClassVar set by ``@sf.stateflow_agent`` decorator on
+       ``type(instance)``; store at ``app.state.agents[name]``.
     6. Built-in routers mounted: health, threads, streaming, dbos.
        Workflow routers mounted (one per registration).
        ``extra_routers`` appended last.
@@ -609,27 +630,32 @@ def _dbos_db_url() -> str:
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
-# App-level singletons. These are concrete instances the workflows need at
-# construction time; create_app passes them through to the workflow
-# constructors via a constructor-kwargs callback.
+# App-level singletons. Explicit construction in main.py — no DI magic.
 notes_repo = InMemoryNoteRepository()
+thread_repo = sf.InMemoryThreadRepository()
+event_log = sf.InMemoryEventLogRepository()
+event_stream = sf.InProcessEventStream()
 
+todo_flow = TodoApprovalFlow(
+    notes_repo=notes_repo, thread_repo=thread_repo,
+    event_log=event_log, event_stream=event_stream,
+)
+broadcaster = sf.ThreadEventBroadcaster(
+    thread_repo=thread_repo, event_log=event_log, event_stream=event_stream,
+)
+brainstorm = build_brainstorm_flow(todo_flow=todo_flow, broadcaster=broadcaster)
 
-def _construct_brainstorm(thread_repo, event_log, event_stream) -> BrainstormFlow:
-    todo_flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
-        event_log=event_log, event_stream=event_stream,
-    )
-    broadcaster = sf.ThreadEventBroadcaster(
-        thread_repo=thread_repo, event_log=event_log, event_stream=event_stream,
-    )
-    return build_brainstorm_flow(todo_flow=todo_flow, broadcaster=broadcaster)
-
+notes_agent = NotesAgent(
+    notes_repo=notes_repo, thread_repo=thread_repo,
+    event_log=event_log, event_stream=event_stream, todo_flow=todo_flow,
+    config_name="notes-app-notes-agent",
+)
+approval_agent = NotesTodoApprovalAgent(notes_repo=notes_repo)
 
 app = sf.create_app(
-    workflows=[TodoApprovalFlow, BrainstormFlow],
-    workflow_factories={BrainstormFlow: _construct_brainstorm},  # see below
-    agents=[NotesAgent, NotesTodoApprovalAgent],
+    workflows=[todo_flow, brainstorm],
+    agents=[notes_agent, approval_agent],
+    thread_repo=thread_repo, event_log=event_log, event_stream=event_stream,
     cors=sf.CORSConfig.permissive_dev(),
     dbos=sf.DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
     extra_routers=[notes_router],
@@ -641,21 +667,14 @@ app = sf.create_app(
 app.state.notes_repo = notes_repo  # for the notes router's Depends
 ```
 
-Where `workflow_factories` is a class→callable map: when present, the
-callable receives `(thread_repo, event_log, event_stream)` (the framework
-infra repos) and returns the constructed instance. This is the documented
-escape hatch for workflows whose `__init__` takes app-specific args.
-Zero-arg workflows skip this entirely.
+Construction is fully explicit — no class→callable factory map, no zero-arg
+auto-instantiation, no DI graph resolution. Apps wire their singletons
+top-of-file the same way a FastAPI app constructs `db_pool = create_pool(...)`
+before passing it to dependency factories.
 
-A simpler app (no app-specific construction) collapses to:
-
-```python
-app = sf.create_app(
-    workflows=[MyFlow],
-    agents=[MyAgent],
-    dbos=sf.DBOSConfig(name="my-app", system_database_url=DSN),
-)
-```
+For **dynamic per-request workflows** (multi-tenant, A/B testing), apps
+skip the registration path entirely — see §C "Instance resolution" for
+the runtime-spawn pattern. Decorators are for HTTP-exposed singletons.
 
 ### G. What gets deleted
 
@@ -843,34 +862,19 @@ isolates the rewrite blast radius: pattern tests don't need to change.
    dep resolution. The risk: if a future need arises for "two threads
    routers with different prefixes mounted on the same app" the
    module-level instance would need to be cloned. Probability low (no
-   current callers); revisit if it materializes.
+   current callers); revisit if it materializes. **RESOLVED:** stay
+   module-level.
 
-2. **Auto-instantiation of workflow classes.** The spec says
-   `create_app` attempts `cls()` for classes passed without instances
-   and raises if `__init__` requires args (with `workflow_factories=`
-   as escape hatch). An alternative is to require explicit instances
-   always, which is more verbose but more predictable. Recommendation:
-   start with auto-instantiation + factory escape hatch; downgrade to
-   explicit-only if the magic causes diagnostic confusion in real apps.
-
-3. **Should `sf.create_app` accept `repos: dict[type, object]` for
+2. **Should `sf.create_app` accept `repos: dict[type, object]` for
    bulk override of the three default repos?** Currently it's three
    separate kwargs (`thread_repo`, `event_log`, `event_stream`).
    Three is small enough to not need a bag — recommend status quo. If
    a fourth (e.g. a `MetricsRepository`) lands in SP2 the bag pattern
    becomes worth considering.
 
-4. **Are tests using `pytest_plugins = ["pydantic_ai_stateflow.testing"]`
+3. **Are tests using `pytest_plugins = ["pydantic_ai_stateflow.testing"]`
    robust against test files that intentionally don't want the fixture
    loaded?** pytest treats `pytest_plugins` per-conftest; modules outside
    that conftest's scope don't see the fixture. This is the standard
    pattern (matches `pytest-asyncio`, `pytest-anyio`). No action
    needed; calling out for awareness.
-
-5. **`workflow_factories=` ergonomics.** The signature
-   `Callable[[ThreadRepository, EventLogRepository, EventStream],
-   WorkflowInstance]` is positional; if apps need other framework
-   infra (e.g. a `MetricsExporter` once SP2 lands) the signature
-   changes break callers. Alternative: pass a `FrameworkInfra`
-   dataclass to the factory. Recommend deferring until SP2 actually
-   introduces a fourth infra type — premature abstraction otherwise.

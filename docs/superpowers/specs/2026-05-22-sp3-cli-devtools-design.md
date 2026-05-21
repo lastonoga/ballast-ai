@@ -338,7 +338,7 @@ def ls(
 
    settings = get_settings()
    Durable.init(DBOSConfig(
-       name=settings.app.name,
+       name=settings.dbos.app_name,
        system_database_url=settings.dbos.database_url,
    ))
    Durable.launch()

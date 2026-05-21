@@ -68,9 +68,9 @@ Two pieces, designed together because errors will reference settings
   in SP3. The settings class is built to support them; no commands ship
   here.
 - **Observability defaults flipped on** — user explicitly required
-  observability stay opt-in via `ObservabilityProvider`. `StateflowSettings`
-  holds the *defaults* for that provider, but importing settings never
-  configures logfire.
+  observability stay opt-in via `ObservabilityConfig` (the SP1 replacement
+  for `ObservabilityProvider`). `StateflowSettings` holds the *defaults*
+  for that config, but importing settings never configures logfire.
 - **Generalizing settings to runtime-mutable config** — settings are
   read-once at process start, validated, then immutable. Runtime
   feature flags are out of scope.
@@ -117,8 +117,9 @@ class DBOSSettings(BaseModel):
 
 
 class ObservabilitySettings(BaseModel):
-    """Defaults for ``ObservabilityProvider``. Importing settings does
-    NOT configure logfire — the provider stays explicitly constructed."""
+    """Defaults for ``ObservabilityConfig`` (SP1). Importing settings does
+    NOT configure logfire — apps construct ``ObservabilityConfig(...)``
+    and call ``.install()`` explicitly."""
     logfire_token: SecretStr | None = None
     service_name: str = "pydantic-ai-stateflow"
     environment: str = "dev"
@@ -144,8 +145,10 @@ class APISettings(BaseModel):
     # themselves set this False.
     install_error_middleware: bool = True
     # Whether stack traces are included in problem+json bodies.
-    # False in prod (default), True only when env=dev.
-    expose_tracebacks: bool = False
+    # ``None`` (default) → auto: on iff ``observability.environment == "dev"``.
+    # Explicit ``True`` / ``False`` overrides the auto-detect. Safer default
+    # for prod (off); convenient for dev (on).
+    expose_tracebacks: bool | None = None
 
 
 class LoggingSettings(BaseModel):
@@ -297,33 +300,38 @@ class StateflowError(Exception):
         return f"{type(self).__name__}(code={self.code!r}, detail={self.detail!r})"
 ```
 
-**Hierarchy:**
+**Hierarchy** (flat: no generic `RuntimeError` / `ValidationError`
+intermediates that would shadow stdlib/pydantic names; concrete
+subclasses inherit directly from `StateflowError` or from a domain
+parent that adds no behaviour beyond grouping):
 
 ```
 StateflowError
-├── ConfigurationError          (status 500)  STATEFLOW_CONFIG_*
-│   ├── SettingsValidationError                STATEFLOW_CONFIG_SETTINGS_INVALID
-│   └── MissingDependencyError                 STATEFLOW_CONFIG_DEPENDENCY_MISSING
-├── EngineInvariantViolation    (status 500)  STATEFLOW_ENGINE_INVARIANT
-├── RuntimeError_               (status 500)  STATEFLOW_RUNTIME_*           [base for runtime]
-│   └── ContainerBindingMissing                STATEFLOW_RUNTIME_BINDING_MISSING
-├── PersistenceError            (status 500)  STATEFLOW_PERSISTENCE_*
-│   └── ThreadNotFound          (status 404)  STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND
-├── ValidationError_            (status 422)  STATEFLOW_VALIDATION_*
-│   └── ThreadMetadataInvalid                  STATEFLOW_VALIDATION_THREAD_METADATA
-├── AuthError                   (status 401)  STATEFLOW_AUTH_*
-│   └── AuthorizationDenied     (status 403)  STATEFLOW_AUTH_FORBIDDEN
-└── PatternError                (status 500)  STATEFLOW_PATTERN_*
-    ├── ReflectionExhausted                    STATEFLOW_PATTERN_REFLECTION_EXHAUSTED
-    ├── MutationRejected                       STATEFLOW_PATTERN_MUTATION_REJECTED
-    ├── HITLTimedOut                           STATEFLOW_PATTERN_HITL_TIMED_OUT
-    ├── HITLDenied              (status 403)  STATEFLOW_PATTERN_HITL_DENIED
-    └── InsufficientDivergence                 STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE
+├── ConfigurationError                 (status 500)  STATEFLOW_CONFIG_*
+│   ├── SettingsValidationError                       STATEFLOW_CONFIG_SETTINGS_INVALID
+│   ├── MissingDependencyError                        STATEFLOW_CONFIG_DEPENDENCY_MISSING
+│   └── ConfigurationInvariantViolation               STATEFLOW_CONFIG_INVARIANT
+│           (replaces the old ``EngineInvariantViolation`` — Engine
+│            is deleted by SP1; the "invariant check at bootstrap"
+│            concept moves to ``ObservabilityConfig.install`` and
+│            other one-time config calls.)
+├── PersistenceError                   (status 500)  STATEFLOW_PERSISTENCE_*
+│   ├── ThreadNotFound                 (status 404)  STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND
+│   └── ThreadMetadataInvalid          (status 422)  STATEFLOW_PERSISTENCE_THREAD_METADATA_INVALID
+├── AuthError                          (status 401)  STATEFLOW_AUTH_*
+│   └── AuthorizationDenied            (status 403)  STATEFLOW_AUTH_FORBIDDEN
+└── PatternError                       (status 500)  STATEFLOW_PATTERN_*
+    ├── ReflectionExhausted                           STATEFLOW_PATTERN_REFLECTION_EXHAUSTED
+    ├── MutationRejected                              STATEFLOW_PATTERN_MUTATION_REJECTED
+    ├── HITLTimedOut                   (status 504)  STATEFLOW_PATTERN_HITL_TIMED_OUT
+    ├── HITLDenied                     (status 403)  STATEFLOW_PATTERN_HITL_DENIED
+    └── InsufficientDivergence                        STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE
 ```
 
-(Suffix `_` on `RuntimeError_` and `ValidationError_` is to avoid
-shadowing the stdlib / pydantic names in scope when both modules are
-imported — they're exported under aliased names; see "Migration".)
+**Deleted from earlier draft:** `ContainerBindingMissing` (Container
+itself deleted by SP1 — no bindings, no error); generic `RuntimeError_`
+and `ValidationError_` parents (no behaviour beyond grouping; concrete
+classes carry the semantic info directly via `code` + `status_code`).
 
 **Subclass pattern (concrete example):**
 
@@ -398,7 +406,11 @@ def _render(err: StateflowError, *, include_trace: bool) -> dict[str, Any]:
 async def stateflow_error_handler(request: Request, exc: StateflowError) -> JSONResponse:
     from pydantic_ai_stateflow.settings import get_settings
 
-    expose = get_settings().api.expose_tracebacks
+    settings = get_settings()
+    # Tri-state resolution: explicit override > auto from env=="dev" > off.
+    expose = settings.api.expose_tracebacks
+    if expose is None:
+        expose = settings.observability.environment == "dev"
     _emit_log(exc)
     _emit_span_event(exc)
     return JSONResponse(
@@ -537,7 +549,7 @@ def _format_plain(exc: StateflowError) -> str:
 
 | Old class | Module | New base / status | New code |
 | --- | --- | --- | --- |
-| `EngineInvariantViolation` | `runtime/engine.py` | `StateflowError` (500) | `STATEFLOW_ENGINE_INVARIANT` |
+| `EngineInvariantViolation` | `runtime/engine.py` (deleted by SP1) | `ConfigurationInvariantViolation` (500) | `STATEFLOW_CONFIG_INVARIANT` |
 | `PatternError` | `patterns/errors.py` | `StateflowError` (500) | `STATEFLOW_PATTERN` (used only via subclasses) |
 | `ReflectionExhausted` | `patterns/errors.py` | `PatternError` (500) | `STATEFLOW_PATTERN_REFLECTION_EXHAUSTED` |
 | `MutationRejected` | `patterns/errors.py` | `PatternError` (500) | `STATEFLOW_PATTERN_MUTATION_REJECTED` |
@@ -644,7 +656,8 @@ Each step is independently mergeable + reversible.
 - Background task that raises → handler runs, span event emitted (when
   logfire stub present).
 - `settings.api.expose_tracebacks=True` → response body has `traceback`
-  key; `False` → no `traceback` key.
+  key; `False` → no `traceback` key; `None` (default) → auto on iff
+  `observability.environment=="dev"`.
 - `settings.api.install_error_middleware=False` → `install_error_handlers`
   short-circuits.
 
@@ -660,16 +673,13 @@ Each step is independently mergeable + reversible.
 
 ## Open questions
 
-1. **`format_error` ANSI rendering choice.** Spec describes rich-rendered
-   output but doesn't pin the exact glyph set (✗ vs ERROR vs ERR). Pick
-   during implementation; not load-bearing.
-2. **Subclass naming collisions.** `RuntimeError` and `ValidationError`
-   shadow stdlib / pydantic. Spec proposes `_` suffix on the framework
-   subclass and exporting under aliased names (`RuntimeError as
-   FrameworkRuntimeError`). Final names settled at implementation time
-   if the suffix proves ugly in practice — the *taxonomy* is what
-   this spec locks in, not the exact identifier.
-3. **`expose_tracebacks` auto-flip.** Currently the default is `False`
-   regardless of `environment`. We could auto-set `True` when
-   `environment == "dev"`. Deferring to implementation; safer default
-   (off) is fine for v1.
+1. **`format_error` ANSI rendering choice.** Glyph set fixed to `✗`
+   for errors. Not load-bearing; could be tweaked later.
+2. **Subclass naming collisions.** RESOLVED — generic `RuntimeError_` /
+   `ValidationError_` parents dropped from hierarchy. Concrete subclasses
+   inherit directly from `StateflowError` or from domain parents
+   (`PersistenceError`, `PatternError` etc.) that don't shadow stdlib
+   names.
+3. **`expose_tracebacks` auto-flip.** RESOLVED — tri-state default
+   (`None` → auto from `environment == "dev"`; explicit `True`/`False`
+   overrides). See APISettings.expose_tracebacks docstring.
