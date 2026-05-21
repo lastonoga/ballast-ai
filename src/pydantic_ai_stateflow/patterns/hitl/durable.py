@@ -49,6 +49,7 @@ from uuid import UUID, uuid4
 from dbos import DBOS, DBOSConfiguredInstance, SetEnqueueOptions, SetWorkflowID
 from pydantic import BaseModel, TypeAdapter
 
+from pydantic_ai_stateflow.logging import get_logger
 from pydantic_ai_stateflow.observability.spans import traced
 from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.patterns.hitl.response import (
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
     from pydantic_ai_stateflow.runtime.event_stream import EventStream
 
+_log = get_logger(__name__)
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 _instance_counter = itertools.count()
 
@@ -257,6 +259,14 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         # a frontend listening on its long-lived SSE can refresh the
         # thread list immediately. No-op when notify_parent_thread_id
         # or event_log isn't wired.
+        _log.info(
+            "DurableHITLWorkflow.open notify_parent=%s event_log_wired=%s "
+            "event_stream_wired=%s helper_thread=%s",
+            notify_parent_thread_id,
+            self._event_log is not None,
+            self._event_stream is not None,
+            thread.id,
+        )
         if notify_parent_thread_id is not None and self._event_log is not None:
             ev = await self._event_log.append(
                 thread_id=notify_parent_thread_id,

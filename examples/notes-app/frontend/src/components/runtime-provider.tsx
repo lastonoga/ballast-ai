@@ -369,8 +369,16 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
         useEffect(() => {
           if (!remoteId) return;
           const url = `${apiUrl}/threads/${remoteId}/events`;
+          // eslint-disable-next-line no-console
+          console.debug("[thread-events] opening SSE", url);
           const es = new EventSource(url);
+          es.onopen = () => {
+            // eslint-disable-next-line no-console
+            console.debug("[thread-events] open", remoteId);
+          };
           es.onmessage = (ev) => {
+            // eslint-disable-next-line no-console
+            console.debug("[thread-events] msg", ev.data);
             try {
               const data = JSON.parse(ev.data) as {
                 kind?: string;
@@ -385,6 +393,11 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
                 // refresh the sidebar so the new helper conversation
                 // appears without F5. The runtime's threads.reload
                 // re-fetches via thread-list-adapter.list().
+                // eslint-disable-next-line no-console
+                console.debug(
+                  "[thread-events] thread-created → reload",
+                  reloadThreadListRef.current ? "have-fn" : "NO-FN",
+                );
                 reloadThreadListRef.current?.();
                 return;
               }
@@ -412,7 +425,9 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
               );
             }
           };
-          es.onerror = () => {
+          es.onerror = (err) => {
+            // eslint-disable-next-line no-console
+            console.debug("[thread-events] error", err);
             // EventSource auto-reconnects with Last-Event-ID — no
             // manual handling needed. The error fires on transient
             // disconnects which the browser recovers from.
