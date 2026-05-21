@@ -49,8 +49,9 @@ from pydantic_ai_stateflow.runtime import (
 )
 
 from notes_app.agent import NotesAgent
+from pydantic_ai_stateflow.api.workflow_router import build_workflow_router
+
 from notes_app.brainstorm_flow import BrainstormFlow, build_brainstorm_flow
-from notes_app.brainstorm_router import build_brainstorm_router
 from notes_app.notes import InMemoryNoteRepository, NoteRepository
 from notes_app.notes.routes import build_notes_router
 from notes_app.todo_approval_agent import NotesTodoApprovalAgent
@@ -158,7 +159,9 @@ def build_app(
     # Thread-scoped via ``/dbos/threads/{id}/workflows`` (filters by the
     # ``agent-run:{thread_id}:`` prefix that StateflowDurableAgent mints).
     dbos_router = build_dbos_router()
-    brainstorm_router = build_brainstorm_router(flow=bstorm, thread_repo=repo)
+    # Transitional: mount the auto-generated @sf.workflow route directly
+    # until T9 rewrites main.py to use sf.create_app(workflows=[bstorm]).
+    brainstorm_workflow_router = build_workflow_router(bstorm)
 
     async def _bind_domain_repos(app: FastAPI) -> None:
         """Bind app-level repos onto the framework Container (spec 4A.0.7)."""
@@ -194,7 +197,7 @@ def build_app(
     app: FastAPI = engine.fastapi_app(
         extra_routers=[
             notes_router, threads_router, streaming_router,
-            dbos_router, brainstorm_router,
+            dbos_router, brainstorm_workflow_router,
         ],
         cors=CORSConfig.permissive_dev(),
         on_startup=startup_hooks,
@@ -207,6 +210,10 @@ def build_app(
     app.state.todo_approval_agent = approval_agent
     app.state.todo_flow = flow
     app.state.brainstorm_flow = bstorm
+    # ``get_workflow_instance("brainstorm-flow")`` resolves from this dict;
+    # T9 will replace with sf.create_app(workflows=[bstorm]) which populates
+    # app.state.workflows automatically.
+    app.state.workflows = {"brainstorm-flow": bstorm}
     return app
 
 

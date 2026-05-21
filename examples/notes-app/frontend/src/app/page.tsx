@@ -1,6 +1,7 @@
 "use client";
 
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
+import { BrainstormBranchUI } from "@/components/assistant-ui/brainstorm-branch";
 import { BrainstormProgressUI } from "@/components/assistant-ui/brainstorm-progress";
 import { DeleteNoteApproval } from "@/components/assistant-ui/delete-note-approval";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
@@ -24,6 +25,11 @@ export default function Home() {
       {/* Same pattern — ``makeAssistantDataUI`` self-registers and claims
           rendering for the ``data-brainstorm-progress`` part type. */}
       <BrainstormProgressUI />
+      {/* Per-branch progress rows — one mutating row per divergent
+          (label, sample_idx) pair, indented under the top-level
+          "Brainstorming ideas" line so the user sees proposers tick
+          off in parallel. */}
+      <BrainstormBranchUI />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <ResizablePanelGroup orientation="horizontal">
           <ResizablePanel id="main" defaultSize={67}>

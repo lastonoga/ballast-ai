@@ -1,6 +1,6 @@
 """Notes-app brainstorm flow — thin user of the framework.
 
-End-to-end: user clicks "Brainstorm todo" → POST /workflows/brainstorm-todo
+End-to-end: user clicks "Brainstorm todo" → POST /workflows/brainstorm-flow
 → ``BrainstormFlow.run(BrainstormTask(...))`` →
 ``DivergentConvergent`` fans out to N different LLM agents (each with
 its own model, temperature, system prompt), optionally dedups,
@@ -44,6 +44,7 @@ from pydantic_ai_stateflow import (
     ThreadEventBroadcaster,
     ThreadEventType,
 )
+from pydantic_ai_stateflow.runtime.workflows import workflow as sf_workflow
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
 from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
     BranchCompleted,
@@ -246,7 +247,7 @@ class BrainstormOutcome(BaseModel):
     proposed_body: str
 
 
-@Durable.dbos_class()
+@sf_workflow(input=BrainstormTask, output=BrainstormOutcome)
 class BrainstormFlow(DBOSConfiguredInstance):
     """Glue between ``DivergentConvergent`` and ``TodoApprovalFlow``.
 
@@ -258,7 +259,20 @@ class BrainstormFlow(DBOSConfiguredInstance):
 
     Stable ``config_name`` so DBOS can rebind in-flight workflows back
     to this instance after a restart.
+
+    Auto-mounted as ``POST /workflows/brainstorm-flow`` by the
+    framework's ``build_workflow_router`` — the old custom
+    ``brainstorm_router.py`` has been deleted.
     """
+
+    @staticmethod
+    def workflow_id(task: BrainstormTask) -> str:
+        """Deterministic workflow id for the auto-generated HTTP route.
+
+        Same (parent_thread, topic) → same workflow id so duplicate
+        clicks collapse to one in-flight workflow (matches the
+        historical ``brainstorm_router.py`` behaviour)."""
+        return f"brainstorm:{task.parent_thread_id}:{abs(hash(task.topic))}"
 
     def __init__(
         self,
