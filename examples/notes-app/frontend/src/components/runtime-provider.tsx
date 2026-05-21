@@ -506,18 +506,35 @@ export const RuntimeProvider: FC<PropsWithChildren> = ({ children }) => {
     initialThreadId,
   });
 
-  // Publish ``runtime.threads.reload`` to the per-thread closure so
-  // PerThreadRuntime's SSE handler can refresh the sidebar when it
-  // sees a ``thread-created`` event. The underlying
-  // ``RemoteThreadListThreadListRuntimeCore.reload`` re-fires
-  // ``adapter.list(...)`` → GET /threads → updates store.
+  // Publish a non-destructive thread-list refresher to the per-thread
+  // closure. ``runtime.threads.reload()`` is destructive — it does
+  // ``state.update({...baseValue})`` BEFORE refetching, which
+  // momentarily empties ``threadData[currentId]``. That tears down the
+  // active thread's useChat instance via
+  // ``RemoteThreadListHookInstanceManager``, and the user sees the
+  // current chat go blank.
+  //
+  // Workaround: bypass ``reload()`` and directly clear the cached
+  // ``_loadThreadsPromise`` + bump ``_loadGeneration``, then call
+  // ``getLoadThreadsPromise()``. The MERGED state update in the
+  // resulting promise's "then" reducer keeps existing thread entries
+  // in ``threadData`` (merge, not replace) so the active thread
+  // survives the refresh.
   useEffect(() => {
     const threads = (runtime as unknown as {
-      threads?: { reload?: () => void };
+      threads?: {
+        _loadThreadsPromise?: Promise<unknown> | undefined;
+        _loadGeneration?: number;
+        getLoadThreadsPromise?: () => Promise<unknown>;
+      };
     }).threads;
     reloadThreadListRef.current =
-      typeof threads?.reload === "function"
-        ? threads.reload.bind(threads)
+      threads && typeof threads.getLoadThreadsPromise === "function"
+        ? () => {
+            threads._loadThreadsPromise = undefined;
+            threads._loadGeneration = (threads._loadGeneration ?? 0) + 1;
+            void threads.getLoadThreadsPromise!();
+          }
         : null;
     return () => {
       reloadThreadListRef.current = null;
