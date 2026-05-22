@@ -39,12 +39,12 @@ from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
     Durable,
+    RunContext,
     SemanticDedup,
     SemanticDedupConfig,
     ThreadEventBroadcaster,
     ThreadEventType,
 )
-from pydantic_ai_stateflow.runtime.workflows import workflow as sf_workflow
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
 from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
     BranchCompleted,
@@ -247,7 +247,7 @@ class BrainstormOutcome(BaseModel):
     proposed_body: str
 
 
-@sf_workflow(input=BrainstormTask, output=BrainstormOutcome)
+@Durable.dbos_class()
 class BrainstormFlow(DBOSConfiguredInstance):
     """Glue between ``DivergentConvergent`` and ``TodoApprovalFlow``.
 
@@ -260,14 +260,14 @@ class BrainstormFlow(DBOSConfiguredInstance):
     Stable ``config_name`` so DBOS can rebind in-flight workflows back
     to this instance after a restart.
 
-    Auto-mounted as ``POST /workflows/brainstorm-flow`` by the
-    framework's ``build_workflow_router`` — the old custom
-    ``brainstorm_router.py`` has been deleted.
+    The app mounts ``POST /workflows/brainstorm-flow`` explicitly in
+    ``main.py`` — the framework no longer auto-generates workflow
+    routes.
     """
 
     @staticmethod
     def workflow_id(task: BrainstormTask) -> str:
-        """Deterministic workflow id for the auto-generated HTTP route.
+        """Deterministic workflow id for the HTTP route.
 
         Same (parent_thread, topic) → same workflow id so duplicate
         clicks collapse to one in-flight workflow (matches the
@@ -279,16 +279,14 @@ class BrainstormFlow(DBOSConfiguredInstance):
         *,
         todo_flow: TodoApprovalFlow,
         divergent: DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea],
-        broadcaster: ThreadEventBroadcaster,
         config_name: str = "notes-brainstorm-flow",
     ) -> None:
         super().__init__(config_name=config_name)
         self._todo_flow = todo_flow
         self._divergent = divergent
-        self._broadcaster = broadcaster
 
     @Durable.workflow()
-    async def run(self, task: BrainstormTask) -> BrainstormOutcome:
+    async def run(self, ctx: RunContext, task: BrainstormTask) -> BrainstormOutcome:
         """Run the brainstorm + open HITL. Returns the proposed idea
         and the helper thread id (fire-and-forget on the actual
         approval — see ``TodoApprovalFlow.on_decision`` for the
@@ -301,15 +299,16 @@ class BrainstormFlow(DBOSConfiguredInstance):
         """
         parent_thread_id = task.parent_thread_id
         topic = task.topic
+        broadcaster = ctx.broadcaster
         async with BRAINSTORM_PROGRESS.stream(
-            self._broadcaster, parent_thread_id,
+            broadcaster, parent_thread_id,
         ) as progress:
             await progress.update(BrainstormProgress(
                 step="diverge", status="running",
                 detail=f'Topic: "{topic}"',
             ))
             branch_callback = _make_branch_progress_callback(
-                self._broadcaster, parent_thread_id,
+                broadcaster, parent_thread_id,
             )
             chosen: TodoIdea = await self._divergent.run(
                 topic, on_progress=branch_callback,
@@ -333,6 +332,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 parent_thread_id=parent_thread_id,
             )
             helper_thread = await self._todo_flow.open(
+                ctx,
                 helper_agent=NotesTodoApprovalAgent,
                 context=context,
                 opening_message=context.to_opening_message(),
@@ -368,7 +368,6 @@ def _format_synth_prompt(task: str, candidates: list[TodoIdea]) -> str:
 def build_brainstorm_flow(
     *,
     todo_flow: TodoApprovalFlow,
-    broadcaster: ThreadEventBroadcaster,
     divergent_specs: tuple[BrainstormAgentSpec, ...] = DEFAULT_DIVERGENT_SPECS,
     synth_model: str = DEFAULT_SYNTH_MODEL,
     synth_temperature: float = DEFAULT_SYNTH_TEMPERATURE,
@@ -435,7 +434,6 @@ def build_brainstorm_flow(
     return BrainstormFlow(
         todo_flow=todo_flow,
         divergent=divergent,
-        broadcaster=broadcaster,
         config_name=config_name,
     )
 

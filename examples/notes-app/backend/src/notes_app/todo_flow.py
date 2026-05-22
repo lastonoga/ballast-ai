@@ -6,12 +6,16 @@ and context rehydration. This module just supplies the
 ``on_decision`` body: save the note (or skip on reject) and post a
 notification message back to the parent thread.
 
+Infra (``thread_repo`` / ``event_log`` / ``event_stream``) is supplied
+per-call via the ``RunContext`` passed to ``open(ctx, ...)`` — the
+base class binds it on the instance so the durable workflow body
+(and ``_notify`` below) can reach the right repos for this call.
+
 Note on annotations: like ``agent.py`` we do NOT use
 ``from __future__ import annotations`` so DBOS / pydantic-ai can
 resolve concrete types at decoration time.
 """
 
-from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -22,13 +26,8 @@ from pydantic_ai_stateflow.patterns.hitl import (
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.persistence.events.repository import (
-    EventLogRepository,
-)
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventNotification,
-    EventStream,
     thread_channel,
 )
 
@@ -44,20 +43,18 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     streaming request handler died long before the helper agent
     finished its conversation.
 
-    ``event_log`` / ``event_stream`` (optional) — when wired, ``_notify``
-    additionally emits a ``message-added`` event into the parent
-    thread's event log + publishes through the signal channel. Any
-    frontend tailing ``GET /threads/{parent_id}/events`` picks the
-    new message up live without a page reload.
+    Per-call infra (thread repo + event log + event stream) is bound
+    on the instance via ``open(ctx, ...)`` — the base class assigns
+    ``self.thread_repo`` / ``self._event_log`` / ``self._event_stream``
+    from ``ctx`` before the workflow body executes. ``_notify``
+    consults those slots to persist the parent-thread notification
+    and broadcast a ``message-added`` event.
     """
 
     def __init__(
         self,
         *,
         notes_repo: NoteRepository,
-        thread_repo: ThreadRepository,
-        event_log: Optional[EventLogRepository] = None,
-        event_stream: Optional[EventStream] = None,
         config_name: str = "notes-todo-approval-flow",
     ) -> None:
         # Stable ``config_name`` so DBOS can rebind this instance to its
@@ -65,12 +62,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         # TodoApprovalFlow at boot and re-construct it with the same
         # name on recovery (otherwise DBOS can't address the instance).
         # Tests override the default to keep per-test instances unique.
-        super().__init__(
-            thread_repo=thread_repo, config_name=config_name,
-        )
+        super().__init__(config_name=config_name)
         self.notes_repo = notes_repo
-        self._event_log = event_log
-        self._event_stream = event_stream
 
     async def on_decision(
         self,
