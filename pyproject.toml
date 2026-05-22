@@ -1,9 +1,34 @@
 [project]
 name = "ballast-ai"
-version = "0.1.0"
+version = "0.1.1"
 description = "Production-grade orchestration framework for Pydantic AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Kir Lastonoga", email = "lastonoga@gmail.com" }]
+keywords = [
+    "ai",
+    "agents",
+    "pydantic-ai",
+    "fastapi",
+    "dbos",
+    "workflow",
+    "orchestration",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Framework :: FastAPI",
+    "Framework :: Pydantic",
+    "Framework :: Pydantic :: 2",
+]
 dependencies = [
     "pydantic>=2.7",
     "pydantic-ai>=0.0.13",
@@ -28,6 +53,11 @@ dev = [
     "aiosqlite>=0.20",
 ]
 
+[project.urls]
+Homepage = "https://github.com/lastonoga/ballast-ai"
+Repository = "https://github.com/lastonoga/ballast-ai"
+Issues = "https://github.com/lastonoga/ballast-ai/issues"
+
 [project.scripts]
 ballast = "ballast.cli.main:cli"
 
@@ -39,8 +69,14 @@ build-backend = "hatchling.build"
 packages = ["src/ballast"]
 include = ["src/ballast/alembic.ini"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/ballast/alembic" = "ballast/alembic"
+[tool.hatch.build.targets.sdist]
+# Strict whitelist: only the package + minimal rebuild metadata.
+only-include = [
+    "src/ballast",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
