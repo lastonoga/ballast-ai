@@ -1,16 +1,20 @@
 """pydantic-ai-stateflow — public framework surface.
 
 App entry point:
-    ``create_app(...)`` builds a FastAPI app with thread CRUD, streaming
-    chat, A2A endpoints, the DBOS router, and an auto-generated
-    ``POST /workflows/{kebab-name}`` per registered ``@sf.workflow``.
+    ``create_app(*, infra=...)`` builds a FastAPI app with thread CRUD,
+    the DBOS router, and a health endpoint. Apps mount their own
+    streaming / cancel / workflow routes via ``extra_routers=[...]``.
 
 Authoring primitives:
-    ``stateflow_agent`` — class decorator to register a ``StateflowAgent``
-      subclass (resolves under its kebab-name).
-    ``workflow`` — class decorator to register a durable workflow whose
-      ``async def run(self, input) -> output`` is wrapped with
-      ``@Durable.workflow()``.
+    ``Infra`` — frozen dataclass bundling repos + event log + stream;
+      pass once to ``create_app(infra=...)``.
+    ``RunContext`` — per-call envelope (mint via ``infra.context(...)``)
+      passed as the first argument to flow / agent methods.
+    ``stream_response`` — primitive for ``POST /threads/{id}/messages``
+      style routes: body-vs-DB sync, durable / inline dispatch,
+      Vercel-AI streaming, assistant-turn persistence.
+    ``cancel_thread_workflows`` — primitive cancelling every active
+      workflow for a thread.
     ``Durable`` — DBOS facade that bundles workflow / step / queue
       decoration with OTel context propagation.
 
@@ -64,8 +68,17 @@ from pydantic_ai_stateflow.api import (
     DepsFactory,
     build_a2a_router,
     build_health_router,
+    cancel_thread_workflows,
     extract_text,
     messages_to_model_history,
+    stream_response,
+)
+from pydantic_ai_stateflow.api.deps import (
+    get_event_log,
+    get_event_stream,
+    get_infra,
+    get_run_context,
+    get_thread_repo,
 )
 from pydantic_ai_stateflow.capabilities import (
     BudgetExhausted,
@@ -138,24 +151,12 @@ from pydantic_ai_stateflow.errors import (
 )
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
 from pydantic_ai_stateflow.runtime.app import create_app
+from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
 from pydantic_ai_stateflow.settings import (
     StateflowSettings,
     get_settings,
     reset_settings,
     settings,
-)
-from pydantic_ai_stateflow.runtime.workflows import (
-    clear_workflow_registry,
-    get_workflow_class,
-    list_workflow_classes,
-    workflow,
-    workflow_metadata,
-)
-from pydantic_ai_stateflow.runtime.agents import (
-    clear_agent_class_registry,
-    get_agent_class,
-    list_agent_classes,
-    stateflow_agent,
 )
 from pydantic_ai_stateflow import testing  # noqa: F401 — submodule namespace
 from pydantic_ai_stateflow.patterns import (
@@ -249,6 +250,8 @@ __all__ = [
     "AccessDecision",
     "AgentCard",
     "AgentNotRegistered",
+    "Infra",
+    "RunContext",
     "AllowAll",
     "ApplyTransaction",
     "ApprovalStage",
@@ -369,30 +372,28 @@ __all__ = [
     "build_dbos_config",
     "build_health_router",
     "build_hitl_router",
-    "clear_agent_class_registry",
-    "clear_workflow_registry",
+    "cancel_thread_workflows",
     "configure_cost_extractors",
     "configure_logging",
     "create_app",
     "extract_text",
     "format_error",
-    "get_settings",
-    "get_agent_class",
+    "get_event_log",
+    "get_event_stream",
+    "get_infra",
     "get_logger",
-    "get_workflow_class",
+    "get_run_context",
+    "get_settings",
+    "get_thread_repo",
     "has_logfire",
-    "list_agent_classes",
-    "list_workflow_classes",
     "make_helper_agent_with_approval_tools",
     "messages_to_model_history",
     "register_cost_extractor",
     "register_grounded_tools",
     "reset_settings",
     "settings",
-    "stateflow_agent",
+    "stream_response",
     "testing",
     "traced",
     "validate_thread_metadata",
-    "workflow",
-    "workflow_metadata",
 ]

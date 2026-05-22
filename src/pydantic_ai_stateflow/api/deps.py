@@ -1,7 +1,7 @@
 """FastAPI dependency providers for stateflow apps.
 
-Resolves framework infrastructure from ``request.app.state`` —
-populated by ``sf.create_app()``. Routes import these and use
+Resolves framework infrastructure from ``request.app.state.infra`` —
+populated by ``sf.create_app(infra=...)``. Routes import these and use
 ``Depends(get_X)`` in their handler signatures.
 
 Test-time override: standard FastAPI pattern,
@@ -9,7 +9,7 @@ Test-time override: standard FastAPI pattern,
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from fastapi import Request
 
@@ -21,89 +21,50 @@ if TYPE_CHECKING:
         EventLogRepository,
     )
     from pydantic_ai_stateflow.runtime.event_stream import EventStream
+    from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
 
 
-def _get_state(request: Request, attr: str, friendly: str) -> Any:
-    val = getattr(request.app.state, attr, None)
-    if val is None:
+def get_infra(request: Request) -> "Infra":
+    """Resolve the ``Infra`` bundle from ``app.state.infra``."""
+    infra = getattr(request.app.state, "infra", None)
+    if infra is None:
         raise ConfigurationInvariantViolation(
-            f"{friendly} not attached to app.state",
-            hint="call sf.create_app() or set it explicitly",
-            context={"attr": attr},
+            "Infra not attached to app.state",
+            hint="call sf.create_app(infra=...) at app construction",
+            context={"attr": "infra"},
         )
-    return val
+    return infra
+
+
+def get_run_context(request: Request) -> "RunContext":
+    """Mint a per-request ``RunContext`` from ``app.state.infra``.
+
+    No per-call fields are set (``parent_thread_id`` / ``workflow_id``
+    are ``None``). Apps that need them can build their own context via
+    ``ctx.with_(...)`` or ``infra.context(...)`` inside the handler.
+    """
+    return get_infra(request).context()
 
 
 def get_thread_repo(request: Request) -> ThreadRepository:
-    """Resolve the ``ThreadRepository`` from ``app.state.thread_repo``."""
-    return cast(ThreadRepository, _get_state(request, "thread_repo", "ThreadRepository"))
+    """Resolve the ``ThreadRepository`` from the Infra bundle."""
+    return cast(ThreadRepository, get_infra(request).thread_repo)
 
 
 def get_event_log(request: Request) -> "EventLogRepository":
-    """Resolve the ``EventLogRepository`` from ``app.state.event_log``."""
-    return cast(
-        "EventLogRepository",
-        _get_state(request, "event_log", "EventLogRepository"),
-    )
+    """Resolve the ``EventLogRepository`` from the Infra bundle."""
+    return cast("EventLogRepository", get_infra(request).event_log)
 
 
 def get_event_stream(request: Request) -> "EventStream":
-    """Resolve the ``EventStream`` from ``app.state.event_stream``."""
-    return cast("EventStream", _get_state(request, "event_stream", "EventStream"))
-
-
-def get_workflow_instance(name: str):
-    """Return a Depends-compatible factory that resolves a workflow
-    instance by its kebab-name from ``app.state.workflows``."""
-
-    def _resolver(request: Request) -> Any:
-        workflows = getattr(request.app.state, "workflows", None)
-        if workflows is None:
-            raise ConfigurationInvariantViolation(
-                "app.state.workflows missing",
-                hint="sf.create_app() should have populated it",
-                context={"attr": "workflows"},
-            )
-        try:
-            return workflows[name]
-        except KeyError as exc:
-            raise ConfigurationInvariantViolation(
-                f"No workflow instance registered under {name!r}",
-                context={"name": name, "known": sorted(workflows)},
-            ) from exc
-
-    _resolver.__name__ = f"get_workflow_instance__{name.replace('-', '_')}"
-    return _resolver
-
-
-def get_agent_instance(name: str):
-    """Return a Depends-compatible factory that resolves an agent
-    instance by its kebab-name from ``app.state.agents``."""
-
-    def _resolver(request: Request) -> Any:
-        agents = getattr(request.app.state, "agents", None)
-        if agents is None:
-            raise ConfigurationInvariantViolation(
-                "app.state.agents missing",
-                hint="sf.create_app() should have populated it",
-                context={"attr": "agents"},
-            )
-        try:
-            return agents[name]
-        except KeyError as exc:
-            raise ConfigurationInvariantViolation(
-                f"No agent instance registered under {name!r}",
-                context={"name": name, "known": sorted(agents)},
-            ) from exc
-
-    _resolver.__name__ = f"get_agent_instance__{name.replace('-', '_')}"
-    return _resolver
+    """Resolve the ``EventStream`` from the Infra bundle."""
+    return cast("EventStream", get_infra(request).event_stream)
 
 
 __all__ = [
-    "get_agent_instance",
     "get_event_log",
     "get_event_stream",
+    "get_infra",
+    "get_run_context",
     "get_thread_repo",
-    "get_workflow_instance",
 ]
