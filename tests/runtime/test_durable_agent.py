@@ -1,9 +1,9 @@
 """Tests for ``StateflowDurableAgent`` — the durable-by-default StateflowAgent.
 
-The agent's ``__init__`` no longer takes the infra triplet — those
-arrive via ``RunContext`` on each ``enqueue_*`` / ``cancel_thread_runs``
-call (and are stashed on the instance so the DBOS workflow body can
-read them).
+The agent's ``__init__`` no longer takes the infra triplet — the
+process-wide ``Engine`` (built by ``sf.create_app``) supplies repos +
+event log + stream via ``get_engine()`` whenever the DBOS workflow
+body needs them.
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ from pydantic_ai_stateflow.runtime import (
     StateflowDurableAgent,
     thread_channel,
 )
-from pydantic_ai_stateflow.runtime.infra import Infra
+from pydantic_ai_stateflow.runtime.engine import (
+    Engine,
+    _reset_engine_for_tests,
+    _set_engine,
+)
 
 _counter = itertools.count()
 
@@ -53,17 +57,20 @@ class _NotesStateflowDurableAgent(StateflowDurableAgent):
         return None
 
 
-def _build(thread_repo, log, stream) -> tuple[_NotesStateflowDurableAgent, Any]:
-    """Return a durable-agent instance + ``RunContext`` for tests."""
+def _build(thread_repo, log, stream) -> _NotesStateflowDurableAgent:
+    """Return a durable-agent instance for tests.
+
+    Also installs a fresh process-wide ``Engine`` so the workflow body's
+    ``get_engine()`` resolves to the test repos.
+    """
     durable = _NotesStateflowDurableAgent(
         config_name=f"durable-test-{next(_counter)}",
     )
-    # Bind infra so the DBOS workflow body (which runs without the
-    # ``enqueue_*`` ctx) sees the right repos.
-    infra = Infra(thread_repo=thread_repo, event_log=log, event_stream=stream)
-    ctx = infra.context()
-    durable._bind_infra(ctx)
-    return durable, ctx
+    _reset_engine_for_tests()
+    _set_engine(Engine(
+        thread_repo=thread_repo, event_log=log, event_stream=stream,
+    ))
+    return durable
 
 
 @pytest.mark.asyncio
@@ -74,7 +81,7 @@ async def test_run_persists_streaming_event_taxonomy(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-    durable, _ctx = _build(thread_repo, log, stream)
+    durable = _build(thread_repo, log, stream)
 
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
 
@@ -115,7 +122,7 @@ async def test_run_publishes_notifications_for_each_event(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-    durable, _ctx = _build(thread_repo, log, stream)
+    durable = _build(thread_repo, log, stream)
 
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
     channel = thread_channel(thread.id)
@@ -152,7 +159,7 @@ async def test_run_emits_error_event_when_thread_missing(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-    durable, _ctx = _build(thread_repo, log, stream)
+    durable = _build(thread_repo, log, stream)
 
     bogus = uuid4()
 
@@ -177,10 +184,10 @@ async def test_cancel_thread_runs_emits_cancelled_event(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-    durable, ctx = _build(thread_repo, log, stream)
+    durable = _build(thread_repo, log, stream)
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
 
-    cancelled = await durable.cancel_thread_runs(ctx, thread.id)
+    cancelled = await durable.cancel_thread_runs(thread.id)
     assert cancelled == 0
 
     events = await log.read_since(thread.id)
@@ -199,12 +206,11 @@ async def test_enqueue_run_deterministic_workflow_id(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-    durable, ctx = _build(thread_repo, log, stream)
+    durable = _build(thread_repo, log, stream)
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
     user_msg_id = str(uuid4())
 
     handle = await durable.enqueue_run(
-        ctx,
         thread_id=thread.id, user_message_id=user_msg_id,
         prompt="hi", history_dump=[],
     )

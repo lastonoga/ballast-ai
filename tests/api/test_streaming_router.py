@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelRequest,
@@ -37,13 +37,12 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from starlette.responses import Response
 
-from pydantic_ai_stateflow.api.deps import get_run_context
 from pydantic_ai_stateflow.api.streaming import stream_response
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import StateflowAgent
-from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
+from pydantic_ai_stateflow.runtime.engine import Engine, _reset_engine_for_tests, _set_engine
 
 
 class _TestStateflowAgent(StateflowAgent):
@@ -124,24 +123,25 @@ def _build_app(
     )
 
     app = FastAPI()
-    infra = Infra(
+    engine = Engine(
         thread_repo=repo,
         event_log=InMemoryEventLogRepository(),
         event_stream=InProcessEventStream(),
     )
-    app.state.infra = infra
+    app.state.engine = engine
+    # Install singleton so primitives that read get_engine() find it.
+    _reset_engine_for_tests()
+    _set_engine(engine)
 
     @app.post("/threads/{thread_id}/messages")
     async def _post(
         request: Request,
         thread_id: UUID,
-        ctx: RunContext = Depends(get_run_context),
     ) -> Response:
         return await stream_response(
             request=request,
             thread_id=thread_id,
             agent=sf_agent,
-            ctx=ctx,
         )
 
     install_error_handlers(app)

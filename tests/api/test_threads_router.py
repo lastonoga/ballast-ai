@@ -15,13 +15,13 @@ from pydantic_ai_stateflow.persistence import (
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
+from pydantic_ai_stateflow.runtime.engine import Engine
 from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
-from pydantic_ai_stateflow.runtime.infra import Infra
 
 
 def _app(repo: InMemoryThreadRepository) -> FastAPI:
     app = FastAPI()
-    app.state.infra = Infra(
+    app.state.engine = Engine(
         thread_repo=repo,
         event_log=InMemoryEventLogRepository(),
         event_stream=InProcessEventStream(),
@@ -76,7 +76,7 @@ async def test_router_respects_prefix():
     repo = InMemoryThreadRepository()
     th = await repo.create(agent="conversation", metadata={})
     app = FastAPI()
-    app.state.infra = Infra(
+    app.state.engine = Engine(
         thread_repo=repo,
         event_log=InMemoryEventLogRepository(),
         event_stream=InProcessEventStream(),

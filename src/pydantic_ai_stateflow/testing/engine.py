@@ -8,11 +8,15 @@ API:
         r = client.post("/threads", json={})
 
 What it does:
-- Builds a fresh in-memory app with an InMemory ``Infra`` by default.
+- Builds a fresh in-memory app with InMemory repos / event-log / stream
+  by default; ``sf.create_app`` constructs the framework ``Engine``
+  from them and installs the process-wide singleton.
 - ``override(target, replacement)`` swaps a repo / event-log / event-stream
   via ``app.dependency_overrides[get_X]`` (FastAPI native).
 - ``test_client()`` returns a ``TestClient`` context manager that
   runs FastAPI lifespan (and DBOS lifecycle if configured).
+- ``_reset_engine_for_tests()`` is called on every entry so the
+  process-wide ``Engine`` singleton doesn't leak across cases.
 - Unique DBOS ``name`` per TestEngine instance avoids in-process collisions.
 
 The framework no longer manages a workflow/agent registry — apps own
@@ -48,11 +52,11 @@ from pydantic_ai_stateflow.persistence import (
 )
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime.app import create_app
+from pydantic_ai_stateflow.runtime.engine import _reset_engine_for_tests
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventStream,
     InProcessEventStream,
 )
-from pydantic_ai_stateflow.runtime.infra import Infra
 
 
 class TestEngine:
@@ -155,13 +159,11 @@ class TestEngine:
             )
 
         _reset_observability_for_tests()
-        infra = Infra(
+        _reset_engine_for_tests()
+        self._app = create_app(
             thread_repo=self._thread_repo,
             event_log=self._event_log,
             event_stream=self._event_stream,
-        )
-        self._app = create_app(
-            infra=infra,
             dbos=dbos_config,
             manage_dbos_lifecycle=self._manage_dbos,
             extra_routers=self._extra_routers,
@@ -183,6 +185,7 @@ class TestEngine:
             self._client.__exit__(exc_type, exc, tb)
             self._client = None
         self._app = None
+        _reset_engine_for_tests()
         if self._tempdir is not None:
             import shutil
             shutil.rmtree(self._tempdir, ignore_errors=True)
