@@ -2,9 +2,11 @@
 
 Operates directly on the ``Thread`` / ``Message`` SQLModel classes (no
 separate Row models — ``table=True`` SQLModels ARE the persistence row
-AND the API/domain payload). The adapter does session.add + flush +
-refresh; the caller controls the transaction boundary via
-``SqlAlchemyUnitOfWork``.
+AND the API/domain payload). The repo owns its session lifecycle: each
+mutating method opens a session, runs inside ``session.begin()``, and
+commits on clean exit. After-commit it self-emits the corresponding
+signal (currently ``message_added`` for add/upsert) so the signal only
+fires for state that actually landed.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import asc, desc, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col
 
 from ballast.logging import get_logger
@@ -30,13 +32,14 @@ _log = get_logger(__name__)
 class PostgresThreadRepository:
     """SQLAlchemy/PostgreSQL implementation of ``ThreadRepository``.
 
-    Accepts an ``AsyncSession`` from the caller; uses ``flush`` (not
-    ``commit``) so the caller owns transaction lifetimes via
-    ``SqlAlchemyUnitOfWork``.
+    Owns its session lifecycle: each method opens a fresh session via the
+    injected ``async_sessionmaker`` and commits per-call. Signal emission
+    (``message_added``) happens after commit so subscribers never observe
+    state that was rolled back.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = session_factory
 
     @traced(
         TraceName.THREAD_CREATE,
@@ -50,19 +53,21 @@ class PostgresThreadRepository:
         agent: str,
         metadata: dict[str, Any] | None = None,
     ) -> Thread:
-        thread = Thread(
-            agent=agent,
-            metadata_=dict(metadata or {}),
-        )
-        self._session.add(thread)
-        await self._session.flush()
-        await self._session.refresh(thread)
+        async with self._sessionmaker() as session, session.begin():
+            thread = Thread(
+                agent=agent,
+                metadata_=dict(metadata or {}),
+            )
+            session.add(thread)
+            await session.flush()
+            await session.refresh(thread)
         return thread
 
     async def load(self, id: UUID) -> Thread | None:
-        stmt = select(Thread).where(col(Thread.id) == id)
-        result = await self._session.execute(stmt)
-        return result.scalar_one_or_none()
+        async with self._sessionmaker() as session:
+            stmt = select(Thread).where(col(Thread.id) == id)
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
 
     @traced(
         TraceName.THREAD_ADD_MESSAGE,
@@ -79,45 +84,47 @@ class PostgresThreadRepository:
         role: str,
         parts: list[dict[str, Any]],
         id: str | None = None,
-        silent: bool = False,  # noqa: ARG002 — protocol parity (see TODO below)
+        silent: bool = False,
     ) -> Message:
-        # TODO(signals): emit ``ballast.events.message_added`` here once
-        # the unit-of-work boundaries are audited — the in-memory repo
-        # already fires the signal on add. PostgresThreadRepository
-        # writes inside a caller-owned ``AsyncSession`` transaction;
-        # emitting the signal before commit risks the default handler
-        # appending an event-log row for a message that never lands if
-        # the outer txn rolls back. Needs ``after_flush`` SQLAlchemy
-        # event hook + an outbox-style emit to be safe.
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        if thread.status == ThreadStatus.CLOSED:
-            raise ThreadClosedError(
-                f"Thread {thread_id} is closed; cannot add message",
-            )
-        if id is not None:
-            existing_stmt = select(Message).where(col(Message.id) == id)
-            existing = (
-                await self._session.execute(existing_stmt)
-            ).scalar_one_or_none()
-            if existing is not None:
-                return existing
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            if thread.status == ThreadStatus.CLOSED:
+                raise ThreadClosedError(
+                    f"Thread {thread_id} is closed; cannot add message",
+                )
+            if id is not None:
+                existing_stmt = select(Message).where(col(Message.id) == id)
+                existing = (
+                    await session.execute(existing_stmt)
+                ).scalar_one_or_none()
+                if existing is not None:
+                    return existing
 
-        msg = Message(
-            id=id or str(uuid4()),
-            thread_id=thread_id,
-            role=role,
-            parts=list(parts),
-        )
-        self._session.add(msg)
-        await self._session.flush()
-        await self._session.refresh(msg)
-        _log.debug(
-            "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
-            "parts=%d",
-            thread_id, msg.id, role, len(msg.parts),
-        )
+            msg = Message(
+                id=id or str(uuid4()),
+                thread_id=thread_id,
+                role=role,
+                parts=list(parts),
+            )
+            session.add(msg)
+            await session.flush()
+            await session.refresh(msg)
+            _log.debug(
+                "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
+                "parts=%d",
+                thread_id, msg.id, role, len(msg.parts),
+            )
+        # session committed at this point.
+        if not silent:
+            # Lazy import — keep persistence loadable in contexts where the
+            # signal infrastructure isn't wired (eval scripts, migrations).
+            from ballast.events import message_added  # noqa: PLC0415
+
+            await message_added.send(
+                sender=self, thread_id=thread_id, message=msg,
+            )
         return msg
 
     async def upsert_message(
@@ -127,33 +134,42 @@ class PostgresThreadRepository:
         id: str,
         role: str,
         parts: list[dict[str, Any]],
-        silent: bool = False,  # noqa: ARG002 — protocol parity (see TODO above)
+        silent: bool = False,
     ) -> Message:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        if thread.status == ThreadStatus.CLOSED:
-            raise ThreadClosedError(
-                f"Thread {thread_id} is closed; cannot upsert message",
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            if thread.status == ThreadStatus.CLOSED:
+                raise ThreadClosedError(
+                    f"Thread {thread_id} is closed; cannot upsert message",
+                )
+            existing_stmt = select(Message).where(col(Message.id) == id)
+            existing = (
+                await session.execute(existing_stmt)
+            ).scalar_one_or_none()
+            if existing is not None:
+                existing.role = role
+                existing.parts = list(parts)
+                await session.flush()
+                msg = existing
+            else:
+                msg = Message(
+                    id=id,
+                    thread_id=thread_id,
+                    role=role,
+                    parts=list(parts),
+                )
+                session.add(msg)
+                await session.flush()
+                await session.refresh(msg)
+        # session committed at this point.
+        if not silent:
+            from ballast.events import message_added  # noqa: PLC0415
+
+            await message_added.send(
+                sender=self, thread_id=thread_id, message=msg,
             )
-        existing_stmt = select(Message).where(col(Message.id) == id)
-        existing = (
-            await self._session.execute(existing_stmt)
-        ).scalar_one_or_none()
-        if existing is not None:
-            existing.role = role
-            existing.parts = list(parts)
-            await self._session.flush()
-            return existing
-        msg = Message(
-            id=id,
-            thread_id=thread_id,
-            role=role,
-            parts=list(parts),
-        )
-        self._session.add(msg)
-        await self._session.flush()
-        await self._session.refresh(msg)
         return msg
 
     @traced(
@@ -170,35 +186,37 @@ class PostgresThreadRepository:
         *,
         limit: int = 1000,
     ) -> list[Message]:
-        stmt = (
-            select(Message)
-            .where(col(Message.thread_id) == thread_id)
-            .order_by(asc(col(Message.created_at)))
-            .limit(limit)
-        )
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        async with self._sessionmaker() as session:
+            stmt = (
+                select(Message)
+                .where(col(Message.thread_id) == thread_id)
+                .order_by(asc(col(Message.created_at)))
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def delete_messages(
         self, thread_id: UUID, *, ids: list[str],
     ) -> None:
         if not ids:
             return
-        await self._session.execute(
-            sa_delete(Message).where(
-                col(Message.thread_id) == thread_id,
-                col(Message.id).in_(ids),
-            ),
-        )
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            await session.execute(
+                sa_delete(Message).where(
+                    col(Message.thread_id) == thread_id,
+                    col(Message.id).in_(ids),
+                ),
+            )
 
     async def close(self, thread_id: UUID) -> Thread:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        thread.status = ThreadStatus.CLOSED
-        thread.closed_at = datetime.now(tz=UTC)
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            thread.status = ThreadStatus.CLOSED
+            thread.closed_at = datetime.now(tz=UTC)
+            await session.flush()
         return thread
 
     async def list_(
@@ -208,46 +226,62 @@ class PostgresThreadRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Thread]:
-        stmt = select(Thread)
-        if not include_archived:
-            stmt = stmt.where(col(Thread.status) != ThreadStatus.ARCHIVED)
-        stmt = stmt.order_by(desc(col(Thread.created_at))).limit(limit).offset(offset)
-        result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        async with self._sessionmaker() as session:
+            stmt = select(Thread)
+            if not include_archived:
+                stmt = stmt.where(col(Thread.status) != ThreadStatus.ARCHIVED)
+            stmt = (
+                stmt.order_by(desc(col(Thread.created_at)))
+                .limit(limit)
+                .offset(offset)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
     async def update_metadata(
         self, thread_id: UUID, *, metadata: dict[str, Any],
     ) -> Thread:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        thread.metadata_ = dict(metadata)
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            thread.metadata_ = dict(metadata)
+            await session.flush()
         return thread
 
     async def archive(self, thread_id: UUID) -> Thread:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        thread.status = ThreadStatus.ARCHIVED
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            thread.status = ThreadStatus.ARCHIVED
+            await session.flush()
         return thread
 
     async def unarchive(self, thread_id: UUID) -> Thread:
-        thread = await self.load(thread_id)
-        if thread is None:
-            raise KeyError(f"Thread {thread_id} not found")
-        thread.status = ThreadStatus.OPEN
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            thread = await self._load_in_session(session, thread_id)
+            if thread is None:
+                raise KeyError(f"Thread {thread_id} not found")
+            thread.status = ThreadStatus.OPEN
+            await session.flush()
         return thread
 
     async def delete(self, thread_id: UUID) -> None:
         # Manually delete child messages first (no DB-level CASCADE).
         # Idempotent: unknown thread → no-op.
-        await self._session.execute(
-            sa_delete(Message).where(col(Message.thread_id) == thread_id),
-        )
-        await self._session.execute(
-            sa_delete(Thread).where(col(Thread.id) == thread_id),
-        )
-        await self._session.flush()
+        async with self._sessionmaker() as session, session.begin():
+            await session.execute(
+                sa_delete(Message).where(col(Message.thread_id) == thread_id),
+            )
+            await session.execute(
+                sa_delete(Thread).where(col(Thread.id) == thread_id),
+            )
+
+    @staticmethod
+    async def _load_in_session(
+        session: AsyncSession, thread_id: UUID,
+    ) -> Thread | None:
+        stmt = select(Thread).where(col(Thread.id) == thread_id)
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
