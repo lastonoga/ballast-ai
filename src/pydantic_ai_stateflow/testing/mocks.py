@@ -1,7 +1,9 @@
 """``MockAgent`` / ``MockFlow`` — test doubles for stateflow tests.
 
-Both honor the @sf.stateflow_agent / @sf.workflow decorator metadata
-expected by ``sf.create_app`` and ``TestEngine.override``.
+``MockAgent`` is a ``StateflowAgent`` subclass backed by pydantic-ai's
+``TestModel``. ``MockFlow`` is a DBOS workflow instance with a scriptable
+``run`` body. Both are construction-only test doubles — apps that want
+to substitute them at runtime build their own resolution layer.
 """
 from __future__ import annotations
 
