@@ -49,20 +49,29 @@ def _emit_log(exc: StateflowError) -> None:
 
 
 def _emit_span_event(exc: StateflowError) -> None:
-    """Attach a span event to the current logfire span (if logfire is present)."""
+    """Attach a span event to the current logfire span (if logfire is present).
+
+    Gated on ``observability.config.is_configured()`` — emitting a
+    logfire span before ``configure()`` triggers
+    ``LogfireNotConfiguredWarning`` in tests where logfire is importable
+    but no observability has been installed.
+    """
     try:
         from pydantic_ai_stateflow.observability import has_logfire
+        from pydantic_ai_stateflow.observability.config import is_configured
     except ImportError:
         return
-    if not has_logfire():
+    if not has_logfire() or not is_configured():
         return
     try:
         import logfire
-        logfire.span("stateflow_error", _level="error").__enter__().set_attributes({
-            "stateflow.error.code": exc.code,
-            "stateflow.error.detail": exc.detail,
-            "stateflow.error.hint": exc.hint or "",
-        })
+        with logfire.span("stateflow_error", _level="error") as span:
+            span.set_attributes({
+                "stateflow.error.code": exc.code,
+                "stateflow.error.detail": exc.detail,
+                "stateflow.error.hint": exc.hint or "",
+            })
+            span.record_exception(exc)
     except Exception:
         # never crash on observability failures
         _logger.exception("logfire span emit failed")

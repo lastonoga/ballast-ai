@@ -135,4 +135,14 @@ def _reset_observability_for_tests() -> None:
     _installed_config = None
 
 
-__all__ = ["ObservabilityConfig"]
+def is_configured() -> bool:
+    """True iff :meth:`ObservabilityConfig.install` has been called.
+
+    Callers that emit logfire spans should gate on this to avoid
+    ``LogfireNotConfiguredWarning`` in environments where logfire is
+    importable but ``configure()`` was never invoked (e.g. tests).
+    """
+    return _installed_config is not None
+
+
+__all__ = ["ObservabilityConfig", "is_configured"]
