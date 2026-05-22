@@ -66,16 +66,8 @@ from pydantic_ai_stateflow.runtime.event_stream import (
 if TYPE_CHECKING:
     from datetime import timedelta
 
-    from pydantic_ai_stateflow.persistence.events.repository import (
-        EventLogRepository,
-    )
     from pydantic_ai_stateflow.persistence.thread.domain import Thread
-    from pydantic_ai_stateflow.persistence.thread.repository import (
-        ThreadRepository,
-    )
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
-    from pydantic_ai_stateflow.runtime.event_stream import EventStream
-    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 _log = get_logger(__name__)
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
@@ -116,27 +108,6 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         super().__init__(
             config_name=config_name or type(self).__qualname__,
         )
-        # Per-call infra triplet. Populated by ``open`` / ``on_decision``
-        # from the supplied ``RunContext``; the DBOS workflow body reads
-        # them off ``self`` (workflow args are pickled — repo objects
-        # are not picklable, so the indirection is required).
-        self.thread_repo: "ThreadRepository | None" = None
-        self._event_log: "EventLogRepository | None" = None
-        self._event_stream: "EventStream | None" = None
-
-    def _bind_infra(self, ctx: "RunContext") -> None:
-        """Stash the per-call infra triplet on the instance.
-
-        ``DurableHITLWorkflow`` is built once at app startup and reused
-        across calls; the DBOS workflow body needs to read repos off
-        the instance (workflow args are pickled, repos are not picklable).
-        Each ``open(...)`` rebinds the triplet from the supplied
-        ``RunContext`` so the workflow sees the right repos for this
-        call.
-        """
-        self.thread_repo = ctx.thread_repo
-        self._event_log = ctx.event_log
-        self._event_stream = ctx.event_stream
 
     @abstractmethod
     async def on_decision(
@@ -172,7 +143,6 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     })
     async def open(
         self,
-        ctx: "RunContext",
         *,
         helper_agent: type[StateflowAgent],
         context: BaseModel,
@@ -218,7 +188,6 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         body would be non-deterministic across replays.
         ----------------------------------------------------------------
         """
-        self._bind_infra(ctx)
         metadata_model = helper_agent.metadata_model
         if metadata_model is None:
             raise ValueError(
@@ -338,7 +307,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     async def _create_helper_thread(
         self, *, agent_name: str, metadata: dict[str, Any],
     ) -> Thread:
-        return await self.thread_repo.create(
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        return await get_engine().thread_repo.create(
             agent=agent_name, metadata=metadata,
         )
 
@@ -346,7 +316,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     async def _seed_opening_message(
         self, thread_id: UUID, opening_message: str,
     ) -> None:
-        await self.thread_repo.add_message(
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        await get_engine().thread_repo.add_message(
             thread_id,
             role="assistant",
             parts=[{
@@ -365,22 +336,15 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         helper_agent_name: str,
         thread_metadata: dict[str, Any],
     ) -> None:
-        """Emit ``thread-created`` into the parent thread's event log.
-
-        No-op when ``event_log`` isn't wired (e.g. unit tests that
-        don't need cross-thread SSE notifications)."""
+        """Emit ``thread-created`` into the parent thread's event log."""
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        engine = get_engine()
         parent_id = UUID(parent_thread_id_str)
         _log.info(
-            "DurableHITLWorkflow.open notify_parent=%s event_log_wired=%s "
-            "event_stream_wired=%s helper_thread=%s",
-            parent_id,
-            self._event_log is not None,
-            self._event_stream is not None,
-            helper_thread_id,
+            "DurableHITLWorkflow.open notify_parent=%s helper_thread=%s",
+            parent_id, helper_thread_id,
         )
-        if self._event_log is None:
-            return
-        ev = await self._event_log.append(
+        ev = await engine.event_log.append(
             thread_id=parent_id,
             kind="thread-created",
             payload={
@@ -389,11 +353,10 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
                 "metadata": thread_metadata,
             },
         )
-        if self._event_stream is not None:
-            await self._event_stream.publish(
-                thread_channel(parent_id),
-                EventNotification(thread_id=parent_id, seq=ev.seq),
-            )
+        await engine.event_stream.publish(
+            thread_channel(parent_id),
+            EventNotification(thread_id=parent_id, seq=ev.seq),
+        )
 
     @Durable.workflow()
     async def run(

@@ -77,15 +77,6 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import AgentStreamEvent
     from pydantic_ai.tools import RunContext as PydanticAIRunContext
 
-    from pydantic_ai_stateflow.persistence.events.repository import (
-        EventLogRepository,
-    )
-    from pydantic_ai_stateflow.persistence.thread.repository import (
-        ThreadRepository,
-    )
-    from pydantic_ai_stateflow.runtime.event_stream import EventStream
-    from pydantic_ai_stateflow.runtime.infra import RunContext
-
 _instance_counter = itertools.count()
 
 
@@ -175,28 +166,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         super().__init__(
             config_name=config_name or type(self).__qualname__,
         )
-        # Per-call infra triplet. Populated by ``enqueue_run`` /
-        # ``enqueue_approval_resume`` / ``cancel_thread_runs`` from
-        # the supplied ``RunContext``. The DBOS workflow body reads
-        # them off ``self`` (workflow args are pickled — repo objects
-        # are not picklable, so the indirection is required).
-        self._thread_repo: ThreadRepository | None = None
-        self._event_log: EventLogRepository | None = None
-        self._event_stream: EventStream | None = None
-
-    def _bind_infra(self, ctx: "RunContext") -> None:
-        """Stash the per-call infra triplet on the instance.
-
-        ``StateflowDurableAgent`` is built once at app startup and reused
-        across requests; the DBOS workflow body needs to read repos off
-        the instance (workflow args are pickled, repos are not picklable).
-        Each ``enqueue_*`` call rebinds the triplet from the supplied
-        ``RunContext`` so the workflow sees the right repos for this
-        request.
-        """
-        self._thread_repo = ctx.thread_repo
-        self._event_log = ctx.event_log
-        self._event_stream = ctx.event_stream
 
     @cached_property
     def dbos_agent(self) -> DBOSAgent[Any, Any]:
@@ -393,10 +362,12 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         nesting steps is fine but adds overhead. Callers that need step
         idempotency wrap their call site.
         """
-        ev = await self._event_log.append(
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        engine = get_engine()
+        ev = await engine.event_log.append(
             thread_id=thread_id, kind=kind, payload=dict(payload),
         )
-        await self._event_stream.publish(
+        await engine.event_stream.publish(
             thread_channel(thread_id),
             EventNotification(thread_id=thread_id, seq=ev.seq),
         )
@@ -404,7 +375,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
 
     async def enqueue_run(
         self,
-        ctx: "RunContext",
         *,
         thread_id: UUID,
         user_message_id: str,
@@ -418,7 +388,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         retry attaches to the existing workflow instead of spawning a
         duplicate.
         """
-        self._bind_infra(ctx)
         workflow_id = agent_run_workflow_id(thread_id, user_message_id)
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
@@ -434,7 +403,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
 
     async def enqueue_approval_resume(
         self,
-        ctx: "RunContext",
         *,
         thread_id: UUID,
         history_dump: list[dict[str, Any]],
@@ -448,7 +416,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         survives library version changes; reconstructed into
         ``DeferredToolResults`` inside the workflow body.
         """
-        self._bind_infra(ctx)
         suffix = uuid4().hex
         workflow_id = _agent_resume_workflow_id(thread_id, suffix)
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
@@ -463,11 +430,10 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 deferred_tool_results_dump={"approvals": approvals},
             )
 
-    async def cancel_thread_runs(
-        self, ctx: "RunContext", thread_id: UUID,
-    ) -> int:
+    async def cancel_thread_runs(self, thread_id: UUID) -> int:
         """Cancel every active workflow for ``thread_id`` + emit ``cancelled``."""
-        self._bind_infra(ctx)
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        engine = get_engine()
         active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
         prefix = _agent_run_prefix(thread_id)
         workflows = await Durable.list_workflows(
@@ -483,12 +449,12 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         # Synthetic terminal event so the SSE consumer closes — the
         # cancelled workflow itself may not get a chance to emit
         # anything (DBOS cancellation just marks the row + interrupts).
-        await self._event_log.append(
+        await engine.event_log.append(
             thread_id=thread_id,
             kind="cancelled",
             payload={"workflows_cancelled": cancelled},
         )
-        await self._event_stream.publish(
+        await engine.event_stream.publish(
             thread_channel(thread_id),
             EventNotification(thread_id=thread_id, seq=0),
         )
@@ -528,8 +494,11 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             ModelMessagesTypeAdapter,
         )
 
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        engine = get_engine()
+
         thread_id = UUID(thread_id_str)
-        thread = await self._thread_repo.load(thread_id)
+        thread = await engine.thread_repo.load(thread_id)
         if thread is None:
             await self._persist_and_publish(
                 thread_id=thread_id,
@@ -661,7 +630,9 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         if not asst_parts:
             return
 
-        await self._thread_repo.add_message(
+        from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+        engine = get_engine()
+        await engine.thread_repo.add_message(
             thread_id,
             role="assistant",
             parts=asst_parts,
