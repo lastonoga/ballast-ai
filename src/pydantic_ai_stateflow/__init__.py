@@ -1,15 +1,19 @@
 """pydantic-ai-stateflow — public framework surface.
 
 App entry point:
-    ``create_app(*, infra=...)`` builds a FastAPI app with thread CRUD,
-    the DBOS router, and a health endpoint. Apps mount their own
-    streaming / cancel / workflow routes via ``extra_routers=[...]``.
+    ``create_app(*, thread_repo=, event_log=, event_stream=, ...)`` builds
+    a FastAPI app with thread CRUD, the DBOS router, and a health
+    endpoint. Internally constructs an ``Engine`` from the supplied
+    repos + stream and stashes it as the process-wide singleton.
+    Apps mount their own streaming / cancel / workflow routes via
+    ``extra_routers=[...]``.
 
 Authoring primitives:
-    ``Infra`` — frozen dataclass bundling repos + event log + stream;
-      pass once to ``create_app(infra=...)``.
-    ``RunContext`` — per-call envelope (mint via ``infra.context(...)``)
-      passed as the first argument to flow / agent methods.
+    ``Engine`` — frozen dataclass bundling repos + event log + stream;
+      built once by ``create_app`` and exposed via ``get_engine()``
+      for framework code that needs lazy access.
+    ``get_engine`` — process-wide accessor; raises ``ConfigurationError``
+      if ``create_app`` hasn't been called yet.
     ``stream_response`` — primitive for ``POST /threads/{id}/messages``
       style routes: body-vs-DB sync, durable / inline dispatch,
       Vercel-AI streaming, assistant-turn persistence.
@@ -74,10 +78,9 @@ from pydantic_ai_stateflow.api import (
     stream_response,
 )
 from pydantic_ai_stateflow.api.deps import (
+    get_engine_dep,
     get_event_log,
     get_event_stream,
-    get_infra,
-    get_run_context,
     get_thread_repo,
 )
 from pydantic_ai_stateflow.capabilities import (
@@ -151,7 +154,7 @@ from pydantic_ai_stateflow.errors import (
 )
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
 from pydantic_ai_stateflow.runtime.app import create_app
-from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
+from pydantic_ai_stateflow.runtime.engine import Engine, get_engine
 from pydantic_ai_stateflow.settings import (
     StateflowSettings,
     get_settings,
@@ -250,8 +253,7 @@ __all__ = [
     "AccessDecision",
     "AgentCard",
     "AgentNotRegistered",
-    "Infra",
-    "RunContext",
+    "Engine",
     "AllowAll",
     "ApplyTransaction",
     "ApprovalStage",
@@ -378,11 +380,10 @@ __all__ = [
     "create_app",
     "extract_text",
     "format_error",
+    "get_engine",
     "get_event_log",
     "get_event_stream",
-    "get_infra",
     "get_logger",
-    "get_run_context",
     "get_settings",
     "get_thread_repo",
     "has_logfire",
