@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import itertools
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Literal, TypeVar
+
+from pydantic import BaseModel
 
 from dbos import DBOSConfiguredInstance, Queue
 
@@ -72,6 +75,29 @@ class _ScoredHypothesis(Generic[HypothesisT]):
 
 
 _instance_counter = itertools.count()
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Best-effort: pydantic models → dict; everything else verbatim."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, list | tuple):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _default_format_synth_prompt(task: Any, candidates: list[Any]) -> str:
+    """Default synth-prompt renderer: JSON-encoded ``{task, candidates}``.
+
+    Apps that want a domain-specific prompt (e.g. Russian-language
+    rendering, ``# Тема: ... Кандидаты: ...``) pass an explicit
+    ``format_synth_prompt`` callable to ``DivergentConvergent``."""
+    return json.dumps(
+        {"task": _to_jsonable(task), "candidates": _to_jsonable(candidates)},
+        ensure_ascii=False, indent=2,
+    )
 
 
 @Durable.dbos_class()
@@ -152,7 +178,7 @@ class DivergentConvergent(
         synthesizer: Synthesizer[OutT],
         *,
         hypotheses: Callable[[EnvT], list[HypothesisT]],
-        format_synth_prompt: Callable[[InT, list[HypothesisT]], str],
+        format_synth_prompt: Callable[[InT, list[HypothesisT]], str] | None = None,
         deduper: Deduper | None = None,
         verifier: Verifier[HypothesisT] | None = None,
         top_k: int | None = None,
@@ -192,7 +218,7 @@ class DivergentConvergent(
 
         self._synthesizer = synthesizer
         self._hypotheses = hypotheses
-        self._format_synth_prompt = format_synth_prompt
+        self._format_synth_prompt = format_synth_prompt or _default_format_synth_prompt
         self._deduper = deduper
         self._verifier = verifier
         self._top_k = top_k
