@@ -9,14 +9,23 @@ from fastapi.testclient import TestClient
 
 from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
 from pydantic_ai_stateflow.api.threads import threads_router
+from pydantic_ai_stateflow.persistence import (
+    InMemoryEventLogRepository,
+)
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
+from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from pydantic_ai_stateflow.runtime.infra import Infra
 
 
 def _app(repo: InMemoryThreadRepository) -> FastAPI:
     app = FastAPI()
-    app.state.thread_repo = repo
+    app.state.infra = Infra(
+        thread_repo=repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+    )
     app.include_router(threads_router)
     install_error_handlers(app)
     return app
@@ -67,7 +76,11 @@ async def test_router_respects_prefix():
     repo = InMemoryThreadRepository()
     th = await repo.create(agent="conversation", metadata={})
     app = FastAPI()
-    app.state.thread_repo = repo
+    app.state.infra = Infra(
+        thread_repo=repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+    )
     app.include_router(threads_router, prefix="/api")
     with TestClient(app) as c:
         r = c.get(f"/api/threads/{th.id}")

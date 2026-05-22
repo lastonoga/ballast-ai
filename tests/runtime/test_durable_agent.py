@@ -1,13 +1,9 @@
 """Tests for ``StateflowDurableAgent`` — the durable-by-default StateflowAgent.
 
-Verifies the contract:
-  - Subclass inherits StateflowAgent's tool / system_prompt / metadata
-    machinery (smoke).
-  - ``run`` is a real ``@DBOS.workflow`` that persists ``start`` +
-    ``text-delta`` + ``done`` events to the event log AND publishes
-    matching ``EventNotification``s on the event stream.
-  - Survives caller cancellation: workflow finishes even if the code
-    that started it gets cancelled mid-flight.
+The agent's ``__init__`` no longer takes the infra triplet — those
+arrive via ``RunContext`` on each ``enqueue_*`` / ``cancel_thread_runs``
+call (and are stashed on the instance so the DBOS workflow body can
+read them).
 """
 
 from __future__ import annotations
@@ -28,11 +24,12 @@ from pydantic_ai_stateflow.persistence import (
     InMemoryThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import (
-    StateflowDurableAgent,
     EventNotification,
     InProcessEventStream,
+    StateflowDurableAgent,
     thread_channel,
 )
+from pydantic_ai_stateflow.runtime.infra import Infra
 
 _counter = itertools.count()
 
@@ -56,24 +53,28 @@ class _NotesStateflowDurableAgent(StateflowDurableAgent):
         return None
 
 
+def _build(thread_repo, log, stream) -> tuple[_NotesStateflowDurableAgent, Any]:
+    """Return a durable-agent instance + ``RunContext`` for tests."""
+    durable = _NotesStateflowDurableAgent(
+        config_name=f"durable-test-{next(_counter)}",
+    )
+    # Bind infra so the DBOS workflow body (which runs without the
+    # ``enqueue_*`` ctx) sees the right repos.
+    infra = Infra(thread_repo=thread_repo, event_log=log, event_stream=stream)
+    ctx = infra.context()
+    durable._bind_infra(ctx)
+    return durable, ctx
+
+
 @pytest.mark.asyncio
 async def test_run_persists_streaming_event_taxonomy(
     fresh_dbos_executor: None,
 ) -> None:
-    """One run → log gets ``start`` → text-part lifecycle → ``done`` in order.
-
-    With ``agent.iter()``-based streaming the taxonomy is:
-      start, text-start, text-delta(+), text-end, done.
-    TestModel emits a single text part with content ``"ok"``.
-    """
+    """One run → log gets ``start`` → text-part lifecycle → ``done`` in order."""
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-
-    durable = _NotesStateflowDurableAgent(
-        thread_repo=thread_repo, event_log=log, event_stream=stream,
-        config_name=f"durable-test-{next(_counter)}",
-    )
+    durable, _ctx = _build(thread_repo, log, stream)
 
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
 
@@ -94,17 +95,13 @@ async def test_run_persists_streaming_event_taxonomy(
         pytest.fail("Workflow did not produce a 'done' event in time")
 
     kinds = [e.kind for e in events]
-    # First + last are fixed; middle is text-part lifecycle.
     assert kinds[0] == "start"
     assert kinds[-1] == "done"
     assert events[0].payload["prompt"] == "hi"
-    # TestModel ships the response as a streamed TextPart, so we get
-    # at least a text-start + one or more text-delta + text-end.
     text_kinds = kinds[1:-1]
     assert "text-start" in text_kinds
     assert "text-end" in text_kinds
     assert any(k == "text-delta" for k in text_kinds)
-    # The concatenated deltas reconstruct the TestModel output.
     deltas = "".join(
         e.payload["text"] for e in events if e.kind == "text-delta"
     )
@@ -115,15 +112,10 @@ async def test_run_persists_streaming_event_taxonomy(
 async def test_run_publishes_notifications_for_each_event(
     fresh_dbos_executor: None,
 ) -> None:
-    """Each persisted event triggers an ``EventNotification`` on the stream."""
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-
-    durable = _NotesStateflowDurableAgent(
-        thread_repo=thread_repo, event_log=log, event_stream=stream,
-        config_name=f"durable-test-{next(_counter)}",
-    )
+    durable, _ctx = _build(thread_repo, log, stream)
 
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
     channel = thread_channel(thread.id)
@@ -138,7 +130,7 @@ async def test_run_publishes_notifications_for_each_event(
                     return
 
     consumer = asyncio.create_task(consume())
-    await asyncio.sleep(0)  # let subscriber register before publish
+    await asyncio.sleep(0)
 
     with SetWorkflowID(str(uuid4())):
         await DBOS.start_workflow_async(
@@ -157,15 +149,10 @@ async def test_run_publishes_notifications_for_each_event(
 async def test_run_emits_error_event_when_thread_missing(
     fresh_dbos_executor: None,
 ) -> None:
-    """``run`` with a stale thread_id persists an ``error`` event instead of crashing."""
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-
-    durable = _NotesStateflowDurableAgent(
-        thread_repo=thread_repo, event_log=log, event_stream=stream,
-        config_name=f"durable-test-{next(_counter)}",
-    )
+    durable, _ctx = _build(thread_repo, log, stream)
 
     bogus = uuid4()
 
@@ -187,24 +174,14 @@ async def test_run_emits_error_event_when_thread_missing(
 async def test_cancel_thread_runs_emits_cancelled_event(
     fresh_dbos_executor: None,
 ) -> None:
-    """``cancel_thread_runs`` persists a ``cancelled`` event even with no active runs.
-
-    Per Q5 of the design: idempotent cancel — calling it when nothing
-    is running just emits the synthetic ``cancelled`` event so any
-    listener sees the terminal signal and closes.
-    """
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-
-    durable = _NotesStateflowDurableAgent(
-        thread_repo=thread_repo, event_log=log, event_stream=stream,
-        config_name=f"durable-test-{next(_counter)}",
-    )
+    durable, ctx = _build(thread_repo, log, stream)
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
 
-    cancelled = await durable.cancel_thread_runs(thread.id)
-    assert cancelled == 0  # nothing active, but call still succeeds
+    cancelled = await durable.cancel_thread_runs(ctx, thread.id)
+    assert cancelled == 0
 
     events = await log.read_since(thread.id)
     assert [e.kind for e in events] == ["cancelled"]
@@ -215,7 +192,6 @@ async def test_cancel_thread_runs_emits_cancelled_event(
 async def test_enqueue_run_deterministic_workflow_id(
     fresh_dbos_executor: None,
 ) -> None:
-    """Same (thread_id, user_message_id) → same workflow id, no duplicates."""
     from pydantic_ai_stateflow.runtime.durable_agent import (
         agent_run_workflow_id,
     )
@@ -223,36 +199,27 @@ async def test_enqueue_run_deterministic_workflow_id(
     thread_repo = InMemoryThreadRepository()
     log = InMemoryEventLogRepository()
     stream = InProcessEventStream()
-
-    durable = _NotesStateflowDurableAgent(
-        thread_repo=thread_repo, event_log=log, event_stream=stream,
-        config_name=f"durable-test-{next(_counter)}",
-    )
+    durable, ctx = _build(thread_repo, log, stream)
     thread = await thread_repo.create(agent="notes-durable-test", metadata={})
     user_msg_id = str(uuid4())
 
     handle = await durable.enqueue_run(
+        ctx,
         thread_id=thread.id, user_message_id=user_msg_id,
         prompt="hi", history_dump=[],
     )
     expected = agent_run_workflow_id(thread.id, user_msg_id)
     assert handle.workflow_id == expected
-    await handle.get_result()  # let the workflow finish so it doesn't leak
+    await handle.get_result()
 
 
 @pytest.mark.asyncio
 async def test_subclass_inherits_stateflow_agent_machinery() -> None:
-    """``StateflowDurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools.
-
-    Smoke check that ``StateflowDurableAgent`` is a drop-in StateflowAgent —
-    apps shouldn't have to re-learn the agent registration API.
-    """
+    """``StateflowDurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools."""
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 
     assert issubclass(_NotesStateflowDurableAgent, StateflowAgent)
     assert _NotesStateflowDurableAgent.name == "notes-durable-test"
     assert _NotesStateflowDurableAgent.metadata_model is None
-    # The tool / system_prompt decorators come from the
-    # StateflowAgent base unchanged.
     assert hasattr(_NotesStateflowDurableAgent, "tool")
     assert hasattr(_NotesStateflowDurableAgent, "system_prompt")

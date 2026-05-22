@@ -1,10 +1,9 @@
 """``StateflowAgent`` ABC + ``validate_thread_metadata``.
 
-The legacy process-global instance registry (``register_agent`` /
-``get_agent`` / ``list_agents`` / ``clear_agent_registry``) was
-deleted in SP1 T11. Apps now pass instances directly to
-``sf.create_app(agents=[...])`` and the streaming router resolves
-them via ``app.state.agents``.
+The framework no longer maintains an agent class registry —
+``Thread.agent`` is an opaque app-owned string. Apps that want
+metadata validation pass the class (or an instance) to
+``validate_thread_metadata`` directly.
 """
 
 from __future__ import annotations
@@ -18,10 +17,6 @@ from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
 from pydantic_ai_stateflow.runtime import StateflowAgent, validate_thread_metadata
-from pydantic_ai_stateflow.runtime.agents import (
-    clear_agent_class_registry,
-    stateflow_agent,
-)
 
 
 class _NotesMetadata(BaseModel):
@@ -29,15 +24,7 @@ class _NotesMetadata(BaseModel):
     context: dict[str, Any] = {}
 
 
-@pytest.fixture(autouse=True)
-def _isolated_class_registry() -> Any:
-    clear_agent_class_registry()
-    yield
-    clear_agent_class_registry()
-
-
 def _build_agents() -> tuple[type[StateflowAgent], type[StateflowAgent]]:
-    @stateflow_agent
     class _NoMetaAgent(StateflowAgent):
         name = "no-meta"
 
@@ -50,7 +37,6 @@ def _build_agents() -> tuple[type[StateflowAgent], type[StateflowAgent]]:
             del thread, tenant_id, message
             return None
 
-    @stateflow_agent
     class _WithMetaAgent(StateflowAgent):
         name = "with-meta"
         metadata_model = _NotesMetadata
@@ -83,9 +69,9 @@ def test_validate_metadata_round_trips_through_model() -> None:
 
 
 def test_validate_metadata_rejects_bad_shape() -> None:
-    _, _with_meta = _build_agents()
+    _, with_meta = _build_agents()
     with pytest.raises(ValidationError):
-        validate_thread_metadata("with-meta", {"relations": "not-a-dict"})
+        validate_thread_metadata(with_meta, {"relations": "not-a-dict"})
 
 
 def test_validate_metadata_normalizes_none_to_empty() -> None:
@@ -93,17 +79,11 @@ def test_validate_metadata_normalizes_none_to_empty() -> None:
     assert validate_thread_metadata(no_meta, None) == {}
 
 
-def test_validate_metadata_accepts_string_class_or_instance() -> None:
+def test_validate_metadata_accepts_class_or_instance() -> None:
     no_meta, _ = _build_agents()
     payload = {"k": "v"}
-    assert validate_thread_metadata("no-meta", payload) == payload
     assert validate_thread_metadata(no_meta, payload) == payload
     assert validate_thread_metadata(no_meta(), payload) == payload
-
-
-def test_validate_metadata_unknown_agent_raises() -> None:
-    with pytest.raises(KeyError):
-        validate_thread_metadata("nobody", {})
 
 
 def test_validate_metadata_rejects_garbage_ref() -> None:
@@ -112,8 +92,8 @@ def test_validate_metadata_rejects_garbage_ref() -> None:
 
 
 def test_metadata_unknown_field_dropped_during_round_trip() -> None:
-    _, _with_meta = _build_agents()
-    out = validate_thread_metadata("with-meta", {"extra": "x"})
+    _, with_meta = _build_agents()
+    out = validate_thread_metadata(with_meta, {"extra": "x"})
     assert "extra" not in out  # extras dropped by default pydantic config
 
 

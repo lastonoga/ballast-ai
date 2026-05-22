@@ -1,12 +1,16 @@
-"""Tests for the server-stateful Vercel-AI streaming endpoint built on
-``pydantic_ai.ui.vercel_ai.VercelAIAdapter``.
+"""Tests for the ``stream_response`` primitive.
 
-The framework owns:
-  - thread + message persistence (404 on missing thread, no lazy-create)
+The framework no longer ships a module-level ``streaming_router``;
+apps write their own routes that delegate to ``stream_response``.
+These tests wire a minimal app around the primitive and exercise:
+
+  - 404 on missing thread
   - user-message persistence before the stream starts
-  - ``message_history`` reconstruction from the repo
-  - assistant-reply persistence via the ``on_complete`` callback
-  - ``deps_factory`` invocation per request
+  - assistant-reply persistence via the inline path's ``on_complete``
+  - message-history reconstruction from the repo
+  - regenerate (truncate-then-append) semantics
+  - approval-resume body parsing
+  - PII redaction in the live SSE body
 
 The wire format, body parsing, and event taxonomy are delegated to
 ``VercelAIAdapter`` — we DON'T re-test those.
@@ -21,7 +25,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelRequest,
@@ -31,18 +35,21 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from starlette.responses import Response
 
-from pydantic_ai_stateflow.api.streaming.router import streaming_router
+from pydantic_ai_stateflow.api.deps import get_run_context
+from pydantic_ai_stateflow.api.streaming import stream_response
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import StateflowAgent
+from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
 
 
 class _TestStateflowAgent(StateflowAgent):
     """Test seam: wraps a pre-built pydantic-ai ``Agent`` + optional
     ``deps_factory`` + ``model_settings`` into a ``StateflowAgent``
-    instance the registry can resolve."""
+    instance."""
 
     name = "conversation"
 
@@ -97,11 +104,12 @@ def _build_app(
     deps_factory: Any = None,
     model_settings: Any = None,
 ) -> FastAPI:
-    """Wire ``agent`` as the ``"conversation"`` StateflowAgent and
-    build a streaming-router-only FastAPI app over ``repo``.
+    """Build a minimal app that exposes ``POST /threads/{id}/messages``
+    backed by ``stream_response``.
 
-    Uses the module-level ``streaming_router`` + ``app.state``-based
-    agent resolution (no process-global registry).
+    Stand-in for what an app would write — resolves the agent for the
+    thread (here trivially: always ``conversation``) and delegates to
+    the primitive.
     """
     from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
     from pydantic_ai_stateflow.persistence import (
@@ -109,18 +117,33 @@ def _build_app(
     )
     from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
 
+    sf_agent = _TestStateflowAgent(
+        agent,
+        deps_factory=deps_factory,
+        model_settings=model_settings,
+    )
+
     app = FastAPI()
-    app.state.thread_repo = repo
-    app.state.event_log = InMemoryEventLogRepository()
-    app.state.event_stream = InProcessEventStream()
-    app.state.agents = {
-        "conversation": _TestStateflowAgent(
-            agent,
-            deps_factory=deps_factory,
-            model_settings=model_settings,
-        ),
-    }
-    app.include_router(streaming_router)
+    infra = Infra(
+        thread_repo=repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+    )
+    app.state.infra = infra
+
+    @app.post("/threads/{thread_id}/messages")
+    async def _post(
+        request: Request,
+        thread_id: UUID,
+        ctx: RunContext = Depends(get_run_context),
+    ) -> Response:
+        return await stream_response(
+            request=request,
+            thread_id=thread_id,
+            agent=sf_agent,
+            ctx=ctx,
+        )
+
     install_error_handlers(app)
     return app
 
@@ -200,10 +223,6 @@ async def test_assistant_reply_persisted_via_on_complete() -> None:
 
 @pytest.mark.asyncio
 async def test_message_history_reconstructed_from_repo() -> None:
-    """Body carries full history (matching useChat behavior); body-vs-DB
-    sync keeps the prior 3 rows + appends the new turn-3 user msg.
-    Agent then sees all 3 user turns in ``message_history``.
-    """
     repo = InMemoryThreadRepository()
     thread = await repo.create(agent="conversation", metadata={})
     t1u = await repo.add_message(
@@ -392,10 +411,6 @@ async def test_model_settings_flow_through() -> None:
 
 @pytest.mark.asyncio
 async def test_regenerate_truncates_old_assistant_then_emits_new() -> None:
-    """Regenerate = body has user but no trailing assistant. The body-vs-DB
-    sync drops the stale assistant row; the agent run then persists a
-    fresh one. Flat list: edit / regenerate collapse to truncate-then-append.
-    """
     repo = InMemoryThreadRepository()
     thread = await repo.create(agent="conversation", metadata={})
     user_msg = await repo.add_message(
@@ -440,9 +455,6 @@ async def test_regenerate_truncates_old_assistant_then_emits_new() -> None:
 
 @pytest.mark.asyncio
 async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
-    """Approval responses (Vercel SDK v6 ``tool-*`` parts with approval
-    decision) require the originating assistant turn — with its
-    ``tool-call`` part — to survive the message-trim step."""
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
     from pydantic_ai_stateflow.api.streaming.router import (
@@ -494,15 +506,6 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
-    """End-to-end: an Agent wired with ``PIIGuard`` must scrub PII from
-    the SSE body BEFORE the client sees it, not just from the persisted
-    assistant message.
-
-    This pins the user-facing bug: the assistant-ui frontend renders raw
-    bytes off the live stream and never re-syncs from persistence on
-    stream end, so leaking PII via SSE deltas is a real user-visible
-    leak even when the persisted row is clean.
-    """
     import re as _re
 
     from pydantic_ai_stateflow.capabilities import PIIGuard, RegexDetector
@@ -516,9 +519,6 @@ async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
     async def fn_stream(
         _messages: list[Any], _info: AgentInfo,
     ) -> AsyncIterator[str]:
-        # Split deliberately so the "@" arrives in a later chunk — the
-        # classic split-across-deltas case PIIGuard.wrap_run_event_stream
-        # must cover.
         yield "Contact alice"
         yield "@example.com to follow up."
 
@@ -540,13 +540,9 @@ async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
         assert r.status_code == 200, r.text
         body = r.text
 
-    # The user-facing assertion: the raw email must NOT have reached
-    # the SSE consumer.
     assert "alice@example.com" not in body, body
     assert "[REDACTED]" in body, body
 
-    # Persistence path should also be clean (after_model_request handles
-    # the non-streaming reconstruction the on_complete callback uses).
     msgs = await repo.history(thread.id)
     asst = next(m for m in msgs if m.role == "assistant")
     persisted_text = json.dumps(asst.parts)
