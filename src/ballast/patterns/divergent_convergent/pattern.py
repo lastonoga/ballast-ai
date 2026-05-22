@@ -13,17 +13,6 @@ from dbos import DBOSConfiguredInstance, Queue
 from ballast.durable import Durable
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
-from ballast.patterns.divergent_convergent.events import (
-    BranchCompleted,
-    BranchEnqueued,
-    BranchFailed,
-    ConvergeCompleted,
-    ConvergeStarted,
-    DedupCompleted,
-    DivergentEvent,
-    ProgressCallback,
-    VerifyCompleted,
-)
 from ballast.patterns.divergent_convergent.primitives import (
     DivergentBranch,
     Synthesizer,
@@ -33,27 +22,6 @@ from ballast.patterns.errors import InsufficientDivergence
 
 _log = __import__("logging").getLogger(__name__)
 
-
-async def _safe_emit(
-    callback: ProgressCallback | None, event: DivergentEvent,
-) -> None:
-    """Invoke ``callback`` swallowing any exception.
-
-    The callback runs inside the workflow body. A broken app-side
-    mapping (e.g. a bad pydantic schema mismatch in the thread-event
-    bridge) shouldn't crash an in-flight brainstorm — the workflow
-    still has useful work to finish. Errors are logged loud enough
-    that they show up in dev / staging.
-    """
-    if callback is None:
-        return
-    try:
-        await callback(event)
-    except Exception as exc:  # noqa: BLE001 — defensive boundary
-        _log.warning(
-            "DivergentConvergent on_progress callback raised on %s: %s",
-            event.type, exc,
-        )
 
 InT = TypeVar("InT")
 EnvT = TypeVar("EnvT")
@@ -243,25 +211,15 @@ class DivergentConvergent(
         "branch_count": len(self._branches),
         "best_of_n": self._best_of_n,
     })
-    async def run(
-        self,
-        task: InT,
-        *,
-        on_progress: ProgressCallback | None = None,
-    ) -> OutT:
+    async def run(self, task: InT) -> OutT:
         """Run the divergent → optional dedup → optional verify →
         synthesize pipeline.
 
-        ``on_progress`` (optional) is an async callback fired at every
-        observable boundary — branch enqueued / completed / failed,
-        dedup completed, verify completed, converge started /
-        completed. Apps wire it to push live status into their UI
-        (e.g. ``ThreadEventStream.update``) without the pattern
-        knowing about thread-event plumbing.
-
-        The callback runs inside the workflow fiber; exceptions it
-        raises are caught and logged, NOT propagated, so a broken UI
-        mapping can't kill a workflow mid-run.
+        Pattern progress (branch enqueued / completed / failed,
+        dedup / verify / converge) is NOT emitted today — see
+        ``events.py`` for the planned re-introduction via the engine's
+        thread-event broadcaster (no callback crosses the workflow
+        boundary; apps subscribe to typed events by their wire name).
         """
         # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
@@ -276,9 +234,6 @@ class DivergentConvergent(
                     self._diverge_one, label, sample_idx, task,
                 )
                 handles.append((label, sample_idx, handle))
-                await _safe_emit(on_progress, BranchEnqueued(
-                    label=label, sample_idx=sample_idx,
-                ))
 
         # 2. Collect with per-branch failure policy.
         pools: list[list[HypothesisT]] = []
@@ -289,14 +244,7 @@ class DivergentConvergent(
                 pool = await handle.get_result()
                 pools.append(pool)
                 outcomes[key] = f"ok:{len(pool)}"
-                await _safe_emit(on_progress, BranchCompleted(
-                    label=label, sample_idx=sample_idx, pool_size=len(pool),
-                ))
             except Exception as exc:  # noqa: BLE001 — caller policy decides
-                await _safe_emit(on_progress, BranchFailed(
-                    label=label, sample_idx=sample_idx,
-                    error_type=type(exc).__name__,
-                ))
                 if self._per_branch_failure == "strict":
                     raise
                 outcomes[key] = f"failed:{type(exc).__name__}"
@@ -305,11 +253,7 @@ class DivergentConvergent(
 
         # 3. Optional dedup.
         if self._deduper is not None and merged:
-            input_count = len(merged)
             merged = await self._deduper.run(merged)
-            await _safe_emit(on_progress, DedupCompleted(
-                input_count=input_count, output_count=len(merged),
-            ))
 
         # 4. Minimum-cardinality guard.
         if len(merged) < self._min_hypotheses:
@@ -321,7 +265,6 @@ class DivergentConvergent(
 
         # 5. Optional verifier + top-K filtering.
         if self._verifier is not None:
-            scored_count = len(merged)
             scored: list[_ScoredHypothesis[HypothesisT]] = []
             for hypothesis in merged:
                 score = await self._score_one(task, hypothesis)
@@ -330,17 +273,9 @@ class DivergentConvergent(
             if self._top_k is not None:
                 scored = scored[: self._top_k]
             merged = [s.hypothesis for s in scored]
-            await _safe_emit(on_progress, VerifyCompleted(
-                scored_count=scored_count, top_k_applied=self._top_k,
-            ))
 
         # 6. Synthesize.
-        await _safe_emit(on_progress, ConvergeStarted(
-            candidate_count=len(merged),
-        ))
-        result = await self._converge(task, merged)
-        await _safe_emit(on_progress, ConvergeCompleted())
-        return result
+        return await self._converge(task, merged)
 
     # ── steps ────────────────────────────────────────────────────────────
 

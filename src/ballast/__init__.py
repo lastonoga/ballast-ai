@@ -218,6 +218,7 @@ from ballast.patterns.hitl import (
     Voter,
     WebhookChannel,
     WebhookConfig,
+    ask_human,
     build_hitl_router,
     make_helper_agent_with_approval_tools,
 )
@@ -260,6 +261,7 @@ __all__ = [
     "ApplyTransaction",
     "ApprovalStage",
     "ApprovedResponse",
+    "ask_human",
     "AuthError",
     "AuthorizationDenied",
     "Ballast",

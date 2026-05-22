@@ -1,48 +1,41 @@
-"""Pattern-specific progress events emitted by ``DivergentConvergent.run``.
+"""Pattern-specific progress events for ``DivergentConvergent``.
 
-These are framework-level **typed** events. The pattern doesn't know
-or care how they're rendered — it just produces them. Apps wire a
-``on_progress`` callback to ``DivergentConvergent.run(...)`` that
-maps the framework events to whatever delivery they like (thread
-events, logfire spans, websocket pushes, …).
+Typed event vocabulary that the pattern WILL emit at every observable
+boundary (branch enqueued / completed / failed, dedup completed,
+verify completed, converge started / completed). Discriminated by
+``type`` so callers can ``match`` cleanly.
 
-Discriminated by ``type`` so callers can ``match`` cleanly::
+Status: the event types are defined but ``DivergentConvergent.run``
+does NOT emit them yet. The previous ``on_progress=callable`` API
+was removed because callable args can't cross a durable-workflow
+boundary cleanly (local closures aren't picklable, and even with
+module-level partials DBOS's serialization story is fragile).
 
-    async def on_progress(ev: DivergentEvent) -> None:
-        match ev:
-            case BranchCompleted(label=label, pool_size=n):
-                ...
-            case ConvergeStarted(candidate_count=n):
-                ...
+## Planned re-introduction
 
-## Determinism / replay
+The pattern will emit these typed events on the engine's
+thread-event broadcaster (already wired by ``EventsProvider`` and
+reached via ``get_engine().broadcaster``). Each event has a stable
+wire name (``branch-enqueued``, ``branch-completed``, etc.) so apps
+subscribe by name from outside the workflow body — no callback or
+closure crosses the fiber boundary, recovery semantics stay clean,
+and UIs map events to their own thread-event types as they please.
 
-The pattern's ``run`` body is a ``@Durable.workflow``. On crash
-recovery the body replays in deterministic order:
-
-- ``await handle.get_result()`` returns the memoised pool from the
-  original execution, so ``BranchCompleted(pool_size=...)`` carries
-  the same ``pool_size`` on replay.
-- ``on_progress`` is invoked from inside the workflow body, so it
-  too re-fires on replay. App-side mappings should be idempotent
-  (e.g. ``ThreadEventStream`` reuses a stable ``message_id`` so
-  upsert collapses retries).
+Apps that need per-branch live progress today should layer their
+own emission inside their custom ``DivergentAgent`` implementations
+(``.diverge`` runs in the branch fiber and CAN call into the
+broadcaster directly).
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from pydantic import BaseModel
 
 
 class BranchEnqueued(BaseModel):
-    """A divergent branch has been placed on the queue, not yet started.
-
-    Fires once per (branch, sample) pair immediately before the
-    enqueue call. The UI typically shows this as a ``running``
-    state until ``BranchCompleted`` / ``BranchFailed`` arrives."""
+    """A divergent branch has been placed on the queue, not yet started."""
     type: Literal["branch-enqueued"] = "branch-enqueued"
     label: str
     sample_idx: int
@@ -57,12 +50,7 @@ class BranchCompleted(BaseModel):
 
 
 class BranchFailed(BaseModel):
-    """A divergent branch raised an exception.
-
-    With ``per_branch_failure="skip"`` (default) the workflow
-    continues and this event tells the UI to mark that branch
-    failed but keep going. With ``per_branch_failure="strict"``
-    the workflow aborts immediately AFTER firing this event."""
+    """A divergent branch raised an exception."""
     type: Literal["branch-failed"] = "branch-failed"
     label: str
     sample_idx: int
@@ -103,16 +91,8 @@ DivergentEvent = (
     | ConvergeStarted
     | ConvergeCompleted
 )
-"""Discriminated union of every event ``DivergentConvergent.run`` may
-emit. Future event kinds extend this — pattern matchers should
-include a ``case _`` arm for forward compatibility."""
-
-ProgressCallback = Callable[[DivergentEvent], Awaitable[None]]
-"""Type alias for the optional callback passed to ``run(..., on_progress=...)``.
-
-The callback runs **inside the workflow fiber** — exceptions raised
-inside it are caught by the pattern and logged, NOT propagated, so a
-broken UI mapping can't kill an in-flight brainstorm."""
+"""Discriminated union of every event ``DivergentConvergent.run`` will
+emit once the broadcaster wiring lands."""
 
 
 __all__ = [
@@ -123,6 +103,5 @@ __all__ = [
     "ConvergeStarted",
     "DedupCompleted",
     "DivergentEvent",
-    "ProgressCallback",
     "VerifyCompleted",
 ]

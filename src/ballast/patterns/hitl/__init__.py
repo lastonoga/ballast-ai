@@ -1,4 +1,5 @@
 from ballast.patterns.hitl.api import build_hitl_router
+from ballast.patterns.hitl.ask import ask_human
 from ballast.patterns.hitl.channel import HITLChannel, InMemoryHITLChannel
 from ballast.patterns.hitl.channels import (
     WEBHOOK_SIGNATURE_HEADER,
@@ -64,6 +65,7 @@ __all__ = [
     "WEBHOOK_SIGNATURE_HEADER",
     "WebhookChannel",
     "WebhookConfig",
+    "ask_human",
     "build_hitl_router",
     "make_helper_agent_with_approval_tools",
 ]
