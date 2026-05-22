@@ -12,6 +12,7 @@ import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
 from pydantic_ai_stateflow.durable import Durable
+from pydantic_ai_stateflow.runtime.engine import _reset_engine_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
 
@@ -20,6 +21,30 @@ from notes_app.repositories.note import InMemoryNoteRepository
 def repo() -> InMemoryNoteRepository:
     """Fresh in-memory note repo per test (no cross-test leakage)."""
     return InMemoryNoteRepository()
+
+
+@pytest.fixture(autouse=True)
+def _restore_engine_between_tests() -> Iterator[None]:
+    """Snapshot the process-wide ``Engine`` and restore it after each test.
+
+    The framework refuses to reassign ``_engine`` to a different
+    instance once installed (see ``_set_engine``). Tests that install a
+    fresh Engine (``test_todo_proposal``) and tests that boot the full
+    app via ``TestClient(app)`` (``test_smoke``) would otherwise collide
+    depending on collection order. Snapshotting on enter + restoring on
+    exit keeps the global stable across the suite.
+    """
+    from pydantic_ai_stateflow.runtime import engine as _engine_mod
+
+    snapshot = _engine_mod._engine
+    try:
+        yield
+    finally:
+        _reset_engine_for_tests()
+        if snapshot is not None:
+            from pydantic_ai_stateflow.runtime.engine import _set_engine
+
+            _set_engine(snapshot)
 
 
 # ---------------------------------------------------------------------------

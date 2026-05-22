@@ -14,6 +14,11 @@ The new architecture is fire-and-forget from the parent run's POV:
 Crucially, step (5) doesn't depend on T1's request handler being alive
 — that's the whole point of the refactor. So these tests exercise the
 durable workflow end-to-end via DBOS.send + handle.get_result.
+
+The framework reads its repo + event log + event stream from the
+process-wide ``Engine`` installed by ``sf.create_app`` — these tests
+install one manually via ``sf.runtime.engine._set_engine`` so the
+durable workflow body finds the right repos when it executes.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+import pydantic_ai_stateflow as sf
 from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
@@ -32,8 +38,12 @@ from pydantic_ai_stateflow.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
+from pydantic_ai_stateflow.runtime.engine import (
+    Engine,
+    _reset_engine_for_tests,
+    _set_engine,
+)
 from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
-from pydantic_ai_stateflow.runtime.infra import RunContext
 
 from notes_app.agents.notes import NotesAgent, NoteToolDeps
 from notes_app.agents.todo_approval import (
@@ -72,6 +82,25 @@ class _TestTodoApprovalAgent(NotesTodoApprovalAgent):
             output_type=str,
             deps_type=TodoApprovalDeps,
         )
+
+
+def _install_engine(
+    *,
+    thread_repo: InMemoryThreadRepository,
+) -> Engine:
+    """Install a fresh process-wide ``Engine`` for the test.
+
+    Caller is responsible for ``_reset_engine_for_tests()`` on teardown
+    (handled by ``_engine`` fixture below).
+    """
+    _reset_engine_for_tests()
+    engine = Engine(
+        thread_repo=thread_repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+    )
+    _set_engine(engine)
+    return engine
 
 
 def _bound_tool(agent: Any, name: str) -> Any:
@@ -131,24 +160,20 @@ async def _spawn_proposal(
     ``todo_flow`` and ``notes_repo`` are reached by the tool via direct
     import of the module-level singletons — tests swap the singleton
     refs via ``monkeypatch.setattr`` in the calling test (the fixture
-    receives the per-test repo / flow that way).
+    receives the per-test repo / flow that way). Framework repos are
+    reached via the installed process-wide Engine.
     """
+    del notes_repo  # only used via the monkeypatch'd module singleton
     notes_agent = _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}")
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
-    ctx = RunContext(
-        thread_repo=thread_repo,
-        event_log=InMemoryEventLogRepository(),
-        event_stream=InProcessEventStream(),
-        parent_thread_id=t1.id,
-    )
     deps = NoteToolDeps(
-        repo=notes_repo,
+        repo=InMemoryNoteRepository(),  # unused by propose_todo
         parent_thread_id=t1.id,
-        ctx=ctx,
     )
     result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
+    del todo_flow  # only used via the monkeypatch'd module singleton
 
     t2 = await _wait_for_helper_thread(thread_repo)
     return result, t1, dict(t2.metadata_)
@@ -170,6 +195,7 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
     monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
+    _install_engine(thread_repo=thread_repo)
 
     result, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -208,6 +234,7 @@ async def test_approve_saves_note_and_notifies_parent(
     )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
     monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
+    _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -251,6 +278,7 @@ async def test_modify_saves_note_with_overrides(
     )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
     monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
+    _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk",
@@ -293,6 +321,7 @@ async def test_reject_skips_note_and_notifies_parent(
     )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
     monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
+    _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="garbage", body="trash",
@@ -338,6 +367,7 @@ async def test_propose_todo_returns_before_helper_decision(
     )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
     monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
+    _install_engine(thread_repo=thread_repo)
 
     # If this await hung, the test would time out — we explicitly assert
     # it resolves quickly.
@@ -362,12 +392,17 @@ async def test_propose_todo_returns_before_helper_decision(
 
 
 @pytest.mark.asyncio
-async def test_propose_todo_rejects_when_deps_missing_ctx() -> None:
-    """Calling ``propose_todo`` without parent_thread_id / ctx must fail loudly."""
+async def test_propose_todo_rejects_when_deps_missing_parent_thread() -> None:
+    """Calling ``propose_todo`` without parent_thread_id must fail loudly."""
     notes_repo = InMemoryNoteRepository()
     notes_agent = _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}")
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
-    deps = NoteToolDeps(repo=notes_repo)  # no parent_thread_id / ctx
+    deps = NoteToolDeps(repo=notes_repo)  # no parent_thread_id
     with pytest.raises(RuntimeError, match="propose_todo requires"):
         await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
+
+
+# Keep sf imported — referenced for the `_set_engine` lifecycle to make
+# it obvious which framework piece these tests are exercising.
+_ = sf
