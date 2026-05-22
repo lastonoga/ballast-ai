@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from ballast.durable import Durable
 
 from notes_app.models.brainstorm import BrainstormTask
-from notes_app.workflows.brainstorm import BrainstormFlow, brainstorm
+from notes_app.workflows.brainstorm import brainstorm, workflow_id
 
 router = APIRouter()
 
@@ -18,6 +18,6 @@ async def start_brainstorm(task: BrainstormTask) -> dict:
 
     Same ``(parent_thread, topic)`` collapses to one in-flight workflow
     (matches the historical ``brainstorm_router.py`` behaviour)."""
-    with SetWorkflowID(BrainstormFlow.workflow_id(task)):
-        handle = await Durable.start_workflow(brainstorm.run, task)
+    with SetWorkflowID(workflow_id(task)):
+        handle = await Durable.start_workflow(brainstorm, task)
     return {"workflow_id": handle.workflow_id}

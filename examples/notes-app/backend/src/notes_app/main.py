@@ -39,7 +39,7 @@ from notes_app.routes.streaming import router as streaming_router
 from notes_app.routes.workflows import router as workflows_router
 from notes_app.streams import event_stream
 from notes_app.workflows.brainstorm import brainstorm
-from notes_app.workflows.todo_approval import todo_flow
+from notes_app.workflows.todo_approval import todo_flow  # noqa: F401 — DBOS classes self-register on import; needed for propose_todo
 
 
 load_dotenv()
@@ -86,8 +86,7 @@ app: FastAPI = (
 app.state.notes_repo = notes_repo
 app.state.notes_agent = notes_agent
 app.state.todo_approval_agent = approval_agent
-app.state.brainstorm_flow = brainstorm
-app.state.todo_flow = todo_flow
+app.state.brainstorm = brainstorm
 
 
 def main() -> None:  # pragma: no cover

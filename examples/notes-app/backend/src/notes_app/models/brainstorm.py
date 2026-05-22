@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class BrainstormTask(BaseModel):
-    """Input to ``BrainstormFlow.run`` — one pydantic envelope so the
+    """Input to ``brainstorm`` — one pydantic envelope so the
     workflow's call signature stays stable as the inputs grow (extra
     knobs like ``best_of_n_override``, ``locale`` etc. can be added
     without breaking callers)."""
@@ -15,17 +15,18 @@ class BrainstormTask(BaseModel):
 
 
 class BrainstormOutcome(BaseModel):
-    """Output of ``BrainstormFlow.run``.
+    """Output of ``brainstorm``.
 
-    The flow is fire-and-forget w.r.t. HITL: ``run`` returns AFTER the
-    approval thread is opened but BEFORE the user approves/rejects.
-    ``helper_thread_id`` is what the UI needs to scroll the sidebar
-    to. ``proposed_title`` / ``proposed_body`` are included so
-    observability (and any caller that wants to log what was
-    proposed) doesn't need to peek into the helper thread."""
-    helper_thread_id: UUID
+    The flow now runs end-to-end (diverge → ask → save), so the
+    outcome describes the WHOLE run: what was proposed plus what
+    actually got saved (``saved_title`` / ``saved_body`` are ``None``
+    on reject / timeout). Observability + tests consume this; the
+    HTTP route returns the workflow id immediately and the response
+    body isn't streamed to the browser."""
     proposed_title: str
     proposed_body: str
+    saved_title: str | None = None
+    saved_body: str | None = None
 
 
 __all__ = ["BrainstormOutcome", "BrainstormTask"]
