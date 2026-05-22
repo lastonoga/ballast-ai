@@ -30,7 +30,7 @@ def ls(
     tears down.
     """
     ref = resolve_app_ref(app_ref)
-    _ = import_app(ref)  # side-effect: triggers @sf.workflow registration
+    _ = import_app(ref)  # side-effect: imports app module so DBOS sees workflows
 
     from dbos import DBOSConfig
 
