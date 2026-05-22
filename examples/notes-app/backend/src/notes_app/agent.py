@@ -38,11 +38,11 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import UUID
 
-import pydantic_ai_stateflow as sf
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai_stateflow import RunContext as StateflowRunContext
 from pydantic_ai_stateflow.capabilities import (
     BudgetGuard,
     PIIGuard,
@@ -51,18 +51,8 @@ from pydantic_ai_stateflow.capabilities import (
 )
 from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.grounded import Ref, Selector
-from pydantic_ai_stateflow.persistence import (
-    EventLogRepository,
-    InMemoryEventLogRepository,
-    InMemoryThreadRepository,
-)
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.runtime import (
-    EventStream,
-    InProcessEventStream,
-    StateflowDurableAgent,
-)
+from pydantic_ai_stateflow.runtime import StateflowDurableAgent
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
 from notes_app.settings import get_notes_settings
@@ -128,7 +118,7 @@ def default_notes_capabilities() -> list[StateflowCapability]:
 class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
-    ``todo_flow`` and ``parent_thread_id`` are only used by
+    ``todo_flow``, ``parent_thread_id``, and ``ctx`` are only used by
     ``propose_todo`` to spawn the durable approval workflow — the
     simpler note tools ignore them. They may be ``None`` for tests
     that only exercise the non-HITL tools.
@@ -137,9 +127,9 @@ class NoteToolDeps:
     repo: NoteRepository
     todo_flow: TodoApprovalFlow | None = None
     parent_thread_id: UUID | None = None
+    ctx: StateflowRunContext | None = None
 
 
-@sf.stateflow_agent
 class NotesAgent(StateflowDurableAgent):
     """Personal-notes durable agent.
 
@@ -159,28 +149,19 @@ class NotesAgent(StateflowDurableAgent):
         self,
         *,
         notes_repo: NoteRepository,
-        thread_repo: ThreadRepository | None = None,
-        event_log: EventLogRepository | None = None,
-        event_stream: EventStream | None = None,
         todo_flow: TodoApprovalFlow | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
         config_name: str | None = None,
     ) -> None:
-        # Durability infrastructure has in-memory defaults so tests can
-        # instantiate ``NotesAgent(notes_repo=...)`` without setting up
-        # the full event log / signal channel. Production wiring (in
-        # ``main.py``) passes shared instances explicitly so the same
-        # log + stream are visible to the streaming router.
+        # Infrastructure (thread_repo / event_log / event_stream) is bound
+        # per-call by ``enqueue_run`` / ``enqueue_approval_resume`` /
+        # ``cancel_thread_runs`` from the supplied ``RunContext`` — the
+        # framework owns those slots on the base class.
         # ``config_name=None`` lets the parent class auto-generate a
         # unique id — production overrides with a stable name so DBOS
         # workflow recovery can rebind the instance after a restart.
-        super().__init__(
-            thread_repo=thread_repo or InMemoryThreadRepository(),
-            event_log=event_log or InMemoryEventLogRepository(),
-            event_stream=event_stream or InProcessEventStream(),
-            config_name=config_name,
-        )
+        super().__init__(config_name=config_name)
         self._notes_repo = notes_repo
         self._todo_flow = todo_flow
         self._model_name = model_name
@@ -229,10 +210,24 @@ class NotesAgent(StateflowDurableAgent):
         message: ModelMessage | None,
     ) -> NoteToolDeps:
         del message
+        # Per-call infra triplet was bound onto ``self`` by
+        # ``_bind_infra(ctx)`` before the workflow body started — surface
+        # it back to tool code via ``deps.ctx`` so ``propose_todo`` can
+        # forward the same ``RunContext`` into ``todo_flow.open(ctx, ...)``.
+        ctx: StateflowRunContext | None = None
+        if self._thread_repo is not None and self._event_log is not None \
+                and self._event_stream is not None:
+            ctx = StateflowRunContext(
+                thread_repo=self._thread_repo,
+                event_log=self._event_log,
+                event_stream=self._event_stream,
+                parent_thread_id=thread.id,
+            )
         return NoteToolDeps(
             repo=self._notes_repo,
             todo_flow=self._todo_flow,
             parent_thread_id=thread.id,
+            ctx=ctx,
         )
 
     def model_settings(self) -> OpenRouterModelSettings:
@@ -345,9 +340,10 @@ async def propose_todo(
 
     Both ``title`` and ``body`` are required and free-form.
     """
-    if ctx.deps.todo_flow is None or ctx.deps.parent_thread_id is None:
+    if ctx.deps.todo_flow is None or ctx.deps.parent_thread_id is None \
+            or ctx.deps.ctx is None:
         raise RuntimeError(
-            "propose_todo requires todo_flow + parent_thread_id on "
+            "propose_todo requires todo_flow + parent_thread_id + ctx on "
             "NoteToolDeps — was NotesAgent constructed without them?",
         )
 
@@ -357,6 +353,7 @@ async def propose_todo(
         parent_thread_id=ctx.deps.parent_thread_id,
     )
     await ctx.deps.todo_flow.open(
+        ctx.deps.ctx,
         helper_agent=NotesTodoApprovalAgent,
         context=context,
         opening_message=context.to_opening_message(),
