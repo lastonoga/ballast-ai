@@ -29,7 +29,12 @@ from dbos import DBOS
 from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from pydantic_ai_stateflow.persistence import (
+    InMemoryEventLogRepository,
+    InMemoryThreadRepository,
+)
+from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from pydantic_ai_stateflow.runtime.infra import RunContext
 
 from notes_app.agent import NotesAgent, NoteToolDeps
 from notes_app.notes.repository import InMemoryNoteRepository
@@ -129,10 +134,17 @@ async def _spawn_proposal(
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
+    ctx = RunContext(
+        thread_repo=thread_repo,
+        event_log=InMemoryEventLogRepository(),
+        event_stream=InProcessEventStream(),
+        parent_thread_id=t1.id,
+    )
     deps = NoteToolDeps(
         repo=notes_repo,
         todo_flow=todo_flow,
         parent_thread_id=t1.id,
+        ctx=ctx,
     )
     result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
 
@@ -151,7 +163,7 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
+        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
 
@@ -187,7 +199,7 @@ async def test_approve_saves_note_and_notifies_parent(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
+        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
 
@@ -228,7 +240,7 @@ async def test_modify_saves_note_with_overrides(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
+        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
 
@@ -268,7 +280,7 @@ async def test_reject_skips_note_and_notifies_parent(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
+        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
 
@@ -311,7 +323,7 @@ async def test_propose_todo_returns_before_helper_decision(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo, thread_repo=thread_repo,
+        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
 
