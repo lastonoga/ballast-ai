@@ -1,10 +1,10 @@
 """FastAPI entry point for the notes-app backend.
 
 Wires the demo via ``sf.create_app(...)`` — no factory pattern, no
-``or InMemoryX()`` fallbacks. Tests use ``sf.testing.TestEngine``
-with ``dependency_overrides`` for swapping deps; they do NOT call
-``build_app(...)`` (which is kept only as a back-compat shim during
-the migration window).
+``or InMemoryX()`` fallbacks. Tests use ``sf.testing.TestEngine``.
+
+App-specific settings live in ``notes_app.settings``; framework
+settings in ``pydantic_ai_stateflow.settings``.
 """
 
 from __future__ import annotations
@@ -19,140 +19,90 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
-from pydantic_ai_stateflow.persistence import (
-    EventLogRepository,
-    InMemoryEventLogRepository,
-)
+from pydantic_ai_stateflow.persistence import InMemoryEventLogRepository
 from pydantic_ai_stateflow.persistence.thread.repository import (
     InMemoryThreadRepository,
-    ThreadRepository,
 )
 from pydantic_ai_stateflow.runtime import (
-    EventStream,
     InProcessEventStream,
     ThreadEventBroadcaster,
 )
+from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.agent import NotesAgent
-from notes_app.brainstorm_flow import BrainstormFlow, build_brainstorm_flow
-from notes_app.notes import InMemoryNoteRepository, NoteRepository
+from notes_app.brainstorm_flow import build_brainstorm_flow
+from notes_app.notes import InMemoryNoteRepository
 from notes_app.notes.routes import build_notes_router
 from notes_app.todo_approval_agent import NotesTodoApprovalAgent
 from notes_app.todo_flow import TodoApprovalFlow
+
 
 load_dotenv()
 
 
 def _dbos_db_url() -> str:
-    """Default DBOS system DB path for the notes-app demo (SQLite).
-
-    Reads from ``settings.dbos.database_url`` (which honors both
-    ``STATEFLOW_DBOS__DATABASE_URL`` and the legacy ``DBOS_DATABASE_URL``
-    env var via the settings alias map). Falls back to a per-process
-    SQLite file under the system tempdir so repeated dev restarts don't
-    accumulate state in the project root.
-    """
-    from pydantic_ai_stateflow.settings import get_settings
     url = get_settings().dbos.database_url
     if url:
         return url
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
-def build_app(
-    *,
-    thread_repo: ThreadRepository | None = None,
-    notes_agent: NotesAgent | None = None,
-    notes_repo: NoteRepository | None = None,
-    todo_approval_agent: NotesTodoApprovalAgent | None = None,
-    todo_flow: TodoApprovalFlow | None = None,
-    brainstorm_flow: BrainstormFlow | None = None,
-    event_log: EventLogRepository | None = None,
-    event_stream: EventStream | None = None,
-    manage_dbos_lifecycle: bool = True,
-) -> FastAPI:
-    """Legacy entry point — wraps ``sf.create_app(...)`` for tests
-    that haven't migrated to ``sf.testing.TestEngine`` yet.
+# ── Singletons (explicit construction at module top — no DI magic) ──────
 
-    SP1 T10 migrates the test suite; this shim is deleted in SP1 T11.
-    """
-    repo = thread_repo or InMemoryThreadRepository()
-    notes = notes_repo or InMemoryNoteRepository()
-    log = event_log or InMemoryEventLogRepository()
-    stream = event_stream or InProcessEventStream()
-    flow = todo_flow or TodoApprovalFlow(
-        notes_repo=notes,
-        thread_repo=repo,
-        event_log=log,
-        event_stream=stream,
-    )
-    agent = notes_agent or NotesAgent(
-        notes_repo=notes,
-        thread_repo=repo,
-        event_log=log,
-        event_stream=stream,
-        todo_flow=flow,
-        # Stable name so DBOS workflow recovery rebinds the instance
-        # to in-flight runs after a process restart.
-        config_name="notes-app-notes-agent",
-    )
-    approval_agent = todo_approval_agent or NotesTodoApprovalAgent(
-        notes_repo=notes,
-    )
-    # Broadcaster shared across long-running workflows that want to
-    # push live progress events into the parent thread without the
-    # user having an open ``useChat`` stream there. Backed by the
-    # same event_log + event_stream as the framework's other SSE-
-    # delivered events (``message-added``, ``thread-created``).
-    broadcaster = ThreadEventBroadcaster(
-        thread_repo=repo, event_log=log, event_stream=stream,
-    )
-    bstorm = brainstorm_flow or build_brainstorm_flow(
-        todo_flow=flow, broadcaster=broadcaster,
-    )
+notes_repo = InMemoryNoteRepository()
+thread_repo = InMemoryThreadRepository()
+event_log = InMemoryEventLogRepository()
+event_stream = InProcessEventStream()
 
-    dbos_config = (
-        DBOSConfig(name="notes-app", system_database_url=_dbos_db_url())
-        if manage_dbos_lifecycle
-        else None
-    )
+todo_flow = TodoApprovalFlow(
+    notes_repo=notes_repo,
+    thread_repo=thread_repo,
+    event_log=event_log,
+    event_stream=event_stream,
+)
 
-    notes_router = build_notes_router(repo)
+broadcaster = ThreadEventBroadcaster(
+    thread_repo=thread_repo, event_log=event_log, event_stream=event_stream,
+)
 
-    app = sf.create_app(
-        workflows=[bstorm],
-        agents=[agent, approval_agent],
-        thread_repo=repo,
-        event_log=log,
-        event_stream=stream,
-        dbos=dbos_config,
-        manage_dbos_lifecycle=manage_dbos_lifecycle,
-        cors=sf.CORSConfig.permissive_dev(),
-        observability=ObservabilityConfig(
-            service_name="app",
-            environment="dev",
-            instrument_pydantic_ai=True,
-            instrument_httpx=True,
-            # FastAPI route spans pollute traces with one root span
-            # per HTTP request — irrelevant for agent observability.
-            # Agent runs already have their own spans via
-            # ``instrument_pydantic_ai``.
-            instrument_fastapi=False,
-        ),
-        extra_routers=[notes_router],
-    )
+brainstorm = build_brainstorm_flow(todo_flow=todo_flow, broadcaster=broadcaster)
 
-    # Tests introspect these via ``app.state``.
-    app.state.notes_repo = notes
-    app.state.thread_repo = repo
-    app.state.notes_agent = agent
-    app.state.todo_approval_agent = approval_agent
-    app.state.todo_flow = flow
-    app.state.brainstorm_flow = bstorm
-    return app
+notes_agent = NotesAgent(
+    notes_repo=notes_repo,
+    thread_repo=thread_repo,
+    event_log=event_log,
+    event_stream=event_stream,
+    todo_flow=todo_flow,
+    config_name="notes-app-notes-agent",
+)
+approval_agent = NotesTodoApprovalAgent(notes_repo=notes_repo)
 
+notes_router = build_notes_router(thread_repo)
 
-app: FastAPI = build_app()
+app: FastAPI = sf.create_app(
+    workflows=[brainstorm],
+    agents=[notes_agent, approval_agent],
+    thread_repo=thread_repo,
+    event_log=event_log,
+    event_stream=event_stream,
+    dbos=DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
+    cors=sf.CORSConfig.permissive_dev(),
+    observability=ObservabilityConfig(
+        service_name="app",
+        environment="dev",
+        instrument_pydantic_ai=True,
+        instrument_httpx=True,
+        instrument_fastapi=False,
+    ),
+    extra_routers=[notes_router],
+)
+
+# Tests + frontend introspection.
+app.state.notes_repo = notes_repo
+app.state.notes_agent = notes_agent
+app.state.todo_approval_agent = approval_agent
+app.state.todo_flow = todo_flow
+app.state.brainstorm_flow = brainstorm
 
 
 def main() -> None:  # pragma: no cover

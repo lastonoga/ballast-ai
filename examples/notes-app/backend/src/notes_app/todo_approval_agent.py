@@ -45,9 +45,9 @@ from pydantic_ai_stateflow.patterns.hitl import (
 from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
-from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.notes.repository import NoteRepository
+from notes_app.settings import get_notes_settings
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.3
@@ -145,21 +145,21 @@ class NotesTodoApprovalAgent(StateflowAgent):
         self._api_key = api_key
 
     def build_agent(self) -> Agent[TodoApprovalDeps, Any]:
-        settings = get_settings()
+        settings = get_notes_settings()
         resolved_model = (
             self._model_name
-            or (settings.llm.openrouter.default_model if settings.llm.openrouter.default_model else None)
+            or settings.openrouter_default_model
             or DEFAULT_MODEL
         )
         resolved_key = (
             self._api_key
-            or (settings.llm.openrouter.api_key.get_secret_value() if settings.llm.openrouter.api_key else None)
+            or (settings.openrouter_api_key.get_secret_value() if settings.openrouter_api_key else None)
         )
         if not resolved_key:
             raise MissingDependencyError(
                 "OpenRouter API key required to build NotesTodoApprovalAgent",
-                hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
-                context={"setting": "llm.openrouter.api_key"},
+                hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
+                context={"setting": "notes_app.openrouter_api_key"},
             )
 
         model = OpenRouterModel(

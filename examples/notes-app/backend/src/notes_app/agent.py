@@ -63,10 +63,9 @@ from pydantic_ai_stateflow.runtime import (
     InProcessEventStream,
     StateflowDurableAgent,
 )
-from pydantic_ai_stateflow.settings import get_settings
-
 from notes_app.notes.domain import Note
 from notes_app.notes.repository import NoteRepository
+from notes_app.settings import get_notes_settings
 from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
@@ -188,21 +187,21 @@ class NotesAgent(StateflowDurableAgent):
         self._api_key = api_key
 
     def build_agent(self) -> Agent[NoteToolDeps, Any]:
-        settings = get_settings()
+        settings = get_notes_settings()
         resolved_model = (
             self._model_name
-            or (settings.llm.openrouter.default_model if settings.llm.openrouter.default_model else None)
+            or settings.openrouter_default_model
             or DEFAULT_MODEL
         )
         resolved_key = (
             self._api_key
-            or (settings.llm.openrouter.api_key.get_secret_value() if settings.llm.openrouter.api_key else None)
+            or (settings.openrouter_api_key.get_secret_value() if settings.openrouter_api_key else None)
         )
         if not resolved_key:
             raise MissingDependencyError(
                 "OpenRouter API key required to build NotesAgent",
-                hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
-                context={"setting": "llm.openrouter.api_key"},
+                hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
+                context={"setting": "notes_app.openrouter_api_key"},
             )
 
         model = OpenRouterModel(

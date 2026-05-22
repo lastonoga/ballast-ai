@@ -50,22 +50,22 @@ from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
-from pydantic_ai_stateflow.settings import get_settings
 
 from notes_app.brainstorm_types import TodoIdea, TodoIdeas
 from notes_app.openrouter_profile import profile_for
+from notes_app.settings import get_notes_settings
 
 
 def _resolve_api_key(explicit: str | None) -> str:
     if explicit:
         return explicit
-    settings = get_settings()
-    if settings.llm.openrouter.api_key:
-        return settings.llm.openrouter.api_key.get_secret_value()
+    settings = get_notes_settings()
+    if settings.openrouter_api_key:
+        return settings.openrouter_api_key.get_secret_value()
     raise MissingDependencyError(
         "OpenRouter API key required to build brainstorm agents",
-        hint="Set STATEFLOW_LLM__OPENROUTER__API_KEY (or legacy OPENROUTER_API_KEY) env var",
-        context={"setting": "llm.openrouter.api_key"},
+        hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
+        context={"setting": "notes_app.openrouter_api_key"},
     )
 
 

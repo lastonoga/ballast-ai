@@ -1,10 +1,9 @@
-"""notes-app backend — iteration 2.
+"""notes-app backend.
 
-Thin FastAPI app built via `Engine.fastapi_app()` exposing thread CRUD +
-AG-UI streaming, backed by a single pydantic-ai agent that talks to
-OpenRouter (Qwen, structured JSON output).
+Thin FastAPI app built via ``sf.create_app()`` exposing thread CRUD +
+AG-UI streaming, backed by pydantic-ai agents that talk to OpenRouter.
 """
 
-from notes_app.main import app, build_app
+from notes_app.main import app
 
-__all__ = ["app", "build_app"]
+__all__ = ["app"]
