@@ -13,7 +13,7 @@ from dbos import DBOS, DBOSConfig
 
 from pydantic_ai_stateflow.durable import Durable
 
-from notes_app.notes.repository import InMemoryNoteRepository
+from notes_app.repositories.note import InMemoryNoteRepository
 
 
 @pytest.fixture

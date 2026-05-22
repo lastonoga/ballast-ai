@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from notes_app.notes.domain import Note
+from notes_app.models.note import Note
 
 
 @runtime_checkable
@@ -107,6 +107,6 @@ class InMemoryNoteRepository:
 # ── Module-level singleton ──────────────────────────────────────────────
 # App-specific repository. Imported directly by callers that need it
 # (avoids passing through constructor DI). Tests swap via
-# ``monkeypatch.setattr("notes_app.notes.repository.notes_repo", mock)``.
+# ``monkeypatch.setattr("notes_app.repositories.note.notes_repo", mock)``.
 
 notes_repo: NoteRepository = InMemoryNoteRepository()

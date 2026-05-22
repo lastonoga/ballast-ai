@@ -11,7 +11,7 @@ per-call via the ``RunContext`` passed to ``open(ctx, ...)`` — the
 base class binds it on the instance so the durable workflow body
 (and ``_notify`` below) can reach the right repos for this call.
 
-Note on annotations: like ``agent.py`` we do NOT use
+Note on annotations: like ``notes_app.agents.notes`` we do NOT use
 ``from __future__ import annotations`` so DBOS / pydantic-ai can
 resolve concrete types at decoration time.
 """
@@ -31,7 +31,7 @@ from pydantic_ai_stateflow.runtime.event_stream import (
     thread_channel,
 )
 
-from notes_app.todo_approval_agent import TodoApprovalContext
+from notes_app.models.todo_approval import TodoApprovalContext
 
 
 class TodoApprovalFlow(DurableHITLWorkflow):
@@ -57,9 +57,9 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         context: BaseModel,
     ) -> None:
         # Lazy import of the module-level singleton — tests
-        # monkeypatch ``notes_app.notes.repository.notes_repo`` so the
+        # monkeypatch ``notes_app.repositories.note.notes_repo`` so the
         # swap is visible here on the per-test fixture.
-        from notes_app.notes.repository import notes_repo
+        from notes_app.repositories.note import notes_repo
 
         assert isinstance(context, TodoApprovalContext), (
             f"Expected TodoApprovalContext, got {type(context).__name__}"

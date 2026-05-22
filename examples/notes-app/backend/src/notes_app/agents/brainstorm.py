@@ -51,8 +51,8 @@ from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
-from notes_app.brainstorm_types import TodoIdea, TodoIdeas
-from notes_app.openrouter_profile import profile_for
+from notes_app.agents.openrouter_profile import profile_for
+from notes_app.models.todo import TodoIdea, TodoIdeas
 from notes_app.settings import get_notes_settings
 
 

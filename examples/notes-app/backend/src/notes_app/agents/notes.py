@@ -53,13 +53,12 @@ from pydantic_ai_stateflow.errors import MissingDependencyError
 from pydantic_ai_stateflow.grounded import Ref, Selector
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowDurableAgent
-from notes_app.notes.domain import Note
-from notes_app.notes.repository import NoteRepository
+
+from notes_app.agents.todo_approval import NotesTodoApprovalAgent
+from notes_app.models.note import Note
+from notes_app.models.todo_approval import TodoApprovalContext
+from notes_app.repositories.note import NoteRepository
 from notes_app.settings import get_notes_settings
-from notes_app.todo_approval_agent import (
-    NotesTodoApprovalAgent,
-    TodoApprovalContext,
-)
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
@@ -121,7 +120,7 @@ class NoteToolDeps:
     to spawn the durable approval workflow — the simpler note tools
     ignore them. They may be ``None`` for tests that only exercise the
     non-HITL tools. The note repository is reached via direct import
-    of ``notes_app.notes.repository.notes_repo`` (module-level
+    of ``notes_app.repositories.note.notes_repo`` (module-level
     singleton); ``repo`` is kept on the deps so tools can pass a
     per-test override (constructed manually in unit tests).
     """
@@ -187,8 +186,8 @@ class NotesAgent(StateflowDurableAgent):
         del message
         # Direct import of the module-level singleton — apps that need
         # a different repo (e.g. tests) monkeypatch
-        # ``notes_app.notes.repository.notes_repo`` before this runs.
-        from notes_app.notes.repository import notes_repo
+        # ``notes_app.repositories.note.notes_repo`` before this runs.
+        from notes_app.repositories.note import notes_repo
 
         # Per-call infra triplet was bound onto ``self`` by
         # ``_bind_infra(ctx)`` before the workflow body started — surface
@@ -320,7 +319,7 @@ async def propose_todo(
     Both ``title`` and ``body`` are required and free-form.
     """
     # Direct import of the module-level singleton.
-    from notes_app.todo_flow import todo_flow
+    from notes_app.workflows.todo_approval import todo_flow
 
     if ctx.deps.parent_thread_id is None or ctx.deps.ctx is None:
         raise RuntimeError(

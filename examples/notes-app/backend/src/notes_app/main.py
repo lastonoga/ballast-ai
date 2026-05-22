@@ -1,4 +1,4 @@
-"""FastAPI entry point — minimal wiring via direct imports.
+"""FastAPI entry point — wires Infra + mounts routes.
 
 App-specific singletons (repos, flows, agents) live in their own
 modules and are imported here directly — no constructor DI for app
@@ -10,14 +10,11 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from uuid import UUID
 
 import pydantic_ai_stateflow as sf
-from dbos import DBOSConfig, SetWorkflowID
+from dbos import DBOSConfig
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Request
-from pydantic_ai_stateflow.durable import Durable
-from pydantic_ai_stateflow.errors import ThreadNotFound
+from fastapi import FastAPI
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
 from pydantic_ai_stateflow.persistence import InMemoryEventLogRepository
 from pydantic_ai_stateflow.persistence.thread.repository import (
@@ -26,15 +23,14 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
 from pydantic_ai_stateflow.settings import get_settings
 
-# App singletons — import them; no DI needed.
-from notes_app.agent import NotesAgent, notes_agent
-from notes_app.brainstorm_flow import BrainstormFlow, BrainstormTask, brainstorm
-from notes_app.notes.repository import notes_repo
-from notes_app.notes.routes import build_notes_router
-from notes_app.todo_approval_agent import (
-    NotesTodoApprovalAgent,
-    approval_agent,
-)
+from notes_app.agents.notes import notes_agent
+from notes_app.agents.todo_approval import approval_agent
+from notes_app.repositories.note import notes_repo
+from notes_app.routes.notes import build_notes_router
+from notes_app.routes.streaming import _AGENT_BY_NAME, router as streaming_router
+from notes_app.routes.workflows import router as workflows_router
+from notes_app.workflows.brainstorm import brainstorm
+from notes_app.workflows.todo_approval import todo_flow
 
 
 load_dotenv()
@@ -53,14 +49,6 @@ infra = sf.Infra(
     event_stream=InProcessEventStream(),
 )
 
-# App-owned agent dispatch — framework doesn't have a registry.
-_AGENT_BY_NAME = {
-    NotesAgent.name: notes_agent,
-    NotesTodoApprovalAgent.name: approval_agent,
-}
-
-notes_router = build_notes_router(infra.thread_repo)
-
 app: FastAPI = sf.create_app(
     infra=infra,
     cors=sf.CORSConfig.permissive_dev(),
@@ -72,66 +60,19 @@ app: FastAPI = sf.create_app(
         instrument_httpx=True,
         instrument_fastapi=False,
     ),
-    extra_routers=[notes_router],
+    extra_routers=[
+        build_notes_router(infra.thread_repo),
+        workflows_router,
+        streaming_router,
+    ],
 )
 
-# Expose for tests + frontend introspection.
+# Tests + frontend introspection.
 app.state.notes_repo = notes_repo
 app.state.notes_agent = notes_agent
 app.state.todo_approval_agent = approval_agent
-
-
-@app.post("/workflows/brainstorm-flow", response_model=dict)
-async def start_brainstorm(
-    task: BrainstormTask,
-    ctx: sf.RunContext = Depends(sf.get_run_context),
-) -> dict:
-    """Kick off a brainstorm workflow with a deterministic id.
-
-    Same ``(parent_thread, topic)`` collapses to one in-flight workflow
-    (matches the historical ``brainstorm_router.py`` behaviour)."""
-    with SetWorkflowID(BrainstormFlow.workflow_id(task)):
-        handle = await Durable.start_workflow(brainstorm.run, ctx, task)
-    return {"workflow_id": handle.workflow_id}
-
-
-@app.post("/threads/{thread_id}/messages")
-async def stream_messages(
-    request: Request,
-    thread_id: UUID,
-    ctx: sf.RunContext = Depends(sf.get_run_context),
-) -> object:
-    """Stream a fresh assistant turn for ``thread_id``.
-
-    Resolves the per-thread agent from the app's dispatch table and
-    delegates to the framework's ``stream_response`` primitive."""
-    thread = await ctx.thread_repo.load(thread_id)
-    if thread is None:
-        raise ThreadNotFound(
-            f"thread {thread_id} not found",
-            context={"thread_id": str(thread_id)},
-        )
-    agent = _AGENT_BY_NAME[thread.agent]
-    return await sf.stream_response(
-        request=request, thread_id=thread_id, agent=agent, ctx=ctx,
-    )
-
-
-@app.post("/threads/{thread_id}/cancel")
-async def cancel_thread(
-    thread_id: UUID,
-    ctx: sf.RunContext = Depends(sf.get_run_context),
-) -> dict:
-    """Cancel every active workflow for ``thread_id`` (durable agents only)."""
-    thread = await ctx.thread_repo.load(thread_id)
-    if thread is None:
-        raise ThreadNotFound(
-            f"thread {thread_id} not found",
-            context={"thread_id": str(thread_id)},
-        )
-    agent = _AGENT_BY_NAME[thread.agent]
-    await sf.cancel_thread_workflows(thread_id=thread_id, agent=agent, ctx=ctx)
-    return {"cancelled": True}
+app.state.brainstorm_flow = brainstorm
+app.state.todo_flow = todo_flow
 
 
 def main() -> None:  # pragma: no cover
@@ -140,3 +81,6 @@ def main() -> None:  # pragma: no cover
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     uvicorn.run("notes_app.main:app", host=host, port=port, reload=True)
+
+
+__all__ = ["_AGENT_BY_NAME", "app", "main", "notes_repo"]

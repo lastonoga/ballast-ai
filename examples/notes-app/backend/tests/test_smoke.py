@@ -25,7 +25,7 @@ import pydantic_ai_stateflow as sf
 import pytest
 from fastapi.testclient import TestClient
 
-from notes_app.main import _AGENT_BY_NAME, app, notes_repo
+from notes_app.main import _AGENT_BY_NAME, app, notes_repo  # noqa: F401
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
@@ -59,7 +59,7 @@ def _parse_sse_types(body: str) -> list[str]:
 
 def test_notes_repo_attached_to_app_state() -> None:
     """The module-level ``notes_repo`` is published on ``app.state``."""
-    from notes_app.notes.repository import InMemoryNoteRepository
+    from notes_app.repositories.note import InMemoryNoteRepository
 
     with TestClient(app):
         assert isinstance(app.state.notes_repo, InMemoryNoteRepository)
@@ -74,7 +74,7 @@ def test_threads_crud_and_streaming_fake() -> None:
     non-durable streaming path (``MockAgent`` is a plain
     ``StateflowAgent``, not a ``StateflowDurableAgent``).
     """
-    from notes_app.agent import NotesAgent
+    from notes_app.agents.notes import NotesAgent
 
     mock_agent = sf.testing.MockAgent.with_output("Hello, world!")
 

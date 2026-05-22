@@ -10,7 +10,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai_stateflow.capabilities import BudgetExhausted, BudgetGuard
 
-from notes_app.agent import default_notes_capabilities
+from notes_app.agents.notes import default_notes_capabilities
 
 
 def test_default_capabilities_include_budget_and_pii() -> None:

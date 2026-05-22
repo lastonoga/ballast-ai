@@ -35,14 +35,14 @@ from pydantic_ai_stateflow.persistence import (
 from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
 from pydantic_ai_stateflow.runtime.infra import RunContext
 
-from notes_app.agent import NotesAgent, NoteToolDeps
-from notes_app.notes.repository import InMemoryNoteRepository
-from notes_app.todo_approval_agent import (
+from notes_app.agents.notes import NotesAgent, NoteToolDeps
+from notes_app.agents.todo_approval import (
     NotesTodoApprovalAgent,
-    TodoApprovalContext,
     TodoApprovalDeps,
 )
-from notes_app.todo_flow import TodoApprovalFlow
+from notes_app.models.todo_approval import TodoApprovalContext
+from notes_app.repositories.note import InMemoryNoteRepository
+from notes_app.workflows.todo_approval import TodoApprovalFlow
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -168,8 +168,8 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     flow = TodoApprovalFlow(
         config_name=f"todo-flow-test-{uuid4()}",
     )
-    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
 
     result, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -206,8 +206,8 @@ async def test_approve_saves_note_and_notifies_parent(
     flow = TodoApprovalFlow(
         config_name=f"todo-flow-test-{uuid4()}",
     )
-    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -249,8 +249,8 @@ async def test_modify_saves_note_with_overrides(
     flow = TodoApprovalFlow(
         config_name=f"todo-flow-test-{uuid4()}",
     )
-    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk",
@@ -291,8 +291,8 @@ async def test_reject_skips_note_and_notifies_parent(
     flow = TodoApprovalFlow(
         config_name=f"todo-flow-test-{uuid4()}",
     )
-    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="garbage", body="trash",
@@ -336,8 +336,8 @@ async def test_propose_todo_returns_before_helper_decision(
     flow = TodoApprovalFlow(
         config_name=f"todo-flow-test-{uuid4()}",
     )
-    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
 
     # If this await hung, the test would time out — we explicitly assert
     # it resolves quickly.

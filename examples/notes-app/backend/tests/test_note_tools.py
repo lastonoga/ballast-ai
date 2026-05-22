@@ -10,9 +10,9 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
-from notes_app.agent import NotesAgent, NoteToolDeps
-from notes_app.notes.domain import Note
-from notes_app.notes.repository import InMemoryNoteRepository
+from notes_app.agents.notes import NotesAgent, NoteToolDeps
+from notes_app.models.note import Note
+from notes_app.repositories.note import InMemoryNoteRepository
 
 
 @dataclass

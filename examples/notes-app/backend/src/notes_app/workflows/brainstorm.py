@@ -17,24 +17,23 @@ All the heavy lifting lives in the framework:
 
 App-specific glue here:
 - ``BrainstormDivergentAgent`` / ``BrainstormSynthesizerAgent``
-  (``brainstorm_agents.py``) are real ``StateflowAgent`` subclasses
-  that ALSO implement the framework's structural ``DivergentAgent`` /
-  ``Synthesizer`` protocols directly (``.diverge`` / ``.synthesize``).
-  No separate adapter layer — the agent IS the branch.
+  (``notes_app.agents.brainstorm``) are real ``StateflowAgent``
+  subclasses that ALSO implement the framework's structural
+  ``DivergentAgent`` / ``Synthesizer`` protocols directly
+  (``.diverge`` / ``.synthesize``). No separate adapter layer — the
+  agent IS the branch.
 - ``BrainstormFlow`` workflow chains divergent-convergent into
   ``TodoApprovalFlow.open`` for HITL.
 
 No ``from __future__ import annotations``: pydantic-ai introspects
-``get_type_hints()`` at decoration time (same as ``agent.py`` /
-``todo_approval_agent.py``).
+``get_type_hints()`` at decoration time (same as
+``notes_app.agents.notes`` / ``notes_app.agents.todo_approval``).
 """
 
 from dataclasses import dataclass
-from typing import Literal, Optional
 from uuid import UUID
 
 from dbos import DBOSConfiguredInstance
-from pydantic import BaseModel
 from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
@@ -53,15 +52,15 @@ from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
     DivergentEvent,
 )
 
-from notes_app.brainstorm_agents import (
+from notes_app.agents.brainstorm import (
     BrainstormDivergentAgent,
     BrainstormSynthesizerAgent,
 )
-from notes_app.brainstorm_types import TodoIdea, TodoIdeas
-from notes_app.todo_approval_agent import (
-    NotesTodoApprovalAgent,
-    TodoApprovalContext,
-)
+from notes_app.agents.todo_approval import NotesTodoApprovalAgent
+from notes_app.models.brainstorm import BrainstormOutcome, BrainstormTask
+from notes_app.models.progress import BrainstormBranchProgress, BrainstormProgress
+from notes_app.models.todo import TodoIdea, TodoIdeas
+from notes_app.models.todo_approval import TodoApprovalContext
 
 
 # ── Default agent specs for the notes-app demo ───────────────────────────
@@ -128,37 +127,10 @@ DEFAULT_SYNTH_TEMPERATURE = 0.2
 # messages piling up.
 
 
-class BrainstormProgress(BaseModel):
-    """Snapshot of where ``BrainstormFlow.run`` currently is.
-
-    Frontend renders this as a single line that mutates: an icon
-    flips ``running → ok`` per phase, with optional context in
-    ``detail`` (e.g. the chosen idea's title once converge finishes).
-    """
-    step: Literal["diverge", "converge", "hitl"]
-    status: Literal["running", "ok", "failed"]
-    detail: Optional[str] = None
-
-
 BRAINSTORM_PROGRESS = ThreadEventType("brainstorm-progress", BrainstormProgress)
 """Wire name on the part is ``data-brainstorm-progress`` — frontend
 ``makeAssistantDataUI({name: "brainstorm-progress"})`` matches by the
 suffix (assistant-ui strips the ``data-`` prefix internally)."""
-
-
-class BrainstormBranchProgress(BaseModel):
-    """Per-branch live status during the divergent fan-out.
-
-    One of these mutates per ``(label, sample_idx)`` pair as the
-    branch transitions ``running → ok|failed``. Frontend renders the
-    bundle so the user sees individual proposers tick off in parallel
-    rather than a single opaque "brainstorming" spinner.
-    """
-    label: str
-    sample_idx: int
-    status: Literal["running", "ok", "failed"]
-    pool_size: Optional[int] = None
-    error_type: Optional[str] = None
 
 
 BRAINSTORM_BRANCH = ThreadEventType("brainstorm-branch", BrainstormBranchProgress)
@@ -223,29 +195,6 @@ def _make_branch_progress_callback(
 
 # ── BrainstormFlow ───────────────────────────────────────────────────────
 
-class BrainstormTask(BaseModel):
-    """Input to ``BrainstormFlow.run`` — one pydantic envelope so the
-    workflow's call signature stays stable as the inputs grow (extra
-    knobs like ``best_of_n_override``, ``locale`` etc. can be added
-    without breaking callers)."""
-    topic: str
-    parent_thread_id: UUID
-
-
-class BrainstormOutcome(BaseModel):
-    """Output of ``BrainstormFlow.run``.
-
-    The flow is fire-and-forget w.r.t. HITL: ``run`` returns AFTER the
-    approval thread is opened but BEFORE the user approves/rejects.
-    ``helper_thread_id`` is what the UI needs to scroll the sidebar
-    to. ``proposed_title`` / ``proposed_body`` are included so
-    observability (and any caller that wants to log what was
-    proposed) doesn't need to peek into the helper thread."""
-    helper_thread_id: UUID
-    proposed_title: str
-    proposed_body: str
-
-
 @Durable.dbos_class()
 class BrainstormFlow(DBOSConfiguredInstance):
     """Glue between ``DivergentConvergent`` and ``TodoApprovalFlow``.
@@ -260,8 +209,8 @@ class BrainstormFlow(DBOSConfiguredInstance):
     to this instance after a restart.
 
     The app mounts ``POST /workflows/brainstorm-flow`` explicitly in
-    ``main.py`` — the framework no longer auto-generates workflow
-    routes.
+    ``notes_app.routes.workflows`` — the framework no longer
+    auto-generates workflow routes.
     """
 
     @staticmethod
@@ -324,7 +273,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 detail="Opening approval thread…",
             ))
             # Direct import of the module-level singleton.
-            from notes_app.todo_flow import todo_flow
+            from notes_app.workflows.todo_approval import todo_flow
 
             context = TodoApprovalContext(
                 proposed_title=chosen.title,
@@ -437,19 +386,19 @@ def build_brainstorm_flow(
 
 
 # ── Module-level singleton ──────────────────────────────────────────────
-# App-specific brainstorm flow. Imported directly by ``main.py``'s
-# ``POST /workflows/brainstorm-flow`` route handler.
+# App-specific brainstorm flow. Imported directly by
+# ``notes_app.routes.workflows``'s ``POST /workflows/brainstorm-flow``
+# route handler.
 
 brainstorm: BrainstormFlow = build_brainstorm_flow()
 
 
 __all__ = [
+    "BRAINSTORM_BRANCH",
+    "BRAINSTORM_PROGRESS",
     "BrainstormAgentSpec",
     "BrainstormFlow",
-    "BrainstormOutcome",
-    "BrainstormTask",
     "DEFAULT_DIVERGENT_SPECS",
-    "TodoIdea",
-    "TodoIdeas",
+    "brainstorm",
     "build_brainstorm_flow",
 ]

@@ -1,9 +1,9 @@
 """Shared pydantic schemas for the brainstorm flow.
 
-Lives in its own module so ``brainstorm_agents`` (constructs the
-pydantic-ai Agents with ``PromptedOutput(TodoIdeas)`` etc) and
-``brainstorm_flow`` (orchestrates them) can both import without
-introducing a circular dependency.
+Lives in its own module so ``notes_app.agents.brainstorm`` (constructs
+the pydantic-ai Agents with ``output_type=TodoIdeas`` etc.) and
+``notes_app.workflows.brainstorm`` (orchestrates them) can both import
+without introducing a circular dependency.
 """
 
 from typing import Optional

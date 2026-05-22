@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 from pydantic_ai_stateflow.runtime import validate_thread_metadata
 
-from notes_app.agent import NotesAgent
+from notes_app.agents.notes import NotesAgent
 
 
 class _CreateThreadBody(BaseModel):

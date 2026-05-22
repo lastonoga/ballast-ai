@@ -1,7 +1,7 @@
 """HITL approval ``StateflowAgent`` for the notes-app todo-creation flow.
 
 Threads bound to ``agent="todo_approval"`` are spawned by
-``NotesAgent.propose_todo`` (see ``notes_app/agent.py``). Each carries
+``NotesAgent.propose_todo`` (see ``notes_app.agents.notes``). Each carries
 metadata that tells THIS agent which durable approval workflow it's
 gating + the proposed title/body from the parent thread.
 
@@ -10,14 +10,15 @@ calls one of three tools — ``approve``, ``reject``, ``modify`` —
 which forward an ``ApprovedResponse`` / ``RejectedResponse`` /
 ``ModifiedResponse`` to the durable approval workflow via
 ``DBOS.send``. The workflow (``TodoApprovalFlow.run`` in
-``notes_app/todo_flow.py``) unblocks, saves the note (or skips on
-reject), and posts a notification message back to the parent thread.
+``notes_app.workflows.todo_approval``) unblocks, saves the note (or
+skips on reject), and posts a notification message back to the parent
+thread.
 
 This is the **durable** flavour of HITL — even if the parent thread's
 SSE stream died before the user finished the approval here, the save
 still happens because the parent run isn't in the loop anymore.
 
-Note on annotations: like ``agent.py`` we do NOT use
+Note on annotations: like ``notes_app.agents.notes`` we do NOT use
 ``from __future__ import annotations`` so pydantic-ai's tool decoration
 can resolve concrete types via ``get_type_hints()`` at module load.
 """
@@ -28,7 +29,6 @@ from typing import Any
 from uuid import UUID
 
 from pydantic_ai_stateflow.durable import Durable
-from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
@@ -43,7 +43,8 @@ from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
 from pydantic_ai_stateflow.persistence.thread.domain import Thread
 from pydantic_ai_stateflow.runtime import StateflowAgent
 
-from notes_app.notes.repository import NoteRepository
+from notes_app.models.todo_approval import TodoApprovalContext
+from notes_app.repositories.note import NoteRepository
 from notes_app.settings import get_notes_settings
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
@@ -58,46 +59,6 @@ SYSTEM_PROMPT = (
     "Once you've called one of these, briefly confirm what happened.\n"
     "Be concise — this is a confirmation step, not a free chat."
 )
-
-
-class TodoApprovalContext(BaseModel):
-    """Typed input context for the ``todo_approval`` agent.
-
-    Plays a dual role:
-      - ``StateflowAgent.metadata_model`` — validates ``Thread.metadata_``
-        on thread creation (so the framework rejects malformed threads
-        before they reach the agent).
-      - Input contract for ``propose_todo`` → ``TodoApprovalFlow`` (the
-        durable workflow gets a JSON-serialised instance of this class
-        as its primary argument).
-
-    Two framework-injected routing keys live on ``Thread.metadata_``
-    alongside these fields (``request_id``, ``workflow_id``) — those
-    are not modelled here because they're plumbing, not part of the
-    user-facing context. The helper agent's ``build_deps`` reads them
-    out of raw metadata.
-
-    ``to_system_prompt`` projects the context into the agent's system
-    prompt — SOLID: the context owns its own prompt projection.
-    """
-
-    proposed_title: str
-    proposed_body: str
-    parent_thread_id: UUID
-
-    def to_system_prompt(self) -> str:
-        return (
-            "Review the proposed todo from the user's main notes thread:\n"
-            f"  title: {self.proposed_title!r}\n"
-            f"  body:  {self.proposed_body!r}"
-        )
-
-    def to_opening_message(self) -> str:
-        """Initial assistant message seeded on the side thread."""
-        return (
-            f"Confirm todo: title={self.proposed_title!r}, "
-            f"body={self.proposed_body!r}?"
-        )
 
 
 @dataclass
@@ -162,7 +123,7 @@ class NotesTodoApprovalAgent(StateflowAgent):
     ) -> TodoApprovalDeps:
         del message
         # Direct import of the module-level singleton.
-        from notes_app.notes.repository import notes_repo
+        from notes_app.repositories.note import notes_repo
 
         metadata = TodoApprovalContext.model_validate(thread.metadata_)
         return TodoApprovalDeps(
