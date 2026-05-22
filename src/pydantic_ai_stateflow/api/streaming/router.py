@@ -67,7 +67,6 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
     from pydantic_ai_stateflow.persistence.thread.domain import Message
-    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 
 DepsT = TypeVar("DepsT")
@@ -330,7 +329,6 @@ async def _durable_post_message(
     event_stream: EventStream,
     encoder: WireEncoder,
     history_limit: int,
-    ctx: "RunContext",
 ) -> "Response":
     """Durable path: sync DB with body, enqueue workflow, tail event log.
 
@@ -389,7 +387,6 @@ async def _durable_post_message(
             last_event_id = await event_log.latest_seq(thread_id)
 
         await stateflow_agent.enqueue_approval_resume(
-            ctx,
             thread_id=thread_id,
             history_dump=history_dump,
             approvals=approvals_dump,
@@ -428,7 +425,6 @@ async def _durable_post_message(
 
     try:
         await stateflow_agent.enqueue_run(
-            ctx,
             thread_id=thread_id,
             user_message_id=user_msg.id,
             prompt=prompt_text,

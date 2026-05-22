@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from starlette.responses import Response
 
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
-    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 
 _log = get_logger(__name__)
@@ -54,7 +53,6 @@ async def stream_response(
     request: "Request",
     thread_id: UUID,
     agent: "StateflowAgent",
-    ctx: "RunContext",
     history_limit: int = _DEFAULT_HISTORY_LIMIT,
 ) -> "Response":
     """Body-vs-DB sync + agent run + Vercel-AI streaming response.
@@ -70,9 +68,11 @@ async def stream_response(
     """
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
-    thread_repo = ctx.thread_repo
-    event_log = ctx.event_log
-    event_stream = ctx.event_stream
+    from pydantic_ai_stateflow.runtime.engine import get_engine  # noqa: PLC0415
+    engine = get_engine()
+    thread_repo = engine.thread_repo
+    event_log = engine.event_log
+    event_stream = engine.event_stream
 
     thread = await thread_repo.load(thread_id)
     if thread is None:
@@ -88,7 +88,6 @@ async def stream_response(
             event_stream=event_stream,
             encoder=VercelAIWireEncoder(),
             history_limit=history_limit,
-            ctx=ctx,
         )
 
     # ── Non-durable path ─────────────────────────────────────────────
@@ -196,7 +195,6 @@ async def cancel_thread_workflows(
     *,
     thread_id: UUID,
     agent: "StateflowAgent",
-    ctx: "RunContext",
 ) -> int:
     """Cancel every active workflow for ``thread_id``.
 
@@ -212,7 +210,7 @@ async def cancel_thread_workflows(
             "threads; non-durable agents don't have cancellable workflows",
             context={"thread_id": str(thread_id)},
         )
-    return await agent.cancel_thread_runs(ctx, thread_id)
+    return await agent.cancel_thread_runs(thread_id)
 
 
 __all__ = ["cancel_thread_workflows", "stream_response"]
