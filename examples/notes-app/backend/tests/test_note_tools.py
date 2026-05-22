@@ -36,7 +36,11 @@ def _make_deps(repo: InMemoryNoteRepository) -> NoteToolDeps:
 
 
 def _agent_with_tools(repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
-    return _TestNotesAgent(notes_repo=repo).agent
+    # Repo plumbing now lives on the per-call ``NoteToolDeps.repo`` —
+    # nothing constructor-injected on the agent for the repo. The tests
+    # pass ``repo`` through ``_make_deps`` directly.
+    del repo
+    return _TestNotesAgent().agent
 
 
 def _bound_tool(agent: Any, name: str) -> Any:

@@ -108,7 +108,7 @@ async def _trigger_approval(
     Mirrors what ``NotesTodoApprovalAgent.build_deps`` would mint when
     the streaming router runs the helper agent against T2's metadata.
     """
-    approval_agent = _TestTodoApprovalAgent(notes_repo=notes_repo)
+    approval_agent = _TestTodoApprovalAgent()
     fn = _bound_tool(approval_agent.agent, helper_tool)
     deps = TodoApprovalDeps(
         notes_repo=notes_repo,
@@ -127,10 +127,14 @@ async def _spawn_proposal(
     thread_repo: InMemoryThreadRepository,
     todo_flow: TodoApprovalFlow,
 ) -> tuple[str, Any, dict[str, Any]]:
-    """Run ``propose_todo`` and return (return_value, t1, t2_metadata)."""
-    notes_agent = _TestNotesAgent(
-        notes_repo=notes_repo, todo_flow=todo_flow,
-    )
+    """Run ``propose_todo`` and return (return_value, t1, t2_metadata).
+
+    ``todo_flow`` and ``notes_repo`` are reached by the tool via direct
+    import of the module-level singletons — tests swap the singleton
+    refs via ``monkeypatch.setattr`` in the calling test (the fixture
+    receives the per-test repo / flow that way).
+    """
+    notes_agent = _TestNotesAgent()
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
@@ -142,7 +146,6 @@ async def _spawn_proposal(
     )
     deps = NoteToolDeps(
         repo=notes_repo,
-        todo_flow=todo_flow,
         parent_thread_id=t1.id,
         ctx=ctx,
     )
@@ -158,14 +161,16 @@ async def _spawn_proposal(
 @pytest.mark.asyncio
 async def test_propose_todo_spawns_helper_thread_and_workflow(
     fresh_dbos_executor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """propose_todo creates T2 with the right metadata + opening message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
+    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
 
     result, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -194,14 +199,16 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
 @pytest.mark.asyncio
 async def test_approve_saves_note_and_notifies_parent(
     fresh_dbos_executor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Happy path: approve → note saved + 'Saved your todo' on T1."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
+    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
@@ -235,14 +242,16 @@ async def test_approve_saves_note_and_notifies_parent(
 @pytest.mark.asyncio
 async def test_modify_saves_note_with_overrides(
     fresh_dbos_executor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Modify branch: overrides applied, note saved, parent notified."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
+    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk",
@@ -275,14 +284,16 @@ async def test_modify_saves_note_with_overrides(
 @pytest.mark.asyncio
 async def test_reject_skips_note_and_notifies_parent(
     fresh_dbos_executor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Reject branch: no note saved, parent gets a cancellation message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
+    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="garbage", body="trash",
@@ -313,6 +324,7 @@ async def test_reject_skips_note_and_notifies_parent(
 @pytest.mark.asyncio
 async def test_propose_todo_returns_before_helper_decision(
     fresh_dbos_executor: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The whole point: propose_todo must NOT block on the decision.
 
@@ -323,9 +335,10 @@ async def test_propose_todo_returns_before_helper_decision(
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
     flow = TodoApprovalFlow(
-        notes_repo=notes_repo,
         config_name=f"todo-flow-test-{uuid4()}",
     )
+    monkeypatch.setattr("notes_app.notes.repository.notes_repo", notes_repo)
+    monkeypatch.setattr("notes_app.todo_flow.todo_flow", flow)
 
     # If this await hung, the test would time out — we explicitly assert
     # it resolves quickly.
@@ -350,12 +363,12 @@ async def test_propose_todo_returns_before_helper_decision(
 
 
 @pytest.mark.asyncio
-async def test_propose_todo_rejects_when_deps_missing_todo_flow() -> None:
-    """Calling ``propose_todo`` without plumbing must fail loudly."""
+async def test_propose_todo_rejects_when_deps_missing_ctx() -> None:
+    """Calling ``propose_todo`` without parent_thread_id / ctx must fail loudly."""
     notes_repo = InMemoryNoteRepository()
-    notes_agent = _TestNotesAgent(notes_repo=notes_repo)
+    notes_agent = _TestNotesAgent()
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
-    deps = NoteToolDeps(repo=notes_repo)  # no todo_flow / thread_repo
+    deps = NoteToolDeps(repo=notes_repo)  # no parent_thread_id / ctx
     with pytest.raises(RuntimeError, match="propose_todo requires"):
         await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
