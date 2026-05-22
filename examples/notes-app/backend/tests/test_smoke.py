@@ -1,13 +1,18 @@
-"""Smoke test for the notes-app backend (using sf.testing.TestEngine).
+"""Smoke tests for the notes-app backend.
 
 These tests share the module-level ``app`` from ``notes_app.main`` —
 isolated-state per-test would require constructing a fresh ``app``
 (the singletons are module-level), but for these smoke tests sharing
 is OK; we either:
 
-  - inspect already-attached app.state (read-only test), or
-  - swap the agent registered as "notes" with a MockAgent and assert
-    on the response (mutates app.state.agents but restores after).
+  - inspect already-attached ``app.state`` (read-only test), or
+  - swap the agent registered as ``"notes"`` in the app's dispatch
+    table with a ``MockAgent`` and assert on the response (mutates
+    ``_AGENT_BY_NAME`` but restores after).
+
+The framework no longer keeps an agent registry; ``Thread.agent`` is
+an opaque string the app resolves to an agent instance via
+``notes_app.main._AGENT_BY_NAME``.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ import pydantic_ai_stateflow as sf
 import pytest
 from fastapi.testclient import TestClient
 
-from notes_app.main import app, notes_repo
+from notes_app.main import _AGENT_BY_NAME, app, notes_repo
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
@@ -64,16 +69,17 @@ def test_notes_repo_attached_to_app_state() -> None:
 def test_threads_crud_and_streaming_fake() -> None:
     """End-to-end with a TestModel-backed agent override (no network).
 
-    Swaps the registered ``"notes"`` agent with a ``MockAgent`` for the
+    Swaps the dispatched ``"notes"`` agent with a ``MockAgent`` for the
     duration of the test, then restores it. This exercises the
-    non-durable streaming path (MockAgent is not a StateflowDurableAgent).
+    non-durable streaming path (``MockAgent`` is a plain
+    ``StateflowAgent``, not a ``StateflowDurableAgent``).
     """
     from notes_app.agent import NotesAgent
 
     mock_agent = sf.testing.MockAgent.with_output("Hello, world!")
 
-    saved_agent = app.state.agents[NotesAgent.name]
-    app.state.agents[NotesAgent.name] = mock_agent
+    saved_agent = _AGENT_BY_NAME.get(NotesAgent.name)
+    _AGENT_BY_NAME[NotesAgent.name] = mock_agent
     try:
         with TestClient(app) as client:
             r = client.post("/threads", json={})
@@ -98,7 +104,10 @@ def test_threads_crud_and_streaming_fake() -> None:
             assert "start" in kinds, kinds
             assert "finish" in kinds, kinds
     finally:
-        app.state.agents[NotesAgent.name] = saved_agent
+        if saved_agent is None:
+            _AGENT_BY_NAME.pop(NotesAgent.name, None)
+        else:
+            _AGENT_BY_NAME[NotesAgent.name] = saved_agent
 
 
 @pytest.mark.skipif(
