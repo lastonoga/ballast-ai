@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI
@@ -125,13 +125,27 @@ class Ballast:
         cors: "CORSConfig | str | None" = None,
         routers: Sequence["APIRouter"] = (),
         health_checks: dict[str, Callable[[], Awaitable[bool]]] | None = None,
+        **fastapi_kwargs: Any,
     ) -> "FastAPI":
         """Build the FastAPI app + install the :class:`Engine` singleton.
 
         ``cors`` accepts a :class:`CORSConfig` instance, the string
         ``"dev"`` (shortcut for ``CORSConfig.permissive_dev()``), or
         ``None`` (no CORS middleware).
+
+        Any extra keyword arguments are forwarded verbatim to
+        :class:`fastapi.FastAPI` — ``title``, ``version``, ``debug``,
+        ``docs_url``, ``openapi_tags``, ``middleware``,
+        ``exception_handlers``, etc. The only reserved kwarg is
+        ``lifespan`` (Ballast owns it to run provider startup/shutdown
+        hooks — use :meth:`add_on_startup` / :meth:`add_on_shutdown` to
+        plug in your own).
         """
+        if "lifespan" in fastapi_kwargs:
+            raise TypeError(
+                "Ballast.fastapi(...) reserves the 'lifespan' kwarg; use "
+                "add_on_startup() / add_on_shutdown() to register hooks.",
+            )
         from fastapi import FastAPI
 
         from ballast.api.cors import CORSConfig
@@ -190,7 +204,7 @@ class Ballast:
                             getattr(hook, "__qualname__", repr(hook)),
                         )
 
-        app = FastAPI(lifespan=_lifespan)
+        app = FastAPI(lifespan=_lifespan, **fastapi_kwargs)
         app.state.engine = engine
 
         # Resolve CORS shortcut.

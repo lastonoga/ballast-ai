@@ -82,3 +82,25 @@ def test_ballast_cors_unknown_shortcut_raises(fresh_dbos_executor: None) -> None
     app_builder = _build_ballast_app(fresh_dbos_executor)
     with pytest.raises(ValueError, match="Unknown cors shortcut"):
         app_builder.fastapi(cors="bogus")
+
+
+def test_ballast_fastapi_kwargs_forwarded(fresh_dbos_executor: None) -> None:
+    """Extra kwargs (title, version, docs_url, ...) pass through to FastAPI()."""
+    app = _build_ballast_app(fresh_dbos_executor).fastapi(
+        title="My App",
+        version="1.2.3",
+        docs_url="/custom-docs",
+        openapi_tags=[{"name": "x", "description": "y"}],
+    )
+    assert app.title == "My App"
+    assert app.version == "1.2.3"
+    assert app.docs_url == "/custom-docs"
+    assert app.openapi_tags == [{"name": "x", "description": "y"}]
+
+
+def test_ballast_fastapi_reserves_lifespan(fresh_dbos_executor: None) -> None:
+    import pytest
+
+    app_builder = _build_ballast_app(fresh_dbos_executor)
+    with pytest.raises(TypeError, match="reserves the 'lifespan' kwarg"):
+        app_builder.fastapi(lifespan=lambda _app: None)  # type: ignore[arg-type]
