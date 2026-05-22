@@ -31,11 +31,11 @@ For models pydantic-ai's built-in registry already handles correctly
 returns ``None`` and the default profile applies — they keep using
 ``ToolOutput``, which is the most reliable mode where supported.
 
-These agents are NOT registered into the framework's agent registry
-(``register_agent``) — they aren't selected by ``thread.agent``;
-``BrainstormFlow`` holds direct references and invokes
-``agent.agent.run(...)``. ``build_deps`` returns ``None`` because
-there is no per-thread context for one-shot model calls.
+These agents are NOT exposed via the app's agent dispatch table —
+they aren't selected by ``thread.agent``. ``BrainstormFlow`` holds
+direct references and invokes ``agent.agent.run(...)``. ``build_deps``
+returns ``None`` because there is no per-thread context for one-shot
+model calls.
 
 No ``from __future__ import annotations``: pydantic-ai introspects
 ``get_type_hints()`` at decoration time.
