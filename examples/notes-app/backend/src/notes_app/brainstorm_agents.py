@@ -56,9 +56,7 @@ from notes_app.openrouter_profile import profile_for
 from notes_app.settings import get_notes_settings
 
 
-def _resolve_api_key(explicit: str | None) -> str:
-    if explicit:
-        return explicit
+def _resolve_api_key() -> str:
     settings = get_notes_settings()
     if settings.openrouter_api_key:
         return settings.openrouter_api_key.get_secret_value()
@@ -87,18 +85,16 @@ class BrainstormDivergentAgent(StateflowAgent):
         model_name: str,
         system_prompt: str,
         temperature: float = 0.9,
-        api_key: str | None = None,
     ) -> None:
         super().__init__()
         self._model_name = model_name
         self._system_prompt = system_prompt
         self._temperature = temperature
-        self._api_key = api_key
 
     def build_agent(self) -> Agent[None, Any]:
         model = OpenRouterModel(
             self._model_name,
-            provider=OpenRouterProvider(api_key=_resolve_api_key(self._api_key)),
+            provider=OpenRouterProvider(api_key=_resolve_api_key()),
             profile=profile_for(self._model_name),
         )
         return Agent(
@@ -142,18 +138,16 @@ class BrainstormSynthesizerAgent(StateflowAgent):
         model_name: str,
         system_prompt: str,
         temperature: float = 0.2,
-        api_key: str | None = None,
     ) -> None:
         super().__init__()
         self._model_name = model_name
         self._system_prompt = system_prompt
         self._temperature = temperature
-        self._api_key = api_key
 
     def build_agent(self) -> Agent[None, Any]:
         model = OpenRouterModel(
             self._model_name,
-            provider=OpenRouterProvider(api_key=_resolve_api_key(self._api_key)),
+            provider=OpenRouterProvider(api_key=_resolve_api_key()),
             profile=profile_for(self._model_name),
         )
         return Agent(

@@ -47,8 +47,4 @@ def get_notes_settings() -> NotesAppSettings:
     return NotesAppSettings()
 
 
-def reset_notes_settings() -> None:
-    get_notes_settings.cache_clear()
-
-
-__all__ = ["NotesAppSettings", "get_notes_settings", "reset_notes_settings"]
+__all__ = ["NotesAppSettings", "get_notes_settings"]

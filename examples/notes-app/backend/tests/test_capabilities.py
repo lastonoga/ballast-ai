@@ -8,7 +8,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai_stateflow.capabilities import BudgetExhausted, BudgetGuard, PIIGuard
+from pydantic_ai_stateflow.capabilities import BudgetExhausted, BudgetGuard
 
 from notes_app.agent import default_notes_capabilities
 

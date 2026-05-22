@@ -146,37 +146,12 @@ class NotesAgent(StateflowDurableAgent):
     name = "notes"
     metadata_model = None  # no per-thread settings yet
 
-    def __init__(
-        self,
-        *,
-        model_name: str | None = None,
-        api_key: str | None = None,
-        config_name: str | None = None,
-    ) -> None:
-        # Infrastructure (thread_repo / event_log / event_stream) is bound
-        # per-call by ``enqueue_run`` / ``enqueue_approval_resume`` /
-        # ``cancel_thread_runs`` from the supplied ``RunContext`` — the
-        # framework owns those slots on the base class.
-        # ``config_name=None`` lets the parent class auto-generate a
-        # unique id — production overrides with a stable name so DBOS
-        # workflow recovery can rebind the instance after a restart.
-        # App-specific singletons (notes_repo, todo_flow) are NOT
-        # injected here — tools import them directly from their
-        # respective modules.
-        super().__init__(config_name=config_name)
-        self._model_name = model_name
-        self._api_key = api_key
-
     def build_agent(self) -> Agent[NoteToolDeps, Any]:
         settings = get_notes_settings()
-        resolved_model = (
-            self._model_name
-            or settings.openrouter_default_model
-            or DEFAULT_MODEL
-        )
+        resolved_model = settings.openrouter_default_model or DEFAULT_MODEL
         resolved_key = (
-            self._api_key
-            or (settings.openrouter_api_key.get_secret_value() if settings.openrouter_api_key else None)
+            settings.openrouter_api_key.get_secret_value()
+            if settings.openrouter_api_key else None
         )
         if not resolved_key:
             raise MissingDependencyError(

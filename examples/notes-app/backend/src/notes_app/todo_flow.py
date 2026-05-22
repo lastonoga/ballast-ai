@@ -50,18 +50,6 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     and broadcast a ``message-added`` event.
     """
 
-    def __init__(
-        self,
-        *,
-        config_name: str = "notes-todo-approval-flow",
-    ) -> None:
-        # Stable ``config_name`` so DBOS can rebind this instance to its
-        # in-flight workflows after a restart — apps construct ONE
-        # TodoApprovalFlow at boot and re-construct it with the same
-        # name on recovery (otherwise DBOS can't address the instance).
-        # Tests override the default to keep per-test instances unique.
-        super().__init__(config_name=config_name)
-
     async def on_decision(
         self,
         *,

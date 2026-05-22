@@ -129,31 +129,12 @@ class NotesTodoApprovalAgent(StateflowAgent):
     name = "todo_approval"
     metadata_model = TodoApprovalContext
 
-    def __init__(
-        self,
-        *,
-        model_name: str | None = None,
-        api_key: str | None = None,
-        config_name: str | None = None,  # noqa: ARG002 — symmetry with NotesAgent
-    ) -> None:
-        # App-specific ``NoteRepository`` reached via direct import of
-        # ``notes_app.notes.repository.notes_repo`` (module-level
-        # singleton) — no constructor DI. ``config_name`` is accepted
-        # for parity with ``NotesAgent`` but unused: this is not a
-        # DBOSConfiguredInstance.
-        self._model_name = model_name
-        self._api_key = api_key
-
     def build_agent(self) -> Agent[TodoApprovalDeps, Any]:
         settings = get_notes_settings()
-        resolved_model = (
-            self._model_name
-            or settings.openrouter_default_model
-            or DEFAULT_MODEL
-        )
+        resolved_model = settings.openrouter_default_model or DEFAULT_MODEL
         resolved_key = (
-            self._api_key
-            or (settings.openrouter_api_key.get_secret_value() if settings.openrouter_api_key else None)
+            settings.openrouter_api_key.get_secret_value()
+            if settings.openrouter_api_key else None
         )
         if not resolved_key:
             raise MissingDependencyError(

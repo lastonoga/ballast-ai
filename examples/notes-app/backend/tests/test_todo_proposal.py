@@ -24,7 +24,6 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from dbos import DBOS
 
 from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai import Agent
