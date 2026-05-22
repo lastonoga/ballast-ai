@@ -32,10 +32,14 @@ returns ``None`` and the default profile applies — they keep using
 ``ToolOutput``, which is the most reliable mode where supported.
 
 These agents are NOT exposed via the app's agent dispatch table —
-they aren't selected by ``thread.agent``. ``BrainstormFlow`` holds
-direct references and invokes ``agent.agent.run(...)``. ``build_deps``
-returns ``None`` because there is no per-thread context for one-shot
-model calls.
+they aren't selected by ``thread.agent``. The ``brainstorm``
+workflow function holds them indirectly through the module-level
+``DivergentConvergent`` instance and the pattern invokes
+``branch.agent.run(task)``. ``BallastAgent.run`` proxies to the
+underlying pydantic-ai ``Agent.run``, so a ``BallastAgent`` subclass
+satisfies the framework's structural ``DivergentAgent`` protocol
+without an adapter. ``build_deps`` returns ``None`` because there is
+no per-thread context for one-shot model calls.
 
 No ``from __future__ import annotations``: pydantic-ai introspects
 ``get_type_hints()`` at decoration time.

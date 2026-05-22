@@ -232,6 +232,25 @@ class BallastAgent(ABC):
         """Forwarded to every agent run. Defaults to ``None``."""
         return None
 
+    # ── pydantic-ai ``Agent.run`` proxy ──────────────────────────────────────
+
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
+        """One-shot proxy to the underlying pydantic-ai ``Agent.run``.
+
+        Lets a :class:`BallastAgent` instance satisfy the structural
+        ``DivergentAgent`` / ``Synthesizer`` protocols
+        (``ballast.patterns.divergent_convergent``) — and any other
+        consumer that expects pydantic-ai's ``Agent.run`` signature —
+        without the caller reaching for ``.agent.run(...)``.
+
+        Args + kwargs forward verbatim to ``Agent.run`` (``user_prompt``,
+        ``deps``, ``message_history``, ``model_settings``, …). Callers
+        invoking this proxy for divergent-branch use typically pass just
+        ``task`` and rely on the agent's configured deps_type being
+        ``None``/``Any`` (e.g. ``BrainstormDivergentAgent``).
+        """
+        return await self.agent.run(*args, **kwargs)
+
     # ── lazy Agent construction ──────────────────────────────────────────────
 
     @cached_property
