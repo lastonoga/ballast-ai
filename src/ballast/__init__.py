@@ -135,6 +135,12 @@ from ballast.observability import (
     register_cost_extractor,
     traced,
 )
+from ballast.events import (
+    Signal,
+    helper_thread_created,
+    message_added,
+    receiver,
+)
 from ballast.errors import (
     AgentNotRegistered,
     AuthError,
@@ -351,6 +357,7 @@ __all__ = [
     "Scorer",
     "Selector",
     "SelectorRegistry",
+    "Signal",
     "SemanticDedup",
     "SemanticDedupConfig",
     "SemanticDeduper",
@@ -396,8 +403,11 @@ __all__ = [
     "get_settings",
     "get_thread_repo",
     "has_logfire",
+    "helper_thread_created",
     "make_helper_agent_with_approval_tools",
+    "message_added",
     "messages_to_model_history",
+    "receiver",
     "register_cost_extractor",
     "register_grounded_tools",
     "reset_settings",

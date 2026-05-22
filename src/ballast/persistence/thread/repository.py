@@ -53,6 +53,7 @@ class ThreadRepository(Protocol):
         role: str,
         parts: list[dict[str, Any]],
         id: str | None = None,
+        silent: bool = False,
     ) -> Message:
         """Append a message to ``thread_id``.
 
@@ -61,6 +62,10 @@ class ThreadRepository(Protocol):
         client id round-tripping via the body sync). If the supplied
         id already exists in this thread, the existing row is returned
         unchanged — gives free idempotency on retries.
+
+        ``silent=True`` skips firing the :data:`ballast.events.message_added`
+        signal — use for migrations / seeds / tests that want to write a
+        row without the default log + publish handler running.
         """
         ...
     async def history(
@@ -75,6 +80,7 @@ class ThreadRepository(Protocol):
         id: str,
         role: str,
         parts: list[dict[str, Any]],
+        silent: bool = False,
     ) -> Message:
         """Insert or replace a message by id.
 
@@ -86,7 +92,10 @@ class ThreadRepository(Protocol):
         Used by streaming-event APIs (see
         ``runtime.thread_events.ThreadEventStream``) to mutate a single
         UI-visible message across multiple snapshots without appending
-        N rows."""
+        N rows.
+
+        ``silent=True`` skips firing the
+        :data:`ballast.events.message_added` signal."""
         ...
     async def delete_messages(
         self, thread_id: UUID, *, ids: list[str],
@@ -164,6 +173,7 @@ class InMemoryThreadRepository:
         role: str,
         parts: list[dict[str, Any]],
         id: str | None = None,
+        silent: bool = False,
     ) -> Message:
         thread = self._threads.get(thread_id)
         if thread is None:
@@ -191,6 +201,17 @@ class InMemoryThreadRepository:
             "parts=%d",
             thread_id, msg.id, role, len(msg.parts),
         )
+        if not silent:
+            # Lazy import — ``ballast.events`` is independent of the
+            # persistence layer at import time; importing inline keeps
+            # the persistence module loadable in contexts where the
+            # signal infrastructure isn't wired (eval scripts, raw
+            # migrations).
+            from ballast.events import message_added  # noqa: PLC0415
+
+            await message_added.send(
+                sender=self, thread_id=thread_id, message=msg,
+            )
         return msg
 
     async def upsert_message(
@@ -200,6 +221,7 @@ class InMemoryThreadRepository:
         id: str,
         role: str,
         parts: list[dict[str, Any]],
+        silent: bool = False,
     ) -> Message:
         thread = self._threads.get(thread_id)
         if thread is None:
@@ -216,6 +238,12 @@ class InMemoryThreadRepository:
             # in history doesn't shift.
             existing.role = role
             existing.parts = list(parts)
+            if not silent:
+                from ballast.events import message_added  # noqa: PLC0415
+
+                await message_added.send(
+                    sender=self, thread_id=thread_id, message=existing,
+                )
             return existing
         msg = Message(
             id=id,
@@ -225,6 +253,12 @@ class InMemoryThreadRepository:
             created_at=datetime.now(tz=UTC),
         )
         self._messages[thread_id].append(msg)
+        if not silent:
+            from ballast.events import message_added  # noqa: PLC0415
+
+            await message_added.send(
+                sender=self, thread_id=thread_id, message=msg,
+            )
         return msg
 
     @traced(

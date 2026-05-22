@@ -50,6 +50,7 @@ from dbos import DBOS, DBOSConfiguredInstance, SetEnqueueOptions, SetWorkflowID
 from pydantic import BaseModel, TypeAdapter
 
 from ballast.durable import Durable
+from ballast.events import helper_thread_created
 from ballast.logging import get_logger
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
@@ -58,10 +59,6 @@ from ballast.patterns.hitl.response import (
     TimeoutResponse,
 )
 from ballast.patterns.hitl.topic import _hitl_topic
-from ballast.runtime.event_stream import (
-    EventNotification,
-    thread_channel,
-)
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -292,11 +289,16 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
             )
 
         if notify_parent_thread_id is not None:
-            await self._emit_thread_created(
-                parent_thread_id_str=notify_parent_thread_id,
+            _log.info(
+                "DurableHITLWorkflow.open notify_parent=%s helper_thread=%s",
+                notify_parent_thread_id, thread.id,
+            )
+            await helper_thread_created.send(
+                sender=self,
+                parent_thread_id=UUID(notify_parent_thread_id),
                 helper_thread_id=thread.id,
                 helper_agent_name=helper_agent_name,
-                thread_metadata=thread_metadata,
+                helper_metadata=thread_metadata,
             )
 
         return thread
@@ -325,37 +327,6 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
                 "text": opening_message,
                 "state": "done",
             }],
-        )
-
-    @Durable.step()
-    async def _emit_thread_created(
-        self,
-        *,
-        parent_thread_id_str: str,
-        helper_thread_id: UUID,
-        helper_agent_name: str,
-        thread_metadata: dict[str, Any],
-    ) -> None:
-        """Emit ``thread-created`` into the parent thread's event log."""
-        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
-        engine = get_ballast()
-        parent_id = UUID(parent_thread_id_str)
-        _log.info(
-            "DurableHITLWorkflow.open notify_parent=%s helper_thread=%s",
-            parent_id, helper_thread_id,
-        )
-        ev = await engine.event_log.append(
-            thread_id=parent_id,
-            kind="thread-created",
-            payload={
-                "thread_id": str(helper_thread_id),
-                "agent": helper_agent_name,
-                "metadata": thread_metadata,
-            },
-        )
-        await engine.event_stream.publish(
-            thread_channel(parent_id),
-            EventNotification(thread_id=parent_id, seq=ev.seq),
         )
 
     @Durable.workflow()

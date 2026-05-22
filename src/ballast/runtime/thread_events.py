@@ -143,8 +143,12 @@ class ThreadEventBroadcaster:
         msg_id = message_id or str(uuid4())
 
         if persistent:
+            # ``silent=True`` — this method emits a richer ``message-added``
+            # payload than the default signal handler (it adds the
+            # ``transient`` flag), so we suppress the repo's auto-emit
+            # to avoid a duplicate event-log row.
             msg = await self._thread_repo.upsert_message(
-                thread_id, id=msg_id, role=role, parts=[part],
+                thread_id, id=msg_id, role=role, parts=[part], silent=True,
             )
             parts_for_signal = msg.parts
             role_for_signal = msg.role

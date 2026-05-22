@@ -79,7 +79,16 @@ class PostgresThreadRepository:
         role: str,
         parts: list[dict[str, Any]],
         id: str | None = None,
+        silent: bool = False,  # noqa: ARG002 — protocol parity (see TODO below)
     ) -> Message:
+        # TODO(signals): emit ``ballast.events.message_added`` here once
+        # the unit-of-work boundaries are audited — the in-memory repo
+        # already fires the signal on add. PostgresThreadRepository
+        # writes inside a caller-owned ``AsyncSession`` transaction;
+        # emitting the signal before commit risks the default handler
+        # appending an event-log row for a message that never lands if
+        # the outer txn rolls back. Needs ``after_flush`` SQLAlchemy
+        # event hook + an outbox-style emit to be safe.
         thread = await self.load(thread_id)
         if thread is None:
             raise KeyError(f"Thread {thread_id} not found")
@@ -118,6 +127,7 @@ class PostgresThreadRepository:
         id: str,
         role: str,
         parts: list[dict[str, Any]],
+        silent: bool = False,  # noqa: ARG002 — protocol parity (see TODO above)
     ) -> Message:
         thread = await self.load(thread_id)
         if thread is None:

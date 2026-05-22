@@ -632,10 +632,17 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
 
         from ballast.runtime.engine import get_ballast  # noqa: PLC0415
         engine = get_ballast()
+        # ``silent=True`` — the assistant turn's content already streamed
+        # through ``text-delta`` / ``text-end`` / ``done`` events during
+        # the run, so the default ``message_added`` handler would push a
+        # redundant ``message-added`` row into the event log here. The
+        # write is purely a persistence backfill for history replay; the
+        # live stream has already informed every active SSE consumer.
         await engine.thread_repo.add_message(
             thread_id,
             role="assistant",
             parts=asst_parts,
+            silent=True,
         )
 
     async def find_active_workflow_id(self, thread_id: UUID) -> str | None:

@@ -12,9 +12,30 @@ import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
 from ballast.durable import Durable
+from ballast.events import helper_thread_created, message_added
 from ballast.runtime.engine import _reset_ballast_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
+
+
+@pytest.fixture(autouse=True)
+def _isolate_signals() -> Iterator[None]:
+    """Snapshot + restore framework signal receivers around each test.
+
+    Without this, tests that boot the full Ballast app (which connects
+    framework defaults via ``EventsProvider``) leak receivers into the
+    next test's signal list — leading to duplicate ``message-added`` fires
+    or stale closures pointing at torn-down engines.
+    """
+    snapshots = {
+        s: list(s._receivers)
+        for s in (message_added, helper_thread_created)
+    }
+    try:
+        yield
+    finally:
+        for s, rec in snapshots.items():
+            s._receivers = list(rec)
 
 
 @pytest.fixture

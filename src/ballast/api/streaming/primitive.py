@@ -169,10 +169,16 @@ async def stream_response(
 
         if not asst_parts:
             return
+        # ``silent=True`` — the assistant turn already streamed live
+        # through the Vercel-AI SSE channel; an additional
+        # ``message-added`` event log row from the default signal
+        # handler would be redundant for any consumer that watched the
+        # stream. The persistence write here is only for replay.
         await thread_repo.add_message(
             thread_id,
             role="assistant",
             parts=asst_parts,
+            silent=True,
         )
 
     if not rows or rows[-1].role != "user":

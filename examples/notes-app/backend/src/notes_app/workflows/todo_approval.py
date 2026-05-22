@@ -26,10 +26,6 @@ from ballast.patterns.hitl import (
     ModifiedResponse,
     RejectedResponse,
 )
-from ballast.runtime.event_stream import (
-    EventNotification,
-    thread_channel,
-)
 
 from notes_app.models.todo_approval import TodoApprovalContext
 
@@ -94,28 +90,16 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             )
 
     async def _notify(self, parent_id: UUID, text: str) -> None:
+        # ``thread_repo.add_message`` self-emits ``ballast.events.message_added``;
+        # the framework's default handler (installed by ``EventsProvider``)
+        # writes the ``message-added`` event-log row and publishes the
+        # SSE wake-up — no manual ``event_log.append`` / ``event_stream.publish``
+        # here anymore. (See ``ballast.providers.events``.)
         engine = get_ballast()
-        msg = await engine.thread_repo.add_message(
+        await engine.thread_repo.add_message(
             parent_id,
             role="assistant",
             parts=[{"type": "text", "text": text, "state": "done"}],
-        )
-        # Push a ``message-added`` event into the parent thread's event
-        # log + signal channel so any open ``GET /threads/{id}/events``
-        # SSE consumer (frontend tailing for cross-workflow notifications)
-        # receives it live without a page reload.
-        ev = await engine.event_log.append(
-            thread_id=parent_id,
-            kind="message-added",
-            payload={
-                "id": msg.id,
-                "role": msg.role,
-                "parts": msg.parts,
-            },
-        )
-        await engine.event_stream.publish(
-            thread_channel(parent_id),
-            EventNotification(thread_id=parent_id, seq=ev.seq),
         )
 
 
