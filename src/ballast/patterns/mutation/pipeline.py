@@ -17,13 +17,14 @@ from ballast.patterns.mutation.primitives import (
     Proposal,
     RejectedAt,
     Stage,
+    UnitOfWork,
 )
 from ballast.patterns.mutation.reject_policy import (
     DropOnReject,
     RejectAction,
     RejectPolicy,
 )
-from ballast.persistence import OutboxRepository, UnitOfWork
+from ballast.persistence import OutboxRepository
 from ballast.runtime.det import Det
 from ballast.runtime.idempotency import IdempotencyInput
 

@@ -7,9 +7,6 @@ Fixtures:
     create_all_tables — creates all SQLModel tables once (session, autouse)
     session_factory — async_sessionmaker per test (function)
 
-Note: test_uow.py defines its own ``session_factory`` fixture that uses
-SQLite. Because module-level fixtures shadow conftest fixtures, test_uow.py
-is unaffected by this conftest.
 """
 
 from __future__ import annotations

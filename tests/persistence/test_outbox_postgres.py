@@ -1,14 +1,12 @@
 import pytest
 
-from ballast.persistence import SqlAlchemyUnitOfWork
 from ballast.persistence.outbox import PostgresOutboxRepository
 
 
 @pytest.mark.asyncio
 async def test_enqueue_and_list_undelivered_postgres(session_factory):
-    uow = SqlAlchemyUnitOfWork(session_factory)
-    async with uow:
-        repo = PostgresOutboxRepository(uow.session)
+    async with session_factory() as session, session.begin():
+        repo = PostgresOutboxRepository(session)
         await repo.enqueue(event_type="OrderCreated", payload={"x": 1})
 
     async with session_factory() as s:
@@ -19,9 +17,8 @@ async def test_enqueue_and_list_undelivered_postgres(session_factory):
 
 @pytest.mark.asyncio
 async def test_mark_delivered_postgres(session_factory):
-    uow = SqlAlchemyUnitOfWork(session_factory)
-    async with uow:
-        repo = PostgresOutboxRepository(uow.session)
+    async with session_factory() as session, session.begin():
+        repo = PostgresOutboxRepository(session)
         await repo.enqueue(event_type="E", payload={})
 
     async with session_factory() as s:

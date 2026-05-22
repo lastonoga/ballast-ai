@@ -3,13 +3,9 @@ def test_persistence_public_api():
     from ballast.persistence import (
         HITLRepository,
         OutboxRepository,
-        SqlAlchemyUnitOfWork,
         ThreadRepository,
-        UnitOfWork,
     )
 
-    assert UnitOfWork is not None
-    assert SqlAlchemyUnitOfWork is not None
     assert ThreadRepository is not None
     assert OutboxRepository is not None
     assert HITLRepository is not None

@@ -18,7 +18,6 @@ from ballast.persistence.thread import (
     PostgresThreadRepository,
     ThreadRepository,
 )
-from ballast.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
 
 __all__ = [
     "EventLogRepository",
@@ -31,8 +30,6 @@ __all__ = [
     "PostgresHITLRepository",
     "PostgresOutboxRepository",
     "PostgresThreadRepository",
-    "SqlAlchemyUnitOfWork",
     "ThreadEvent",
     "ThreadRepository",
-    "UnitOfWork",
 ]

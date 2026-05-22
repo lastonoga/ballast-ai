@@ -5,9 +5,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ballast.persistence import UnitOfWork
-
 T = TypeVar("T")
+
+
+@runtime_checkable
+class UnitOfWork(Protocol):
+    """Async context manager that commits on clean exit, rolls back on exception."""
+
+    async def __aenter__(self) -> UnitOfWork: ...
+    async def __aexit__(self, *exc_info: object) -> None: ...
+    async def commit(self) -> None: ...
+    async def rollback(self) -> None: ...
 
 
 class Proposal(BaseModel, Generic[T]):
