@@ -1,8 +1,19 @@
-"""Server-stateful Vercel-AI streaming endpoint.
+"""Streaming helpers shared by the ``stream_response`` primitive.
 
-Single endpoint: ``POST /threads/{thread_id}/messages``. Persists the
-new user message AND triggers the agent run AND streams the response
-in one shot.
+The framework no longer ships a module-level ``streaming_router``. Apps
+write their own ``POST /threads/{id}/messages`` (and ``POST cancel``)
+routes and delegate to ``pydantic_ai_stateflow.stream_response`` for
+the heavy lifting:
+
+  - body-vs-DB sync (edit / regenerate as truncate-then-append)
+  - durable vs inline streaming dispatch
+  - Vercel-AI wire encoding via ``VercelAIAdapter``
+  - approval-resume detection + routing
+  - assistant-turn persistence (non-durable path)
+
+The helpers in this module are internal to the framework — apps reach
+``stream_response`` via the public API and never import directly from
+here.
 
 Persistence model is a **flat linear message list** — no parent_id,
 no tree, no branches. The UI runtime (``@assistant-ui/react-ai-sdk``
@@ -16,22 +27,10 @@ end-to-end. Edits and regenerates are handled by **body-vs-DB sync**:
   5. Run the agent
   6. Persist the assistant turn
 
-This subsumes both edit (truncate user-msg-and-after, append edited
-user) and regenerate (truncate assistant-and-after, append nothing,
-let agent re-emit assistant) without special-case branches.
-
 Vercel AI SDK v6 is targeted (``sdk_version=6``) so that
 ``@agent.tool(requires_approval=True)`` produces ``approval-requested``
 UI parts on the wire and incoming approval responses are extracted by
 ``VercelAIAdapter.deferred_tool_results``.
-
-Endpoint contract::
-
-    POST {prefix}/threads/{thread_id}/messages
-        Accept: text/event-stream
-        Body  : Vercel AI ``RequestData`` JSON (parsed by VercelAIAdapter)
-        404   : thread not found (no lazy-create)
-        200   : streaming Vercel AI events
 """
 
 from __future__ import annotations
@@ -40,61 +39,35 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import Request
 from starlette.responses import StreamingResponse
 
-from pydantic_ai_stateflow.errors import (
-    AgentNotRegistered,
-    CancelNotSupported,
-    EmptyMessageBody,
-    ThreadNotFound,
-)
 from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
 )
 from pydantic_ai_stateflow.api.streaming.wire_encoder import (
-    VercelAIWireEncoder,
     WireEncoder,
 )
+from pydantic_ai_stateflow.errors import EmptyMessageBody
 from pydantic_ai_stateflow.logging import get_logger
-from pydantic_ai_stateflow.observability.spans import traced
-from pydantic_ai_stateflow.observability.trace_names import TraceName
 from pydantic_ai_stateflow.persistence.events.repository import (
     EventLogRepository,
 )
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 from pydantic_ai_stateflow.runtime.durable_agent import StateflowDurableAgent
 from pydantic_ai_stateflow.runtime.event_stream import EventStream
 
-
-def _resolve_agent_from_app(request: Request, name: str) -> StateflowAgent:
-    """Resolve a ``StateflowAgent`` instance by name from ``app.state.agents``.
-
-    Replaces the legacy process-global ``get_agent(name)`` registry —
-    ``sf.create_app()`` populates ``app.state.agents`` from the
-    ``agents=`` kwarg, and routes now look it up per-request.
-    """
-    agents = getattr(request.app.state, "agents", None)
-    if not agents or name not in agents:
-        known = sorted(agents) if agents else []
-        raise AgentNotRegistered(
-            f"No agent registered under name {name!r}",
-            hint="Did you pass it to sf.create_app(agents=[...])?",
-            context={"requested": name, "known": known},
-        )
-    return agents[name]
 
 _log = get_logger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from pydantic_ai.agent import AgentRunResult
     from starlette.responses import Response
 
     from pydantic_ai_stateflow.persistence.thread.domain import Message
+    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 
 DepsT = TypeVar("DepsT")
@@ -103,9 +76,8 @@ OutT = TypeVar("OutT")
 DepsFactory = Callable[..., Any] | Callable[..., Awaitable[Any]]
 """Retained for backwards compatibility of the public type name.
 
-The streaming router itself no longer takes a ``deps_factory`` — apps
-register a ``StateflowAgent`` whose ``build_deps`` method serves the
-same role.
+Apps register a ``StateflowAgent`` whose ``build_deps`` method serves
+the same role.
 """
 
 _DEFAULT_HISTORY_LIMIT = 200
@@ -224,7 +196,7 @@ async def _sync_db_with_body(
     body_messages: list[dict[str, Any]],
     thread_repo: ThreadRepository,
     history_limit: int,
-) -> list[Message]:
+) -> "list[Message]":
     """Reconcile DB rows with the body's ``messages`` array.
 
     Finds the longest common id-prefix between the body and the
@@ -288,13 +260,13 @@ def _build_sse_response(
     event_log: EventLogRepository,
     event_stream: EventStream,
     last_event_id: int,
-) -> Response:
+) -> "Response":
     """Build the SSE StreamingResponse that tails the event log.
 
     Pulled out so both ``enqueue_run`` and ``enqueue_approval_resume``
     can use the same generator without duplicating the polling loop.
     """
-    async def _gen() -> AsyncIterator[bytes]:
+    async def _gen() -> "AsyncIterator[bytes]":
         import asyncio  # noqa: PLC0415
 
         for chunk in encoder.initial_events(thread_id=thread_id):
@@ -358,7 +330,8 @@ async def _durable_post_message(
     event_stream: EventStream,
     encoder: WireEncoder,
     history_limit: int,
-) -> Response:
+    ctx: "RunContext",
+) -> "Response":
     """Durable path: sync DB with body, enqueue workflow, tail event log.
 
     Two dispatch modes inside one endpoint:
@@ -374,46 +347,17 @@ async def _durable_post_message(
     from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
-    # Peek at the body for approval-responses. ``VercelAIAdapter.from_request``
-    # parses the body once + caches; ``deferred_tool_results`` is a
-    # cached_property that scans for ``approval-responded`` parts and
-    # builds a ``DeferredToolResults`` if any are present. None → no
-    # approval in the body → normal new-turn flow.
     adapter = await VercelAIAdapter.from_request(
         request, agent=stateflow_agent.agent, sdk_version=6,
     )
     deferred = adapter.deferred_tool_results
 
     if deferred is not None and deferred.approvals:
-        # Approval resume path. Use **body's parsed messages** as
-        # message_history (NOT the repo). Reasons:
-        #
-        # 1. Our ``_persist_assistant_turn`` skips persisting when the
-        #    agent paused with ``DeferredToolRequests`` — the assistant
-        #    row with the pending ToolCallPart is NOT in the repo.
-        # 2. assistant-ui's body carries the full conversation state
-        #    INCLUDING the assistant turn with the deferred tool call
-        #    (in ``approval-responded`` state after the user clicked).
-        #    VercelAIAdapter parses it into proper ``ToolCallPart``s.
-        # 3. pydantic-ai matches ``deferred_tool_results[tool_call_id]``
-        #    against currently-pending ``ToolCallPart`` entries; body's
-        #    history has them, repo doesn't.
-        #
-        # Without this, the agent raises "Tool call results were
-        # provided, but the message history does not contain any
-        # unprocessed tool calls."
         history = list(adapter.messages)
         history_dump = ModelMessagesTypeAdapter.dump_python(
             history, mode="json",
         )
 
-        # Filter approvals to currently-pending tool calls in history.
-        # Body may carry ``approval-responded`` parts for tool calls
-        # that already executed in PRIOR turns (their ``ToolReturnPart``
-        # is in history). pydantic-ai requires the
-        # ``deferred_tool_results`` keyset to EXACTLY match pending —
-        # extras raise "Tool call results need to be provided for all
-        # deferred tool calls".
         pending = _pending_tool_call_ids(history)
         approvals_dump: dict[str, bool | dict[str, Any]] = {}
         for tcid, decision in deferred.approvals.items():
@@ -422,16 +366,11 @@ async def _durable_post_message(
             if isinstance(decision, bool):
                 approvals_dump[tcid] = decision
             else:
-                # ToolDenied(message=...)
                 approvals_dump[tcid] = {
                     "message": getattr(decision, "message", "denied"),
                 }
 
         if not approvals_dump:
-            # Defensive: no actually-pending approval matched — likely
-            # a stale resend after the tool already executed. Fall back
-            # to the new-turn path (or no-op SSE) instead of triggering
-            # the pydantic-ai "no unprocessed tool calls" error.
             _log.warning(
                 "Approval-resume body had %d approvals but none match "
                 "a pending tool call in history; ignoring resume",
@@ -450,6 +389,7 @@ async def _durable_post_message(
             last_event_id = await event_log.latest_seq(thread_id)
 
         await stateflow_agent.enqueue_approval_resume(
+            ctx,
             thread_id=thread_id,
             history_dump=history_dump,
             approvals=approvals_dump,
@@ -471,9 +411,6 @@ async def _durable_post_message(
         history_limit=history_limit,
     )
 
-    # Extract prompt from the now-persisted history. Last row IS the
-    # new user message (we just synced); if not user (somehow empty
-    # body) bail.
     if not rows or rows[-1].role != "user":
         raise EmptyMessageBody(
             "Cannot start run: thread has no user message to respond to.",
@@ -485,16 +422,13 @@ async def _durable_post_message(
     history = messages_to_model_history(rows, drop_prompt=prompt_text)
     history_dump = ModelMessagesTypeAdapter.dump_python(history, mode="json")
 
-    # ── Last-Event-ID cutoff ────────────────────────────────────────────────
-    # Snapshot ``latest_seq`` BEFORE enqueueing so the SSE consumer
-    # doesn't replay every historical event for this thread when
-    # ``Last-Event-ID`` is absent.
     last_event_id = _parse_last_event_id(request)
     if last_event_id == 0:
         last_event_id = await event_log.latest_seq(thread_id)
 
     try:
         await stateflow_agent.enqueue_run(
+            ctx,
             thread_id=thread_id,
             user_message_id=user_msg.id,
             prompt=prompt_text,
@@ -514,248 +448,9 @@ async def _durable_post_message(
         last_event_id=last_event_id,
     )
 
-# ── Module-level router ──────────────────────────────────────────────
-#
-# Resolves ``thread_repo`` / ``event_log`` / ``event_stream`` via
-# ``Depends`` from ``app.state``. ``sf.create_app()`` mounts this
-# router. Encoder is fixed to ``VercelAIWireEncoder`` and
-# ``history_limit`` to the default (200).
-
-from fastapi import Depends as _Depends  # noqa: E402
-
-from pydantic_ai_stateflow.api.deps import (  # noqa: E402
-    get_event_log as _get_event_log,
-    get_event_stream as _get_event_stream,
-    get_thread_repo as _get_thread_repo,
-)
-
-streaming_router = APIRouter()
-
-
-@streaming_router.post("/threads/{thread_id}/messages")
-@traced(
-    TraceName.STREAMING_POST_MESSAGE,
-    attrs=lambda _request, thread_id, **__: {
-        "thread_id": str(thread_id),
-    },
-)
-async def _post_message(
-    request: Request,
-    thread_id: UUID,
-    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
-    event_log: EventLogRepository = _Depends(_get_event_log),
-    event_stream: EventStream = _Depends(_get_event_stream),
-) -> Response:
-    from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
-
-    _log.info("POST /threads/%s/messages received", thread_id)
-    thread = await thread_repo.load(thread_id)
-    if thread is None:
-        _log.warning(
-            "POST /threads/%s/messages → 404 (thread not found)",
-            thread_id,
-        )
-        raise ThreadNotFound(thread_id=str(thread_id))
-
-    stateflow_agent = _resolve_agent_from_app(request, thread.agent)
-
-    if isinstance(stateflow_agent, StateflowDurableAgent):
-        return await _durable_post_message(
-            request=request,
-            thread_id=thread_id,
-            stateflow_agent=stateflow_agent,
-            thread_repo=thread_repo,
-            event_log=event_log,
-            event_stream=event_stream,
-            encoder=VercelAIWireEncoder(),
-            history_limit=_DEFAULT_HISTORY_LIMIT,
-        )
-
-    # ── Non-durable path ────────────────────────────────────────
-    body_messages = await _parse_body_messages(request)
-    rows = await _sync_db_with_body(
-        thread_id=thread_id,
-        body_messages=body_messages,
-        thread_repo=thread_repo,
-        history_limit=_DEFAULT_HISTORY_LIMIT,
-    )
-
-    agent = stateflow_agent.agent
-    model_settings = stateflow_agent.model_settings()
-
-    adapter = await VercelAIAdapter.from_request(
-        request, agent=agent, sdk_version=6,
-    )
-
-    last_message = adapter.messages[-1] if adapter.messages else None
-    prompt_text = (
-        extract_text(rows[-1].parts)
-        if rows and rows[-1].role == "user"
-        else ""
-    )
-    deferred_results = adapter.deferred_tool_results
-
-    if deferred_results is None:
-        _trim_adapter_messages_to_last_user_prompt(adapter)
-    else:
-        _log.info(
-            "post_message: deferred_tool_results present "
-            "(approvals=%d, calls=%d) — skipping trim",
-            len(deferred_results.approvals or {}),
-            len(deferred_results.calls or {}),
-        )
-
-    history = messages_to_model_history(rows, drop_prompt=prompt_text)
-
-    resolved_deps = await stateflow_agent.build_deps(
-        thread=thread,
-        message=last_message,
-    )
-
-    async def on_complete(result: AgentRunResult[Any]) -> None:
-        from pydantic_ai import DeferredToolRequests  # noqa: PLC0415
-        from pydantic_ai.ui.vercel_ai import (  # noqa: PLC0415
-            VercelAIAdapter as _VercelAIAdapter,
-        )
-
-        output = result.output
-        if isinstance(output, DeferredToolRequests):
-            _log.info(
-                "on_complete: agent paused with DeferredToolRequests "
-                "(thread=%s) — skipping assistant persist",
-                thread_id,
-            )
-            return
-
-        all_msgs = result.all_messages()
-        ui_msgs = _VercelAIAdapter.dump_messages(
-            all_msgs, sdk_version=6,
-        )
-        last_user_idx = -1
-        for i, m in enumerate(ui_msgs):
-            if m.role == "user":
-                last_user_idx = i
-        asst_parts: list[dict[str, Any]] = []
-        for m in ui_msgs[last_user_idx + 1:]:
-            if m.role != "assistant":
-                continue
-            for p in m.parts:
-                asst_parts.append(
-                    p.model_dump(
-                        mode="json",
-                        by_alias=True,
-                        exclude_none=True,
-                    ),
-                )
-
-        if not asst_parts:
-            _log.warning(
-                "on_complete: dump_messages returned no assistant "
-                "parts (thread=%s output=%r) — nothing persisted",
-                thread_id, output,
-            )
-            return
-
-        persisted = await thread_repo.add_message(
-            thread_id,
-            role="assistant",
-            parts=asst_parts,
-        )
-        _log.info(
-            "on_complete: persisted assistant msg id=%s parts=%d "
-            "(kinds=%s)",
-            persisted.id, len(asst_parts),
-            [p.get("type") for p in asst_parts],
-        )
-
-    return adapter.streaming_response(
-        adapter.run_stream(
-            message_history=history,
-            deps=resolved_deps,
-            model_settings=model_settings,
-            on_complete=on_complete,
-        ),
-    )
-
-
-@streaming_router.get("/threads/{thread_id}/events")
-async def _thread_events(
-    request: Request,
-    thread_id: UUID,
-    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
-    event_log: EventLogRepository = _Depends(_get_event_log),
-) -> Response:
-    """Long-lived SSE that tails the thread's event log."""
-    thread = await thread_repo.load(thread_id)
-    if thread is None:
-        raise ThreadNotFound(thread_id=str(thread_id))
-
-    last_event_id = _parse_last_event_id(request)
-    if last_event_id == 0:
-        last_event_id = await event_log.latest_seq(thread_id)
-
-    async def _gen() -> AsyncIterator[bytes]:
-        import asyncio  # noqa: PLC0415
-        import json  # noqa: PLC0415
-
-        yield b": connected\n\n"
-
-        last_seq = last_event_id
-        poll_interval_s = 0.25
-
-        while True:
-            if await request.is_disconnected():
-                return
-            events = await event_log.read_since(
-                thread_id, after_seq=last_seq,
-            )
-            for ev in events:
-                payload = json.dumps({
-                    "kind": ev.kind,
-                    "seq": ev.seq,
-                    "payload": ev.payload,
-                })
-                yield (
-                    f"id: {ev.seq}\ndata: {payload}\n\n".encode()
-                )
-                last_seq = ev.seq
-            await asyncio.sleep(poll_interval_s)
-
-    return StreamingResponse(_gen(), media_type="text/event-stream")
-
-
-@streaming_router.post("/threads/{thread_id}/cancel", status_code=200)
-@traced(
-    TraceName.STREAMING_POST_MESSAGE,
-    attrs=lambda _request, thread_id, **__: {
-        "thread_id": str(thread_id),
-        "op": "cancel",
-    },
-)
-async def _cancel_thread(
-    request: Request,
-    thread_id: UUID,
-    thread_repo: ThreadRepository = _Depends(_get_thread_repo),
-) -> dict[str, Any]:
-    """Cancel every active workflow for ``thread_id``."""
-    thread = await thread_repo.load(thread_id)
-    if thread is None:
-        raise ThreadNotFound(thread_id=str(thread_id))
-
-    stateflow_agent = _resolve_agent_from_app(request, thread.agent)
-    if not isinstance(stateflow_agent, StateflowDurableAgent):
-        raise CancelNotSupported(
-            "cancel is only meaningful for StateflowDurableAgent "
-            "threads; non-durable agents don't have cancellable workflows",
-            context={"thread_id": str(thread_id), "agent": thread.agent},
-        )
-    cancelled = await stateflow_agent.cancel_thread_runs(thread_id)
-    return {"cancelled": cancelled}
-
 
 __all__ = [
     "DepsFactory",
     "extract_text",
     "messages_to_model_history",
-    "streaming_router",
 ]
