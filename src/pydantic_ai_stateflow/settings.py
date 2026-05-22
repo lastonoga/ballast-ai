@@ -5,6 +5,12 @@ See ``docs/superpowers/specs/2026-05-22-sp2-settings-errors-design.md``
 effects beyond importing pydantic-settings; the settings singleton is
 only constructed on first ``get_settings()`` (or first proxy attribute
 access).
+
+Scope: framework-owned config ONLY (DBOS, observability, logging, API
+middleware). App-specific config (LLM provider keys, model choices,
+business-domain toggles) lives in the app's own settings module — see
+``examples/notes-app/backend/src/notes_app/settings.py`` for the
+canonical pattern.
 """
 from __future__ import annotations
 
@@ -42,17 +48,6 @@ class ObservabilitySettings(BaseModel):
     instrument_fastapi: bool = True
 
 
-class OpenRouterSettings(BaseModel):
-    api_key: SecretStr | None = None
-    default_model: str | None = None
-
-
-class LLMSettings(BaseModel):
-    """Per-provider sub-models. New providers slot in here."""
-
-    openrouter: OpenRouterSettings = Field(default_factory=OpenRouterSettings)
-
-
 class APISettings(BaseModel):
     """HTTP-layer toggles consumed by middleware."""
 
@@ -86,7 +81,6 @@ class StateflowSettings(BaseSettings):
     Env vars use ``STATEFLOW_`` prefix + ``__`` for nesting::
 
         STATEFLOW_DBOS__DATABASE_URL=postgresql://...
-        STATEFLOW_LLM__OPENROUTER__API_KEY=sk-or-...
         STATEFLOW_OBSERVABILITY__LOGFIRE_TOKEN=...
     """
 
@@ -101,7 +95,6 @@ class StateflowSettings(BaseSettings):
 
     dbos: DBOSSettings = Field(default_factory=DBOSSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
-    llm: LLMSettings = Field(default_factory=LLMSettings)
     api: APISettings = Field(default_factory=APISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
@@ -114,8 +107,6 @@ class StateflowSettings(BaseSettings):
     # iff the canonical ``STATEFLOW_*`` form isn't also set.
     _LEGACY_ALIASES: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ("DBOS_DATABASE_URL", ("dbos", "database_url")),
-        ("OPENROUTER_API_KEY", ("llm", "openrouter", "api_key")),
-        ("OPENROUTER_MODEL", ("llm", "openrouter", "default_model")),
         ("STATEFLOW_LOG_LEVEL", ("logging", "level")),
     )
 
@@ -202,10 +193,8 @@ settings: StateflowSettings = _SettingsProxy()  # type: ignore[assignment]
 __all__ = [
     "APISettings",
     "DBOSSettings",
-    "LLMSettings",
     "LoggingSettings",
     "ObservabilitySettings",
-    "OpenRouterSettings",
     "StateflowSettings",
     "get_settings",
     "reset_settings",
