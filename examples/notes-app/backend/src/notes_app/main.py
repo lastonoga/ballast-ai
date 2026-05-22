@@ -1,10 +1,12 @@
-"""FastAPI entry point — wires app-owned repos into ``ballast.create_app``.
+"""FastAPI entry point — Ballast + providers.
 
 App-specific singletons (repos, flows, agents) live in their own
 modules and are imported here directly — no constructor DI for app
-state. The framework's ``ballast.create_app`` takes the thread repo +
-event log + event stream as explicit kwargs and stashes them on the
-process-wide ``Engine`` (read via ``ballast.get_engine()``).
+state. The framework's :class:`ballast.Ballast` accepts a
+:class:`BallastSettings` instance plus a sequence of providers via
+``.use(...)``; the terminal ``.fastapi(...)`` returns the FastAPI app
+and installs the process-wide :class:`Engine` singleton (read via
+``ballast.get_engine()``).
 """
 from __future__ import annotations
 
@@ -16,6 +18,13 @@ import ballast
 from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
+
+from ballast.providers import (
+    DBOSProvider,
+    EventsProvider,
+    ObservabilityProvider,
+    ThreadsProvider,
+)
 from ballast.observability.config import ObservabilityConfig
 from ballast.settings import get_settings
 
@@ -43,24 +52,34 @@ def _dbos_db_url() -> str:
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
-app: FastAPI = ballast.create_app(
-    thread_repo=thread_repo,
-    event_log=event_log,
-    event_stream=event_stream,
-    cors=ballast.CORSConfig.permissive_dev(),
-    dbos=DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
-    observability=ObservabilityConfig(
-        service_name="app",
-        environment="dev",
-        instrument_pydantic_ai=True,
-        instrument_httpx=True,
-        instrument_fastapi=False,
-    ),
-    extra_routers=[
-        build_notes_router(thread_repo),
-        workflows_router,
-        streaming_router,
-    ],
+settings = get_settings()
+
+app: FastAPI = (
+    ballast.Ballast(settings)
+    .use(
+        ObservabilityProvider(
+            ObservabilityConfig(
+                service_name="app",
+                environment="dev",
+                instrument_pydantic_ai=True,
+                instrument_httpx=True,
+                instrument_fastapi=False,
+            ),
+        ),
+        DBOSProvider(
+            DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
+        ),
+        ThreadsProvider(thread_repo),
+        EventsProvider(event_log, event_stream),
+    )
+    .fastapi(
+        cors="dev",
+        routers=[
+            build_notes_router(thread_repo),
+            workflows_router,
+            streaming_router,
+        ],
+    )
 )
 
 # Tests + frontend introspection.
