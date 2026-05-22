@@ -38,11 +38,11 @@ from pydantic_ai_stateflow import (
     DivergentBranch,
     DivergentConvergent,
     Durable,
-    RunContext,
     SemanticDedup,
     SemanticDedupConfig,
     ThreadEventBroadcaster,
     ThreadEventType,
+    get_engine,
 )
 from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
 from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
@@ -232,7 +232,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
         self._divergent = divergent
 
     @Durable.workflow()
-    async def run(self, ctx: RunContext, task: BrainstormTask) -> BrainstormOutcome:
+    async def run(self, task: BrainstormTask) -> BrainstormOutcome:
         """Run the brainstorm + open HITL. Returns the proposed idea
         and the helper thread id (fire-and-forget on the actual
         approval — see ``TodoApprovalFlow.on_decision`` for the
@@ -242,10 +242,14 @@ class BrainstormFlow(DBOSConfiguredInstance):
         thread through a single stream session: same ``message_id``
         across all updates → the UI sees ONE animating row instead
         of N rows.
+
+        Pulls the broadcaster off the framework's process-wide
+        ``Engine`` — no per-call ``RunContext`` is needed now that
+        ``sf.create_app`` installs the singleton at startup.
         """
         parent_thread_id = task.parent_thread_id
         topic = task.topic
-        broadcaster = ctx.broadcaster
+        broadcaster = get_engine().broadcaster
         async with BRAINSTORM_PROGRESS.stream(
             broadcaster, parent_thread_id,
         ) as progress:
@@ -281,7 +285,6 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 parent_thread_id=parent_thread_id,
             )
             helper_thread = await todo_flow.open(
-                ctx,
                 helper_agent=NotesTodoApprovalAgent,
                 context=context,
                 opening_message=context.to_opening_message(),

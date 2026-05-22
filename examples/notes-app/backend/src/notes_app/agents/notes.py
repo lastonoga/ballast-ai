@@ -42,7 +42,6 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow import RunContext as StateflowRunContext
 from pydantic_ai_stateflow.capabilities import (
     BudgetGuard,
     PIIGuard,
@@ -116,18 +115,21 @@ def default_notes_capabilities() -> list[StateflowCapability]:
 class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
-    ``parent_thread_id`` and ``ctx`` are only used by ``propose_todo``
-    to spawn the durable approval workflow — the simpler note tools
-    ignore them. They may be ``None`` for tests that only exercise the
-    non-HITL tools. The note repository is reached via direct import
-    of ``notes_app.repositories.note.notes_repo`` (module-level
+    ``parent_thread_id`` is only used by ``propose_todo`` to spawn the
+    durable approval workflow — the simpler note tools ignore it. It
+    may be ``None`` for tests that only exercise the non-HITL tools.
+    The note repository is reached via direct import of
+    ``notes_app.repositories.note.notes_repo`` (module-level
     singleton); ``repo`` is kept on the deps so tools can pass a
     per-test override (constructed manually in unit tests).
+
+    Framework infra (thread repo / event log / event stream) is reached
+    by ``propose_todo`` via ``sf.get_engine()`` — no per-call context
+    is threaded through ``NoteToolDeps`` anymore.
     """
 
     repo: NoteRepository
     parent_thread_id: UUID | None = None
-    ctx: StateflowRunContext | None = None
 
 
 class NotesAgent(StateflowDurableAgent):
@@ -189,23 +191,9 @@ class NotesAgent(StateflowDurableAgent):
         # ``notes_app.repositories.note.notes_repo`` before this runs.
         from notes_app.repositories.note import notes_repo
 
-        # Per-call infra triplet was bound onto ``self`` by
-        # ``_bind_infra(ctx)`` before the workflow body started — surface
-        # it back to tool code via ``deps.ctx`` so ``propose_todo`` can
-        # forward the same ``RunContext`` into ``todo_flow.open(ctx, ...)``.
-        ctx: StateflowRunContext | None = None
-        if self._thread_repo is not None and self._event_log is not None \
-                and self._event_stream is not None:
-            ctx = StateflowRunContext(
-                thread_repo=self._thread_repo,
-                event_log=self._event_log,
-                event_stream=self._event_stream,
-                parent_thread_id=thread.id,
-            )
         return NoteToolDeps(
             repo=notes_repo,
             parent_thread_id=thread.id,
-            ctx=ctx,
         )
 
     def model_settings(self) -> OpenRouterModelSettings:
@@ -321,10 +309,10 @@ async def propose_todo(
     # Direct import of the module-level singleton.
     from notes_app.workflows.todo_approval import todo_flow
 
-    if ctx.deps.parent_thread_id is None or ctx.deps.ctx is None:
+    if ctx.deps.parent_thread_id is None:
         raise RuntimeError(
-            "propose_todo requires parent_thread_id + ctx on NoteToolDeps "
-            "— was NotesAgent.build_deps run without an infra-bound ctx?",
+            "propose_todo requires parent_thread_id on NoteToolDeps "
+            "— was NotesAgent.build_deps run without a thread?",
         )
 
     context = TodoApprovalContext(
@@ -333,7 +321,6 @@ async def propose_todo(
         parent_thread_id=ctx.deps.parent_thread_id,
     )
     await todo_flow.open(
-        ctx.deps.ctx,
         helper_agent=NotesTodoApprovalAgent,
         context=context,
         opening_message=context.to_opening_message(),

@@ -6,10 +6,9 @@ and context rehydration. This module just supplies the
 ``on_decision`` body: save the note (or skip on reject) and post a
 notification message back to the parent thread.
 
-Infra (``thread_repo`` / ``event_log`` / ``event_stream``) is supplied
-per-call via the ``RunContext`` passed to ``open(ctx, ...)`` — the
-base class binds it on the instance so the durable workflow body
-(and ``_notify`` below) can reach the right repos for this call.
+Repos + stream are reached via the process-wide ``Engine`` installed
+by ``sf.create_app`` at startup — no per-call ``RunContext`` is
+threaded through ``open(...)`` anymore.
 
 Note on annotations: like ``notes_app.agents.notes`` we do NOT use
 ``from __future__ import annotations`` so DBOS / pydantic-ai can
@@ -19,6 +18,7 @@ resolve concrete types at decoration time.
 from uuid import UUID
 
 from pydantic import BaseModel
+from pydantic_ai_stateflow import get_engine
 from pydantic_ai_stateflow.patterns.hitl import (
     ApprovedResponse,
     DurableHITLWorkflow,
@@ -42,12 +42,10 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     streaming request handler died long before the helper agent
     finished its conversation.
 
-    Per-call infra (thread repo + event log + event stream) is bound
-    on the instance via ``open(ctx, ...)`` — the base class assigns
-    ``self.thread_repo`` / ``self._event_log`` / ``self._event_stream``
-    from ``ctx`` before the workflow body executes. ``_notify``
-    consults those slots to persist the parent-thread notification
-    and broadcast a ``message-added`` event.
+    Reaches the thread repo + event log + event stream through
+    ``sf.get_engine()`` — the framework owns the singleton wired by
+    ``sf.create_app`` at startup, so ``_notify`` doesn't need per-call
+    infra injection.
     """
 
     async def on_decision(
@@ -96,7 +94,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             )
 
     async def _notify(self, parent_id: UUID, text: str) -> None:
-        msg = await self.thread_repo.add_message(
+        engine = get_engine()
+        msg = await engine.thread_repo.add_message(
             parent_id,
             role="assistant",
             parts=[{"type": "text", "text": text, "state": "done"}],
@@ -104,11 +103,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         # Push a ``message-added`` event into the parent thread's event
         # log + signal channel so any open ``GET /threads/{id}/events``
         # SSE consumer (frontend tailing for cross-workflow notifications)
-        # receives it live without a page reload. No-op when wiring
-        # isn't provided (e.g. in unit tests).
-        if self._event_log is None:
-            return
-        ev = await self._event_log.append(
+        # receives it live without a page reload.
+        ev = await engine.event_log.append(
             thread_id=parent_id,
             kind="message-added",
             payload={
@@ -117,11 +113,10 @@ class TodoApprovalFlow(DurableHITLWorkflow):
                 "parts": msg.parts,
             },
         )
-        if self._event_stream is not None:
-            await self._event_stream.publish(
-                thread_channel(parent_id),
-                EventNotification(thread_id=parent_id, seq=ev.seq),
-            )
+        await engine.event_stream.publish(
+            thread_channel(parent_id),
+            EventNotification(thread_id=parent_id, seq=ev.seq),
+        )
 
 
 # ── Module-level singleton ──────────────────────────────────────────────
