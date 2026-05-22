@@ -13,6 +13,16 @@ from dbos import DBOSConfiguredInstance, Queue
 from ballast.durable import Durable
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
+from ballast.patterns.divergent_convergent.events import (
+    BranchCompleted,
+    BranchEnqueued,
+    BranchFailed,
+    ConvergeCompleted,
+    ConvergeStarted,
+    DedupCompleted,
+    VerifyCompleted,
+    divergent_convergent_progress,
+)
 from ballast.patterns.divergent_convergent.primitives import (
     DivergentBranch,
     Synthesizer,
@@ -215,11 +225,12 @@ class DivergentConvergent(
         """Run the divergent → optional dedup → optional verify →
         synthesize pipeline.
 
-        Pattern progress (branch enqueued / completed / failed,
-        dedup / verify / converge) is NOT emitted today — see
-        ``events.py`` for the planned re-introduction via the engine's
-        thread-event broadcaster (no callback crosses the workflow
-        boundary; apps subscribe to typed events by their wire name).
+        Emits typed progress events on
+        :data:`divergent_convergent_progress` at every observable
+        boundary. Apps opt in by connecting a handler
+        (``ballast.events.adapters.route_to_thread_as_text`` etc.) BEFORE
+        calling ``run``. With no handler connected the emits are
+        cheap no-ops.
         """
         # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
@@ -234,6 +245,10 @@ class DivergentConvergent(
                     self._diverge_one, label, sample_idx, task,
                 )
                 handles.append((label, sample_idx, handle))
+                await divergent_convergent_progress.send(
+                    sender=self,
+                    event=BranchEnqueued(label=label, sample_idx=sample_idx),
+                )
 
         # 2. Collect with per-branch failure policy.
         pools: list[list[HypothesisT]] = []
@@ -244,7 +259,21 @@ class DivergentConvergent(
                 pool = await handle.get_result()
                 pools.append(pool)
                 outcomes[key] = f"ok:{len(pool)}"
+                await divergent_convergent_progress.send(
+                    sender=self,
+                    event=BranchCompleted(
+                        label=label, sample_idx=sample_idx,
+                        pool_size=len(pool),
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001 — caller policy decides
+                await divergent_convergent_progress.send(
+                    sender=self,
+                    event=BranchFailed(
+                        label=label, sample_idx=sample_idx,
+                        error_type=type(exc).__name__,
+                    ),
+                )
                 if self._per_branch_failure == "strict":
                     raise
                 outcomes[key] = f"failed:{type(exc).__name__}"
@@ -253,7 +282,14 @@ class DivergentConvergent(
 
         # 3. Optional dedup.
         if self._deduper is not None and merged:
+            input_count = len(merged)
             merged = await self._deduper.run(merged)
+            await divergent_convergent_progress.send(
+                sender=self,
+                event=DedupCompleted(
+                    input_count=input_count, output_count=len(merged),
+                ),
+            )
 
         # 4. Minimum-cardinality guard.
         if len(merged) < self._min_hypotheses:
@@ -265,6 +301,7 @@ class DivergentConvergent(
 
         # 5. Optional verifier + top-K filtering.
         if self._verifier is not None:
+            scored_count = len(merged)
             scored: list[_ScoredHypothesis[HypothesisT]] = []
             for hypothesis in merged:
                 score = await self._score_one(task, hypothesis)
@@ -273,9 +310,24 @@ class DivergentConvergent(
             if self._top_k is not None:
                 scored = scored[: self._top_k]
             merged = [s.hypothesis for s in scored]
+            await divergent_convergent_progress.send(
+                sender=self,
+                event=VerifyCompleted(
+                    scored_count=scored_count, top_k_applied=self._top_k,
+                ),
+            )
 
         # 6. Synthesize.
-        return await self._converge(task, merged)
+        await divergent_convergent_progress.send(
+            sender=self,
+            event=ConvergeStarted(candidate_count=len(merged)),
+        )
+        result = await self._converge(task, merged)
+        await divergent_convergent_progress.send(
+            sender=self,
+            event=ConvergeCompleted(),
+        )
+        return result
 
     # ── steps ────────────────────────────────────────────────────────────
 

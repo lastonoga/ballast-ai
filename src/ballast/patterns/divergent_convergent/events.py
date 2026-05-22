@@ -1,30 +1,52 @@
 """Pattern-specific progress events for ``DivergentConvergent``.
 
-Typed event vocabulary that the pattern WILL emit at every observable
-boundary (branch enqueued / completed / failed, dedup completed,
-verify completed, converge started / completed). Discriminated by
-``type`` so callers can ``match`` cleanly.
+Typed event vocabulary the pattern emits at every observable boundary
+(branch enqueued / completed / failed, dedup completed, verify
+completed, converge started / completed). Discriminated by ``type``
+so handlers can ``match`` cleanly.
 
-Status: the event types are defined but ``DivergentConvergent.run``
-does NOT emit them yet. The previous ``on_progress=callable`` API
-was removed because callable args can't cross a durable-workflow
-boundary cleanly (local closures aren't picklable, and even with
-module-level partials DBOS's serialization story is fragile).
+## How to subscribe
 
-## Planned re-introduction
+Two paths:
 
-The pattern will emit these typed events on the engine's
-thread-event broadcaster (already wired by ``EventsProvider`` and
-reached via ``get_ballast().broadcaster``). Each event has a stable
-wire name (``branch-enqueued``, ``branch-completed``, etc.) so apps
-subscribe by name from outside the workflow body — no callback or
-closure crosses the fiber boundary, recovery semantics stay clean,
-and UIs map events to their own thread-event types as they please.
+1. **Adapter helpers** (typical) — :mod:`ballast.events.adapters`
+   exposes ``route_to_thread_as_text`` / ``route_to_thread_as_data``
+   that connect a small handler to :data:`divergent_convergent_progress`
+   and emit one chat message per event. App opts in inside its
+   workflow body::
 
-Apps that need per-branch live progress today should layer their
-own emission inside their custom ``DivergentAgent`` implementations
-(``.diverge`` runs in the branch fiber and CAN call into the
-broadcaster directly).
+       from ballast.events.adapters import route_to_thread_as_text
+       from ballast.patterns.divergent_convergent.events import (
+           divergent_convergent_progress,
+       )
+
+       disconnect = route_to_thread_as_text(
+           divergent_convergent_progress, thread_id=parent_id,
+       )
+       try:
+           chosen = await _divergent.run(topic)
+       finally:
+           disconnect()
+
+2. **Raw signal handler** — for non-thread destinations (Slack,
+   metrics, audit log). Connect any sync/async receiver via the
+   Django-style API::
+
+       from ballast.events import receiver
+
+       @receiver(divergent_convergent_progress)
+       async def to_metrics(sender, *, event, **_):
+           if isinstance(event, BranchFailed):
+               failed_counter.labels(label=event.label).inc()
+
+Handlers are dispatched in registration order; raised exceptions
+abort the ``signal.send`` and propagate up through the pattern
+body. Use :meth:`Signal.send_robust` semantics (or guard your
+handler) if you want fail-quiet routing.
+
+The signal carries one kwarg, ``event``, whose type is the
+:data:`DivergentEvent` union — handlers should ``isinstance``-dispatch
+or ``match`` on ``event.type``.
 """
 
 from __future__ import annotations
@@ -32,6 +54,8 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel
+
+from ballast.events import Signal
 
 
 class BranchEnqueued(BaseModel):
@@ -91,8 +115,21 @@ DivergentEvent = (
     | ConvergeStarted
     | ConvergeCompleted
 )
-"""Discriminated union of every event ``DivergentConvergent.run`` will
-emit once the broadcaster wiring lands."""
+"""Discriminated union of every event ``DivergentConvergent.run`` may
+emit. Future kinds will extend this union; handlers should keep a
+fall-through ``case _`` arm for forward compatibility."""
+
+
+divergent_convergent_progress: Signal = Signal(
+    "divergent_convergent.progress",
+)
+"""Module-level signal carrying each :data:`DivergentEvent` the pattern
+emits. Handlers receive ``(sender=pattern_instance, event=...)``.
+
+One signal per pattern (not per event type) keeps subscription light:
+handlers ``isinstance``-dispatch internally and apps can filter to the
+subset they care about.
+"""
 
 
 __all__ = [
@@ -104,4 +141,5 @@ __all__ = [
     "DedupCompleted",
     "DivergentEvent",
     "VerifyCompleted",
+    "divergent_convergent_progress",
 ]

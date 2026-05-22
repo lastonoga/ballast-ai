@@ -29,6 +29,10 @@ that callers used to write inline.
 
 from __future__ import annotations
 
+from ballast.events.adapters import (
+    route_to_thread_as_data,
+    route_to_thread_as_text,
+)
 from ballast.events.signals import Signal, receiver
 
 # ── Built-in signals ────────────────────────────────────────────────────
@@ -50,4 +54,6 @@ __all__ = [
     "helper_thread_created",
     "message_added",
     "receiver",
+    "route_to_thread_as_data",
+    "route_to_thread_as_text",
 ]
