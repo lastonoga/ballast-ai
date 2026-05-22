@@ -378,4 +378,4 @@ async def delete_note(
 # ``enqueue_run`` / ``enqueue_approval_resume`` from the supplied
 # ``RunContext``.
 
-notes_agent: NotesAgent = NotesAgent(config_name="notes-app-notes-agent")
+notes_agent: NotesAgent = NotesAgent()

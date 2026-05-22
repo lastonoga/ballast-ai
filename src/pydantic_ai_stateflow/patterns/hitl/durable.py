@@ -109,9 +109,12 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         *,
         config_name: str | None = None,
     ) -> None:
+        # Default to ``cls.__qualname__`` for the same reason as
+        # ``StateflowDurableAgent`` — singleton-per-class is the
+        # common case; multiple instances of the same class (per-test
+        # isolation) override explicitly.
         super().__init__(
-            config_name=config_name
-            or f"durable-hitl-{next(_instance_counter)}",
+            config_name=config_name or type(self).__qualname__,
         )
         # Per-call infra triplet. Populated by ``open`` / ``on_decision``
         # from the supplied ``RunContext``; the DBOS workflow body reads

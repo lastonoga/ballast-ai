@@ -166,12 +166,14 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
     ) -> None:
         # DBOSConfiguredInstance requires a stable name so DBOS can
         # rebind the instance to in-flight workflows after restart.
-        # Default to ``durable-agent:<ClassName>-<n>`` — apps with
-        # multiple instances of the same class (rare) override.
-        cls_name = type(self).__name__
+        # Default to ``cls.__qualname__`` — the common case is one
+        # instance per class in a process, and the class name is the
+        # most stable identifier across restarts (survives module-path
+        # changes, doesn't depend on instantiation order).
+        # Apps with multiple instances of the same class (multi-tenant,
+        # per-test isolation) override explicitly.
         super().__init__(
-            config_name=config_name
-            or f"durable-agent:{cls_name}-{next(_instance_counter)}",
+            config_name=config_name or type(self).__qualname__,
         )
         # Per-call infra triplet. Populated by ``enqueue_run`` /
         # ``enqueue_approval_resume`` / ``cancel_thread_runs`` from

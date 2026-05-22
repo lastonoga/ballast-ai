@@ -133,7 +133,7 @@ async def _spawn_proposal(
     refs via ``monkeypatch.setattr`` in the calling test (the fixture
     receives the per-test repo / flow that way).
     """
-    notes_agent = _TestNotesAgent()
+    notes_agent = _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}")
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
@@ -365,7 +365,7 @@ async def test_propose_todo_returns_before_helper_decision(
 async def test_propose_todo_rejects_when_deps_missing_ctx() -> None:
     """Calling ``propose_todo`` without parent_thread_id / ctx must fail loudly."""
     notes_repo = InMemoryNoteRepository()
-    notes_agent = _TestNotesAgent()
+    notes_agent = _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}")
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     deps = NoteToolDeps(repo=notes_repo)  # no parent_thread_id / ctx

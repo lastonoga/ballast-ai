@@ -128,6 +128,4 @@ class TodoApprovalFlow(DurableHITLWorkflow):
 # App-specific durable HITL workflow. Imported directly by callers that
 # need to spawn approval flows (NotesAgent.propose_todo, BrainstormFlow).
 
-todo_flow: TodoApprovalFlow = TodoApprovalFlow(
-    config_name="notes-todo-approval-flow",
-)
+todo_flow: TodoApprovalFlow = TodoApprovalFlow()

@@ -40,7 +40,7 @@ def _agent_with_tools(repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
     # nothing constructor-injected on the agent for the repo. The tests
     # pass ``repo`` through ``_make_deps`` directly.
     del repo
-    return _TestNotesAgent().agent
+    return _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}").agent
 
 
 def _bound_tool(agent: Any, name: str) -> Any:
