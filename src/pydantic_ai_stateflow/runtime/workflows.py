@@ -10,12 +10,13 @@ See spec §B.2 and §C for full design.
 """
 from __future__ import annotations
 
-import re
+import inspect
 from typing import Any, ClassVar, TypeVar, get_type_hints, overload
 
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.durable import Durable
+from pydantic_ai_stateflow.runtime._kebab import kebab_case as _kebab_case
 
 C = TypeVar("C", bound=type)
 
@@ -28,16 +29,6 @@ _BLOCKING_ATTR = "_sf_workflow_blocking"
 
 # Process-wide registry: kebab-name → class.
 _workflow_registry: dict[str, type] = {}
-
-
-def _kebab_case(name: str) -> str:
-    """``BrainstormFlow`` → ``brainstorm-flow``;
-    ``MyXMLFlow`` → ``my-xml-flow``."""
-    # Insert a hyphen between consecutive uppercase + lowercase boundaries
-    # (handles acronyms like XML).
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
-    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", s1)
-    return s2.lower()
 
 
 @overload
@@ -86,11 +77,25 @@ def workflow(
                 f"@sf.workflow on {target.__name__}: input= and output= are required keyword args",
             )
         resolved_name = name or _kebab_case(target.__name__)
-        # Validate ``run`` exists.
-        run_method = getattr(target, "run", None)
+        # Validate ``run`` exists. Read from the class __dict__ to avoid
+        # method binding artefacts and to see the raw function DBOS
+        # decorated.
+        run_method = target.__dict__.get("run") or getattr(target, "run", None)
         if run_method is None or not callable(run_method):
             raise TypeError(
                 f"@sf.workflow on {target.__name__}: class must define ``async def run(self, input)``",
+            )
+        # Validate ``run`` is wrapped by ``@Durable.workflow()`` (which
+        # stacks ``@DBOS.workflow()``). DBOS marks decorated functions
+        # with a ``dbos_func_decorator_info`` attribute that survives
+        # ``functools.wraps`` chains. Missing → user forgot the
+        # decorator; this would fail silently at runtime since DBOS
+        # would never see the workflow.
+        if not hasattr(run_method, "dbos_func_decorator_info"):
+            raise TypeError(
+                f"@sf.workflow on {target.__name__}: ``run`` must be "
+                f"decorated with ``@Durable.workflow()`` "
+                f"(missing dbos_func_decorator_info marker)",
             )
         # Validate run signature via type hints.
         try:
@@ -104,6 +109,33 @@ def workflow(
                 f"@sf.workflow on {target.__name__}: ``run`` return type "
                 f"{hints['return']} does not match output={output}",
             )
+        # Validate the first non-self parameter annotation matches ``input``.
+        # Use ``inspect.signature`` (not type hints) because ``from
+        # __future__ import annotations`` can leave hints as strings
+        # that ``get_type_hints`` would resolve via the function's
+        # globals — but we want to be lenient: if the resolved hint
+        # exists AND differs from ``input``, raise; if it's missing or
+        # unresolvable, skip the check.
+        try:
+            sig = inspect.signature(run_method)
+            params = [p for p in sig.parameters.values() if p.name != "self"]
+        except (TypeError, ValueError):
+            params = []
+        if params:
+            first = params[0]
+            # Resolve string annotations through get_type_hints (already
+            # tried above). Fall back to the raw annotation if not in
+            # hints (e.g. forward refs that fail to resolve).
+            annot = hints.get(first.name, first.annotation)
+            if (
+                annot is not inspect.Parameter.empty
+                and not isinstance(annot, str)
+                and annot is not input
+            ):
+                raise TypeError(
+                    f"@sf.workflow on {target.__name__}: ``run`` first "
+                    f"argument type {annot} does not match input={input}",
+                )
         # Apply DBOS class decoration. Idempotent: if already applied,
         # this is a no-op (DBOS records the wrapping in a class attr).
         if not getattr(target, "_dbos_class_decorated", False):

@@ -31,10 +31,11 @@ annotated with ``Annotated[Ref[T], Selector(...)]`` automatically gets a
 per-run ``prepare`` hook that narrows its JSON Schema to a closed enum.
 No explicit ``register_grounded_tools(agent)`` call needed.
 
-Apps subclass ``StateflowAgent``, instantiate it with whatever app-level
-dependencies they need (repos, settings, embedders), and call
-``register_agent(instance)`` during startup. The streaming router
-resolves the right instance from ``thread.agent`` per request — apps
+Apps subclass ``StateflowAgent``, decorate the class with
+``@sf.stateflow_agent`` (registers the class under its kebab-name),
+and pass an instance to ``sf.create_app(agents=[my_agent_instance])``
+at boot. The streaming router resolves the right instance from
+``app.state.agents`` keyed by ``thread.agent`` per request — apps
 never wire the pydantic-ai ``Agent`` into the framework manually.
 
 The registry is process-global and unsynchronized; concurrent
@@ -356,13 +357,7 @@ _class_registry: dict[str, type[StateflowAgent]] = {}
 _AGENT_NAME_ATTR = "_sf_agent_name"
 
 
-def _kebab_case_agent(name: str) -> str:
-    """Mirror of ``runtime.workflows._kebab_case`` — duplicated to avoid
-    a cross-module import cycle."""
-    import re
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
-    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", s1)
-    return s2.lower()
+from pydantic_ai_stateflow.runtime._kebab import kebab_case as _kebab_case_agent
 
 
 def stateflow_agent(cls: type[StateflowAgent]) -> type[StateflowAgent]:
