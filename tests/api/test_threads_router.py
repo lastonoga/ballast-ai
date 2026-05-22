@@ -174,3 +174,110 @@ async def test_list_endpoint_422_on_negative_offset():
         # Exceeding cap (limit > 500) also 422.
         r4 = c.get("/threads?limit=501")
         assert r4.status_code == 422
+
+
+# ── /events SSE endpoint ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_events_404_when_thread_unknown():
+    repo = InMemoryThreadRepository()
+    app = _app(repo)
+    with TestClient(app) as c:
+        r = c.get(f"/threads/{uuid4()}/events")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_events_replay_and_format_via_direct_generator():
+    """Drive the SSE generator directly so we don't fight TestClient
+    over a never-ending streaming response.
+
+    Asserts the wire format (``id: N\\n data: {...}\\n\\n``) AND that
+    the replay path emits one frame per persisted ``event_log`` row,
+    in seq order, with the JSON payload shape the frontend expects
+    (``{"kind", "payload"}``).
+    """
+    import json as _json
+    from unittest.mock import AsyncMock
+
+    from ballast.api.threads import _thread_events  # type: ignore[attr-defined]
+
+    repo = InMemoryThreadRepository()
+    log = InMemoryEventLogRepository()
+    stream = InProcessEventStream()
+    th = await repo.create(agent="conversation", metadata={})
+    e1 = await log.append(
+        thread_id=th.id, kind="message-added",
+        payload={"id": "m1", "role": "assistant", "parts": []},
+    )
+    e2 = await log.append(thread_id=th.id, kind="custom", payload={"x": 1})
+
+    fake_request = AsyncMock()
+    fake_request.is_disconnected = AsyncMock(return_value=True)
+
+    resp = await _thread_events(
+        request=fake_request,
+        thread_id=th.id,
+        last_event_id=None,
+        thread_repo=repo,
+        event_log=log,
+        event_stream=stream,
+    )
+    chunks = []
+    async for chunk in resp.body_iterator:  # type: ignore[union-attr]
+        chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+        if len(chunks) >= 2:
+            break
+    raw = b"".join(chunks).decode()
+
+    assert f"id: {e1.seq}" in raw
+    assert f"id: {e2.seq}" in raw
+    data_lines = [ln for ln in raw.splitlines() if ln.startswith("data:")]
+    payloads = [_json.loads(ln[len("data:"):].strip()) for ln in data_lines]
+    assert payloads[0]["kind"] == "message-added"
+    assert payloads[1]["kind"] == "custom"
+    assert payloads[1]["payload"] == {"x": 1}
+
+
+@pytest.mark.asyncio
+async def test_events_last_event_id_skips_already_delivered():
+    import json as _json
+    from unittest.mock import AsyncMock
+
+    from ballast.api.threads import _thread_events  # type: ignore[attr-defined]
+
+    repo = InMemoryThreadRepository()
+    log = InMemoryEventLogRepository()
+    stream = InProcessEventStream()
+    th = await repo.create(agent="conversation", metadata={})
+    e1 = await log.append(thread_id=th.id, kind="a", payload={})
+    e2 = await log.append(thread_id=th.id, kind="b", payload={})
+
+    fake_request = AsyncMock()
+    fake_request.is_disconnected = AsyncMock(return_value=True)
+
+    resp = await _thread_events(
+        request=fake_request,
+        thread_id=th.id,
+        last_event_id=str(e1.seq),
+        thread_repo=repo,
+        event_log=log,
+        event_stream=stream,
+    )
+    chunks = []
+    async for chunk in resp.body_iterator:  # type: ignore[union-attr]
+        chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+        if len(chunks) >= 1:
+            break
+    raw = b"".join(chunks).decode()
+    data = [
+        _json.loads(ln[len("data:"):].strip())
+        for ln in raw.splitlines() if ln.startswith("data:")
+    ]
+    assert [p["kind"] for p in data] == ["b"]
+    assert f"id: {e2.seq}" in raw
+
+
+# Keep ``asyncio`` import in use even when only sync tests run.
+_ = asyncio
