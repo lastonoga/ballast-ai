@@ -31,16 +31,11 @@ annotated with ``Annotated[Ref[T], Selector(...)]`` automatically gets a
 per-run ``prepare`` hook that narrows its JSON Schema to a closed enum.
 No explicit ``register_grounded_tools(agent)`` call needed.
 
-Apps subclass ``StateflowAgent``, decorate the class with
-``@sf.stateflow_agent`` (registers the class under its kebab-name),
-and pass an instance to ``sf.create_app(agents=[my_agent_instance])``
-at boot. The streaming router resolves the right instance from
-``app.state.agents`` keyed by ``thread.agent`` per request — apps
-never wire the pydantic-ai ``Agent`` into the framework manually.
-
-The registry is process-global and unsynchronized; concurrent
-registration during startup is fine because Python imports serialize
-through the GIL, and post-boot the registry is read-only.
+Apps subclass ``StateflowAgent`` to get the tool / system-prompt
+helpers; instances are constructed and used directly. The framework
+no longer maintains a class registry — ``Thread.agent`` is an opaque
+app-owned string and apps resolve string→instance themselves in
+their own routes.
 """
 
 from __future__ import annotations
@@ -343,83 +338,15 @@ def _takes_run_context(fn: Callable[..., Any]) -> bool:
     return origin is RunContext
 
 
-# ── ``@sf.stateflow_agent`` decorator + class registry ──────────────────
+# ── Metadata validation ──────────────────────────────────────────────────
 #
-# Apps decorate their ``StateflowAgent`` subclasses with
-# ``@sf.stateflow_agent`` — the decorator derives a kebab-case name
-# from the class name (e.g. ``NotesAgent`` → ``notes-agent``) and
-# stores the class in ``_class_registry``. Instances are constructed
-# by the app and passed to ``sf.create_app(agents=[NotesAgent(...)])``;
-# create_app populates ``app.state.agents[name]`` so the streaming
-# router can resolve per-request.
+# ``Thread.agent`` is an opaque app-owned string; the framework doesn't
+# resolve names → classes. Apps that want metadata validation pass the
+# class (or an instance) to ``validate_thread_metadata`` directly.
 
-_class_registry: dict[str, type[StateflowAgent]] = {}
-_AGENT_NAME_ATTR = "_sf_agent_name"
-
-
-from pydantic_ai_stateflow.runtime._kebab import kebab_case as _kebab_case_agent
-
-
-def stateflow_agent(cls: type[StateflowAgent]) -> type[StateflowAgent]:
-    """Register a ``StateflowAgent`` subclass in the class registry.
-
-    Derives kebab-case name from ``cls.__name__`` (e.g. ``NotesAgent``
-    → ``notes-agent``). Sets ``cls.name`` and ``cls._sf_agent_name`` so
-    both the existing ``name: ClassVar[str]`` contract and the new
-    decorator-based lookup work.
-
-    Apps still construct instances themselves and pass them to
-    ``sf.create_app(agents=[...])``. The decorator only handles
-    name→class mapping (used by ``Thread.agent`` string resolution).
-    """
-    name = _kebab_case_agent(cls.__name__)
-    if name in _class_registry and _class_registry[name] is not cls:
-        raise ValueError(
-            f"Duplicate @sf.stateflow_agent name {name!r}: "
-            f"{_class_registry[name].__module__}.{_class_registry[name].__qualname__} "
-            f"and {cls.__module__}.{cls.__qualname__}",
-        )
-    # Preserve explicit ``name = "..."`` if the class already set one
-    # different from the kebab-derived form — backwards compat for
-    # serialized ``Thread.agent`` strings.
-    existing_name = getattr(cls, "name", None)
-    if existing_name is None or existing_name == name:
-        cls.name = name  # type: ignore[misc]
-        resolved = name
-    else:
-        # Explicit override wins.
-        resolved = existing_name
-    setattr(cls, _AGENT_NAME_ATTR, resolved)
-    _class_registry[resolved] = cls
-    return cls
-
-
-def get_agent_class(name: str) -> type[StateflowAgent]:
-    """Look up a @sf.stateflow_agent-decorated class by kebab-name."""
-    try:
-        return _class_registry[name]
-    except KeyError as exc:
-        raise KeyError(
-            f"No agent class registered under {name!r}. "
-            f"Did you forget @sf.stateflow_agent on the class?",
-        ) from exc
-
-
-def list_agent_classes() -> dict[str, type[StateflowAgent]]:
-    """Snapshot of the class registry."""
-    return dict(_class_registry)
-
-
-def clear_agent_class_registry() -> None:
-    """For tests — drops all class registrations (instances unaffected)."""
-    _class_registry.clear()
-
-
-# ── Selector + metadata validation ──────────────────────────────────────────
-
-AgentRef = "type[StateflowAgent] | StateflowAgent | str"
-"""What ``validate_thread_metadata`` and friends accept as an agent
-selector. The class itself, an instance, or the registered string name."""
+AgentRef = "type[StateflowAgent] | StateflowAgent"
+"""What ``validate_thread_metadata`` accepts as an agent selector:
+the class itself or an instance."""
 
 
 def validate_thread_metadata(
@@ -433,23 +360,18 @@ def validate_thread_metadata(
     - Otherwise: ``model_validate(raw)`` → ``model_dump(mode="json")``
       so the persisted shape is canonical JSON.
 
-    ``ref`` may be the registered name (string), an agent class, or an
-    instance. Class-based refs resolve directly; string refs go through
-    the ``@sf.stateflow_agent`` class registry.
+    ``ref`` may be a ``StateflowAgent`` class or instance.
 
-    Raises ``KeyError`` if no agent class is registered for ``ref``,
-    or ``ValidationError`` (from pydantic) if the metadata is invalid.
+    Raises ``ValidationError`` (from pydantic) if the metadata is invalid.
     """
     payload: dict[str, Any] = dict(raw or {})
     if isinstance(ref, type) and issubclass(ref, StateflowAgent):
         cls = ref
     elif isinstance(ref, StateflowAgent):
         cls = type(ref)
-    elif isinstance(ref, str):
-        cls = get_agent_class(ref)
     else:
         raise TypeError(
-            f"AgentRef must be str | type[StateflowAgent] | StateflowAgent, "
+            f"AgentRef must be type[StateflowAgent] | StateflowAgent, "
             f"got {type(ref).__name__}",
         )
     model = cls.metadata_model
@@ -461,9 +383,5 @@ def validate_thread_metadata(
 __all__ = [
     "AgentRef",
     "StateflowAgent",
-    "clear_agent_class_registry",
-    "get_agent_class",
-    "list_agent_classes",
-    "stateflow_agent",
     "validate_thread_metadata",
 ]

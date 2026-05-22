@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     )
     from pydantic_ai_stateflow.runtime.agents import StateflowAgent
     from pydantic_ai_stateflow.runtime.event_stream import EventStream
+    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 _log = get_logger(__name__)
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
@@ -106,23 +107,33 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     def __init__(
         self,
         *,
-        thread_repo: ThreadRepository,
-        event_log: EventLogRepository | None = None,
-        event_stream: EventStream | None = None,
         config_name: str | None = None,
     ) -> None:
         super().__init__(
             config_name=config_name
             or f"durable-hitl-{next(_instance_counter)}",
         )
-        self.thread_repo = thread_repo
-        # Optional. When wired, ``open`` emits a ``thread-created`` event
-        # into the ``notify_parent_thread_id`` event log so any open
-        # ``GET /threads/{id}/events`` SSE consumer can refresh the
-        # thread list without polling. ``_notify`` (callable by
-        # subclasses) similarly emits ``message-added``.
-        self._event_log = event_log
-        self._event_stream = event_stream
+        # Per-call infra triplet. Populated by ``open`` / ``on_decision``
+        # from the supplied ``RunContext``; the DBOS workflow body reads
+        # them off ``self`` (workflow args are pickled — repo objects
+        # are not picklable, so the indirection is required).
+        self.thread_repo: "ThreadRepository | None" = None
+        self._event_log: "EventLogRepository | None" = None
+        self._event_stream: "EventStream | None" = None
+
+    def _bind_infra(self, ctx: "RunContext") -> None:
+        """Stash the per-call infra triplet on the instance.
+
+        ``DurableHITLWorkflow`` is built once at app startup and reused
+        across calls; the DBOS workflow body needs to read repos off
+        the instance (workflow args are pickled, repos are not picklable).
+        Each ``open(...)`` rebinds the triplet from the supplied
+        ``RunContext`` so the workflow sees the right repos for this
+        call.
+        """
+        self.thread_repo = ctx.thread_repo
+        self._event_log = ctx.event_log
+        self._event_stream = ctx.event_stream
 
     @abstractmethod
     async def on_decision(
@@ -158,6 +169,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     })
     async def open(
         self,
+        ctx: "RunContext",
         *,
         helper_agent: type[StateflowAgent],
         context: BaseModel,
@@ -203,6 +215,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         body would be non-deterministic across replays.
         ----------------------------------------------------------------
         """
+        self._bind_infra(ctx)
         metadata_model = helper_agent.metadata_model
         if metadata_model is None:
             raise ValueError(

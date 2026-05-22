@@ -63,13 +63,9 @@ from dbos import (
 
 from pydantic_ai_stateflow.durable import Durable
 
-from pydantic_ai_stateflow.persistence.events.repository import (
-    EventLogRepository,
-)
 from pydantic_ai_stateflow.runtime.agents import StateflowAgent
 from pydantic_ai_stateflow.runtime.event_stream import (
     EventNotification,
-    EventStream,
     thread_channel,
 )
 
@@ -79,11 +75,16 @@ if TYPE_CHECKING:
     from dbos._dbos import WorkflowHandleAsync
     from pydantic_ai.durable_exec.dbos import DBOSAgent
     from pydantic_ai.messages import AgentStreamEvent
-    from pydantic_ai.tools import RunContext
+    from pydantic_ai.tools import RunContext as PydanticAIRunContext
 
+    from pydantic_ai_stateflow.persistence.events.repository import (
+        EventLogRepository,
+    )
     from pydantic_ai_stateflow.persistence.thread.repository import (
         ThreadRepository,
     )
+    from pydantic_ai_stateflow.runtime.event_stream import EventStream
+    from pydantic_ai_stateflow.runtime.infra import RunContext
 
 _instance_counter = itertools.count()
 
@@ -161,9 +162,6 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
     def __init__(
         self,
         *,
-        thread_repo: ThreadRepository,
-        event_log: EventLogRepository,
-        event_stream: EventStream,
         config_name: str | None = None,
     ) -> None:
         # DBOSConfiguredInstance requires a stable name so DBOS can
@@ -175,9 +173,28 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
             config_name=config_name
             or f"durable-agent:{cls_name}-{next(_instance_counter)}",
         )
-        self._thread_repo = thread_repo
-        self._event_log = event_log
-        self._event_stream = event_stream
+        # Per-call infra triplet. Populated by ``enqueue_run`` /
+        # ``enqueue_approval_resume`` / ``cancel_thread_runs`` from
+        # the supplied ``RunContext``. The DBOS workflow body reads
+        # them off ``self`` (workflow args are pickled — repo objects
+        # are not picklable, so the indirection is required).
+        self._thread_repo: ThreadRepository | None = None
+        self._event_log: EventLogRepository | None = None
+        self._event_stream: EventStream | None = None
+
+    def _bind_infra(self, ctx: "RunContext") -> None:
+        """Stash the per-call infra triplet on the instance.
+
+        ``StateflowDurableAgent`` is built once at app startup and reused
+        across requests; the DBOS workflow body needs to read repos off
+        the instance (workflow args are pickled, repos are not picklable).
+        Each ``enqueue_*`` call rebinds the triplet from the supplied
+        ``RunContext`` so the workflow sees the right repos for this
+        request.
+        """
+        self._thread_repo = ctx.thread_repo
+        self._event_log = ctx.event_log
+        self._event_stream = ctx.event_stream
 
     @cached_property
     def dbos_agent(self) -> DBOSAgent[Any, Any]:
@@ -214,8 +231,8 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
 
     async def _handle_stream_event(
         self,
-        ctx: RunContext[Any],
-        stream: AsyncIterable[AgentStreamEvent],
+        ctx: "PydanticAIRunContext[Any]",
+        stream: "AsyncIterable[AgentStreamEvent]",
     ) -> None:
         """``event_stream_handler`` callback — runs INSIDE the DBOS workflow.
 
@@ -385,6 +402,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
 
     async def enqueue_run(
         self,
+        ctx: "RunContext",
         *,
         thread_id: UUID,
         user_message_id: str,
@@ -398,6 +416,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         retry attaches to the existing workflow instead of spawning a
         duplicate.
         """
+        self._bind_infra(ctx)
         workflow_id = agent_run_workflow_id(thread_id, user_message_id)
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
             queue_partition_key=str(thread_id),
@@ -413,6 +432,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
 
     async def enqueue_approval_resume(
         self,
+        ctx: "RunContext",
         *,
         thread_id: UUID,
         history_dump: list[dict[str, Any]],
@@ -426,6 +446,7 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
         survives library version changes; reconstructed into
         ``DeferredToolResults`` inside the workflow body.
         """
+        self._bind_infra(ctx)
         suffix = uuid4().hex
         workflow_id = _agent_resume_workflow_id(thread_id, suffix)
         with SetWorkflowID(workflow_id), SetEnqueueOptions(
@@ -440,8 +461,11 @@ class StateflowDurableAgent(StateflowAgent, DBOSConfiguredInstance):
                 deferred_tool_results_dump={"approvals": approvals},
             )
 
-    async def cancel_thread_runs(self, thread_id: UUID) -> int:
+    async def cancel_thread_runs(
+        self, ctx: "RunContext", thread_id: UUID,
+    ) -> int:
         """Cancel every active workflow for ``thread_id`` + emit ``cancelled``."""
+        self._bind_infra(ctx)
         active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
         prefix = _agent_run_prefix(thread_id)
         workflows = await Durable.list_workflows(
