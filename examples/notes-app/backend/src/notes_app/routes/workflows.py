@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pydantic_ai_stateflow as sf
 from dbos import SetWorkflowID
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic_ai_stateflow.durable import Durable
 
 from notes_app.models.brainstorm import BrainstormTask
@@ -14,14 +13,11 @@ router = APIRouter()
 
 
 @router.post("/workflows/brainstorm-flow", response_model=dict)
-async def start_brainstorm(
-    task: BrainstormTask,
-    ctx: sf.RunContext = Depends(sf.get_run_context),
-) -> dict:
+async def start_brainstorm(task: BrainstormTask) -> dict:
     """Kick off a brainstorm workflow with a deterministic id.
 
     Same ``(parent_thread, topic)`` collapses to one in-flight workflow
     (matches the historical ``brainstorm_router.py`` behaviour)."""
     with SetWorkflowID(BrainstormFlow.workflow_id(task)):
-        handle = await Durable.start_workflow(brainstorm.run, ctx, task)
+        handle = await Durable.start_workflow(brainstorm.run, task)
     return {"workflow_id": handle.workflow_id}
