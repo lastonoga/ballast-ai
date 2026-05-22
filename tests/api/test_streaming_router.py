@@ -42,7 +42,7 @@ from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 from ballast.runtime import BallastAgent
-from ballast.runtime.engine import Engine, _reset_engine_for_tests, _set_engine
+from ballast.runtime.engine import Engine, _reset_ballast_for_tests, _set_ballast
 
 
 class _TestBallastAgent(BallastAgent):
@@ -129,9 +129,9 @@ def _build_app(
         event_stream=InProcessEventStream(),
     )
     app.state.engine = engine
-    # Install singleton so primitives that read get_engine() find it.
-    _reset_engine_for_tests()
-    _set_engine(engine)
+    # Install singleton so primitives that read get_ballast() find it.
+    _reset_ballast_for_tests()
+    _set_ballast(engine)
 
     @app.post("/threads/{thread_id}/messages")
     async def _post(

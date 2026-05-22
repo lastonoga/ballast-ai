@@ -10,9 +10,9 @@ from ballast.persistence import (
 )
 from ballast.runtime.engine import (
     Engine,
-    _reset_engine_for_tests,
-    _set_engine,
-    get_engine,
+    _reset_ballast_for_tests,
+    _set_ballast,
+    get_ballast,
 )
 from ballast.runtime.event_stream import InProcessEventStream
 from ballast.runtime.thread_events import ThreadEventBroadcaster
@@ -39,35 +39,35 @@ def test_engine_is_frozen() -> None:
 
 
 def test_get_engine_raises_when_uninitialized() -> None:
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     with pytest.raises(ConfigurationError):
-        get_engine()
+        get_ballast()
 
 
 def test_set_engine_idempotent_same_instance() -> None:
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     engine = _build_engine()
-    _set_engine(engine)
-    _set_engine(engine)  # idempotent
-    assert get_engine() is engine
-    _reset_engine_for_tests()
+    _set_ballast(engine)
+    _set_ballast(engine)  # idempotent
+    assert get_ballast() is engine
+    _reset_ballast_for_tests()
 
 
 def test_set_engine_raises_on_different_instance() -> None:
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     engine1 = _build_engine()
     engine2 = _build_engine()
-    _set_engine(engine1)
+    _set_ballast(engine1)
     with pytest.raises(ConfigurationError):
-        _set_engine(engine2)
-    _reset_engine_for_tests()
+        _set_ballast(engine2)
+    _reset_ballast_for_tests()
 
 
 def test_reset_clears_singleton() -> None:
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     engine = _build_engine()
-    _set_engine(engine)
-    assert get_engine() is engine
-    _reset_engine_for_tests()
+    _set_ballast(engine)
+    assert get_ballast() is engine
+    _reset_ballast_for_tests()
     with pytest.raises(ConfigurationError):
-        get_engine()
+        get_ballast()

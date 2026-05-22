@@ -307,8 +307,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     async def _create_helper_thread(
         self, *, agent_name: str, metadata: dict[str, Any],
     ) -> Thread:
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        return await get_engine().thread_repo.create(
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        return await get_ballast().thread_repo.create(
             agent=agent_name, metadata=metadata,
         )
 
@@ -316,8 +316,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
     async def _seed_opening_message(
         self, thread_id: UUID, opening_message: str,
     ) -> None:
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        await get_engine().thread_repo.add_message(
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        await get_ballast().thread_repo.add_message(
             thread_id,
             role="assistant",
             parts=[{
@@ -337,8 +337,8 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         thread_metadata: dict[str, Any],
     ) -> None:
         """Emit ``thread-created`` into the parent thread's event log."""
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        engine = get_engine()
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        engine = get_ballast()
         parent_id = UUID(parent_thread_id_str)
         _log.info(
             "DurableHITLWorkflow.open notify_parent=%s helper_thread=%s",

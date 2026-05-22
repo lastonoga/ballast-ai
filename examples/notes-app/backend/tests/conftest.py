@@ -12,7 +12,7 @@ import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
 from ballast.durable import Durable
-from ballast.runtime.engine import _reset_engine_for_tests
+from ballast.runtime.engine import _reset_ballast_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
 
@@ -28,7 +28,7 @@ def _restore_engine_between_tests() -> Iterator[None]:
     """Snapshot the process-wide ``Engine`` and restore it after each test.
 
     The framework refuses to reassign ``_engine`` to a different
-    instance once installed (see ``_set_engine``). Tests that install a
+    instance once installed (see ``_set_ballast``). Tests that install a
     fresh Engine (``test_todo_proposal``) and tests that boot the full
     app via ``TestClient(app)`` (``test_smoke``) would otherwise collide
     depending on collection order. Snapshotting on enter + restoring on
@@ -40,11 +40,11 @@ def _restore_engine_between_tests() -> Iterator[None]:
     try:
         yield
     finally:
-        _reset_engine_for_tests()
+        _reset_ballast_for_tests()
         if snapshot is not None:
-            from ballast.runtime.engine import _set_engine
+            from ballast.runtime.engine import _set_ballast
 
-            _set_engine(snapshot)
+            _set_ballast(snapshot)
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 The agent's ``__init__`` no longer takes the infra triplet — the
 process-wide ``Engine`` (built by ``ballast.create_app``) supplies repos +
-event log + stream via ``get_engine()`` whenever the DBOS workflow
+event log + stream via ``get_ballast()`` whenever the DBOS workflow
 body needs them.
 """
 
@@ -31,8 +31,8 @@ from ballast.runtime import (
 )
 from ballast.runtime.engine import (
     Engine,
-    _reset_engine_for_tests,
-    _set_engine,
+    _reset_ballast_for_tests,
+    _set_ballast,
 )
 
 _counter = itertools.count()
@@ -61,13 +61,13 @@ def _build(thread_repo, log, stream) -> _NotesDurableAgent:
     """Return a durable-agent instance for tests.
 
     Also installs a fresh process-wide ``Engine`` so the workflow body's
-    ``get_engine()`` resolves to the test repos.
+    ``get_ballast()`` resolves to the test repos.
     """
     durable = _NotesDurableAgent(
         config_name=f"durable-test-{next(_counter)}",
     )
-    _reset_engine_for_tests()
-    _set_engine(Engine(
+    _reset_ballast_for_tests()
+    _set_ballast(Engine(
         thread_repo=thread_repo, event_log=log, event_stream=stream,
     ))
     return durable

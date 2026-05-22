@@ -15,7 +15,7 @@ module-level partials DBOS's serialization story is fragile).
 
 The pattern will emit these typed events on the engine's
 thread-event broadcaster (already wired by ``EventsProvider`` and
-reached via ``get_engine().broadcaster``). Each event has a stable
+reached via ``get_ballast().broadcaster``). Each event has a stable
 wire name (``branch-enqueued``, ``branch-completed``, etc.) so apps
 subscribe by name from outside the workflow body — no callback or
 closure crosses the fiber boundary, recovery semantics stay clean,

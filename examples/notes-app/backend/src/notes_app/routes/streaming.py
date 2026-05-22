@@ -3,7 +3,7 @@
 Resolves the per-thread agent from the app's ``agents`` ``Registry``
 (``notes_app.agents.agents``) and delegates to the framework's
 ``stream_response`` / ``cancel_thread_workflows`` primitives. Framework
-infra is reached via ``ballast.get_engine()`` — the process-wide singleton
+infra is reached via ``ballast.get_ballast()`` — the process-wide singleton
 wired by ``ballast.create_app`` at startup.
 """
 
@@ -30,7 +30,7 @@ async def stream_messages(
     Resolves the per-thread agent via the app's ``agents`` registry
     and delegates to the framework's ``stream_response`` primitive.
     """
-    engine = ballast.get_engine()
+    engine = ballast.get_ballast()
     thread = await engine.thread_repo.load(thread_id)
     if thread is None:
         raise ThreadNotFound(
@@ -47,7 +47,7 @@ async def cancel_thread(
     thread_id: UUID,
 ) -> dict:
     """Cancel every active workflow for ``thread_id`` (durable agents only)."""
-    engine = ballast.get_engine()
+    engine = ballast.get_ballast()
     thread = await engine.thread_repo.load(thread_id)
     if thread is None:
         raise ThreadNotFound(

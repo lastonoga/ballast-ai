@@ -27,7 +27,7 @@ from ballast.api.health import build_health_router, health_router
 from ballast.api.threads import threads_router
 from ballast.durable import Durable
 from ballast.observability.config import ObservabilityConfig
-from ballast.runtime.engine import Engine, _set_engine
+from ballast.runtime.engine import Engine, _set_ballast
 
 if TYPE_CHECKING:
     from dbos import DBOSConfig
@@ -71,8 +71,8 @@ def create_app(
        already installed with same config).
     2. Build the ``Engine`` from the supplied repos + stream and stash
        it both on ``app.state.engine`` and the process-wide singleton
-       (via ``_set_engine``) so framework code reading
-       ``ballast.get_engine()`` from anywhere sees it.
+       (via ``_set_ballast``) so framework code reading
+       ``ballast.get_ballast()`` from anywhere sees it.
     3. Built-in routers mounted: health, threads, dbos. Then
        ``extra_routers`` (apps mount their own streaming/cancel/etc).
     4. Lifespan registered: launches DBOS on startup, destroys on shutdown,
@@ -89,7 +89,7 @@ def create_app(
         event_log=event_log,
         event_stream=event_stream,
     )
-    _set_engine(engine)
+    _set_ballast(engine)
 
     # 3. Lifespan.
     startup_hooks: list[LifespanHook] = list(on_startup)

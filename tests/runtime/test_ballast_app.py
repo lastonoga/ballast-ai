@@ -9,14 +9,14 @@ from ballast.persistence import (
     InMemoryThreadRepository,
 )
 from ballast.providers import EventsProvider, ThreadsProvider
-from ballast.runtime.engine import _reset_engine_for_tests
+from ballast.runtime.engine import _reset_ballast_for_tests
 from ballast.runtime.event_stream import InProcessEventStream
 from ballast.settings import BallastSettings
 
 
 def _build_ballast_app(fresh_dbos_executor: None) -> ballast.Ballast:
     del fresh_dbos_executor
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     thread_repo = InMemoryThreadRepository()
     event_log = InMemoryEventLogRepository()
     event_stream = InProcessEventStream()
@@ -38,7 +38,7 @@ def test_ballast_fastapi_app_boots(fresh_dbos_executor: None) -> None:
 
 def test_ballast_providers_propagate_to_engine(fresh_dbos_executor: None) -> None:
     del fresh_dbos_executor
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     thread_repo = InMemoryThreadRepository()
     event_log = InMemoryEventLogRepository()
     event_stream = InProcessEventStream()

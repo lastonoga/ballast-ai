@@ -6,7 +6,7 @@ state. The framework's :class:`ballast.Ballast` accepts a
 :class:`BallastSettings` instance plus a sequence of providers via
 ``.use(...)``; the terminal ``.fastapi(...)`` returns the FastAPI app
 and installs the process-wide :class:`Engine` singleton (read via
-``ballast.get_engine()``).
+``ballast.get_ballast()``).
 """
 from __future__ import annotations
 

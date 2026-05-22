@@ -10,9 +10,9 @@ App entry point:
 
 Authoring primitives:
     ``Engine`` — frozen dataclass bundling repos + event log + stream;
-      built once by ``create_app`` and exposed via ``get_engine()``
+      built once by ``create_app`` and exposed via ``get_ballast()``
       for framework code that needs lazy access.
-    ``get_engine`` — process-wide accessor; raises ``ConfigurationError``
+    ``get_ballast`` — process-wide accessor; raises ``ConfigurationError``
       if ``create_app`` hasn't been called yet.
     ``stream_response`` — primitive for ``POST /threads/{id}/messages``
       style routes: body-vs-DB sync, durable / inline dispatch,
@@ -155,7 +155,7 @@ from ballast.errors import (
 from ballast.app import Ballast, LifespanHook, Provider
 from ballast.observability.config import ObservabilityConfig
 from ballast.runtime.app import create_app
-from ballast.runtime.engine import Engine, get_engine
+from ballast.runtime.engine import Engine, get_ballast
 from ballast.runtime.registry import Named, Registry
 from ballast.settings import (
     BallastSettings,
@@ -389,7 +389,7 @@ __all__ = [
     "create_app",
     "extract_text",
     "format_error",
-    "get_engine",
+    "get_ballast",
     "get_event_log",
     "get_event_stream",
     "get_logger",

@@ -362,8 +362,8 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
         nesting steps is fine but adds overhead. Callers that need step
         idempotency wrap their call site.
         """
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        engine = get_engine()
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        engine = get_ballast()
         ev = await engine.event_log.append(
             thread_id=thread_id, kind=kind, payload=dict(payload),
         )
@@ -432,8 +432,8 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
 
     async def cancel_thread_runs(self, thread_id: UUID) -> int:
         """Cancel every active workflow for ``thread_id`` + emit ``cancelled``."""
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        engine = get_engine()
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        engine = get_ballast()
         active_statuses = ["ENQUEUED", "PENDING", "DELAYED"]
         prefix = _agent_run_prefix(thread_id)
         workflows = await Durable.list_workflows(
@@ -494,8 +494,8 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
             ModelMessagesTypeAdapter,
         )
 
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        engine = get_engine()
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        engine = get_ballast()
 
         thread_id = UUID(thread_id_str)
         thread = await engine.thread_repo.load(thread_id)
@@ -630,8 +630,8 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
         if not asst_parts:
             return
 
-        from ballast.runtime.engine import get_engine  # noqa: PLC0415
-        engine = get_engine()
+        from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+        engine = get_ballast()
         await engine.thread_repo.add_message(
             thread_id,
             role="assistant",

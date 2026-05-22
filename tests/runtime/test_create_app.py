@@ -8,12 +8,12 @@ from ballast.persistence import (
     InMemoryThreadRepository,
 )
 from ballast.runtime.app import create_app
-from ballast.runtime.engine import _reset_engine_for_tests
+from ballast.runtime.engine import _reset_ballast_for_tests
 from ballast.runtime.event_stream import InProcessEventStream
 
 
 def _build_app():
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     return create_app(
         thread_repo=InMemoryThreadRepository(),
         event_log=InMemoryEventLogRepository(),
@@ -33,7 +33,7 @@ def test_minimal_app_has_health_endpoint(fresh_dbos_executor: None) -> None:
 
 def test_engine_attached_to_app_state(fresh_dbos_executor: None) -> None:
     del fresh_dbos_executor
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     thread_repo = InMemoryThreadRepository()
     event_log = InMemoryEventLogRepository()
     event_stream = InProcessEventStream()

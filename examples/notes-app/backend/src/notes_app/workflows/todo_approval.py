@@ -18,7 +18,7 @@ resolve concrete types at decoration time.
 from uuid import UUID
 
 from pydantic import BaseModel
-from ballast import get_engine
+from ballast import get_ballast
 from ballast.patterns.hitl import (
     ApprovedResponse,
     DurableHITLWorkflow,
@@ -43,7 +43,7 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     finished its conversation.
 
     Reaches the thread repo + event log + event stream through
-    ``ballast.get_engine()`` — the framework owns the singleton wired by
+    ``ballast.get_ballast()`` — the framework owns the singleton wired by
     ``ballast.create_app`` at startup, so ``_notify`` doesn't need per-call
     infra injection.
     """
@@ -94,7 +94,7 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             )
 
     async def _notify(self, parent_id: UUID, text: str) -> None:
-        engine = get_engine()
+        engine = get_ballast()
         msg = await engine.thread_repo.add_message(
             parent_id,
             role="assistant",

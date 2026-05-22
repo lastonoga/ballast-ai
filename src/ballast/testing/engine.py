@@ -15,7 +15,7 @@ What it does:
   via ``app.dependency_overrides[get_X]`` (FastAPI native).
 - ``test_client()`` returns a ``TestClient`` context manager that
   runs FastAPI lifespan (and DBOS lifecycle if configured).
-- ``_reset_engine_for_tests()`` is called on every entry so the
+- ``_reset_ballast_for_tests()`` is called on every entry so the
   process-wide ``Engine`` singleton doesn't leak across cases.
 - Unique DBOS ``name`` per TestEngine instance avoids in-process collisions.
 
@@ -52,7 +52,7 @@ from ballast.persistence import (
 )
 from ballast.persistence.thread.repository import ThreadRepository
 from ballast.runtime.app import create_app
-from ballast.runtime.engine import _reset_engine_for_tests
+from ballast.runtime.engine import _reset_ballast_for_tests
 from ballast.runtime.event_stream import (
     EventStream,
     InProcessEventStream,
@@ -159,7 +159,7 @@ class TestEngine:
             )
 
         _reset_observability_for_tests()
-        _reset_engine_for_tests()
+        _reset_ballast_for_tests()
         self._app = create_app(
             thread_repo=self._thread_repo,
             event_log=self._event_log,
@@ -185,7 +185,7 @@ class TestEngine:
             self._client.__exit__(exc_type, exc, tb)
             self._client = None
         self._app = None
-        _reset_engine_for_tests()
+        _reset_ballast_for_tests()
         if self._tempdir is not None:
             import shutil
             shutil.rmtree(self._tempdir, ignore_errors=True)

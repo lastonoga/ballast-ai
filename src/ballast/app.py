@@ -154,7 +154,7 @@ class Ballast:
         from ballast.api.health import build_health_router, health_router
         from ballast.api.threads import threads_router
         from ballast.durable import Durable
-        from ballast.runtime.engine import Engine, _set_engine
+        from ballast.runtime.engine import Engine, _set_ballast
 
         # Engine construction + singleton install.
         engine = Engine(
@@ -162,7 +162,7 @@ class Ballast:
             event_log=self._event_log,  # type: ignore[arg-type]
             event_stream=self._event_stream,  # type: ignore[arg-type]
         )
-        _set_engine(engine)
+        _set_ballast(engine)
 
         # DBOS lifespan hooks (only when :class:`DBOSProvider` was used).
         if self._dbos_lifecycle and self._dbos_config is not None:

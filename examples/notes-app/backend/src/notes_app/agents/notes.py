@@ -124,7 +124,7 @@ class NoteToolDeps:
     per-test override (constructed manually in unit tests).
 
     Framework infra (thread repo / event log / event stream) is reached
-    by ``propose_todo`` via ``ballast.get_engine()`` — no per-call context
+    by ``propose_todo`` via ``ballast.get_ballast()`` — no per-call context
     is threaded through ``NoteToolDeps`` anymore.
     """
 

@@ -17,7 +17,7 @@ durable workflow end-to-end via DBOS.send + handle.get_result.
 
 The framework reads its repo + event log + event stream from the
 process-wide ``Engine`` installed by ``ballast.create_app`` — these tests
-install one manually via ``ballast.runtime.engine._set_engine`` so the
+install one manually via ``ballast.runtime.engine._set_ballast`` so the
 durable workflow body finds the right repos when it executes.
 """
 
@@ -40,8 +40,8 @@ from ballast.persistence import (
 )
 from ballast.runtime.engine import (
     Engine,
-    _reset_engine_for_tests,
-    _set_engine,
+    _reset_ballast_for_tests,
+    _set_ballast,
 )
 from ballast.runtime.event_stream import InProcessEventStream
 
@@ -90,16 +90,16 @@ def _install_engine(
 ) -> Engine:
     """Install a fresh process-wide ``Engine`` for the test.
 
-    Caller is responsible for ``_reset_engine_for_tests()`` on teardown
+    Caller is responsible for ``_reset_ballast_for_tests()`` on teardown
     (handled by ``_engine`` fixture below).
     """
-    _reset_engine_for_tests()
+    _reset_ballast_for_tests()
     engine = Engine(
         thread_repo=thread_repo,
         event_log=InMemoryEventLogRepository(),
         event_stream=InProcessEventStream(),
     )
-    _set_engine(engine)
+    _set_ballast(engine)
     return engine
 
 
@@ -403,6 +403,6 @@ async def test_propose_todo_rejects_when_deps_missing_parent_thread() -> None:
         await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
 
 
-# Keep ballast imported — referenced for the `_set_engine` lifecycle to make
+# Keep ballast imported — referenced for the `_set_ballast` lifecycle to make
 # it obvious which framework piece these tests are exercising.
 _ = ballast

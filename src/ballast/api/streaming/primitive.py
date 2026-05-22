@@ -68,8 +68,8 @@ async def stream_response(
     """
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
-    from ballast.runtime.engine import get_engine  # noqa: PLC0415
-    engine = get_engine()
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+    engine = get_ballast()
     thread_repo = engine.thread_repo
     event_log = engine.event_log
     event_stream = engine.event_stream

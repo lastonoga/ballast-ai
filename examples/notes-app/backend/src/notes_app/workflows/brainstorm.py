@@ -51,7 +51,7 @@ from ballast import (
     TimeoutResponse,
     ThreadEventType,
     ask_human,
-    get_engine,
+    get_ballast,
 )
 from ballast.capabilities.helpers.embedder import Embedder
 from ballast.runtime.event_stream import (
@@ -171,7 +171,7 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     """
     parent_thread_id = task.parent_thread_id
     topic = task.topic
-    broadcaster = get_engine().broadcaster
+    broadcaster = get_ballast().broadcaster
 
     async with BRAINSTORM_PROGRESS.stream(
         broadcaster, parent_thread_id,
@@ -281,7 +281,7 @@ async def _notify(parent_id: UUID, text: str) -> None:
     event + pushes a signal to the parent thread's SSE consumers so
     any open UI tail picks it up live without a reload.
     """
-    engine = get_engine()
+    engine = get_ballast()
     msg = await engine.thread_repo.add_message(
         parent_id,
         role="assistant",

@@ -226,8 +226,8 @@ async def _ask_human_workflow(
 async def _create_helper_thread(
     *, agent_name: str, metadata: dict[str, Any],
 ) -> UUID:
-    from ballast.runtime.engine import get_engine  # noqa: PLC0415
-    thread = await get_engine().thread_repo.create(
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+    thread = await get_ballast().thread_repo.create(
         agent=agent_name, metadata=metadata,
     )
     return thread.id
@@ -237,8 +237,8 @@ async def _create_helper_thread(
 async def _seed_opening_message(
     thread_id: UUID, opening_message: str,
 ) -> None:
-    from ballast.runtime.engine import get_engine  # noqa: PLC0415
-    await get_engine().thread_repo.add_message(
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+    await get_ballast().thread_repo.add_message(
         thread_id,
         role="assistant",
         parts=[{
@@ -257,8 +257,8 @@ async def _emit_thread_created(
     helper_agent_name: str,
     thread_metadata: dict[str, Any],
 ) -> None:
-    from ballast.runtime.engine import get_engine  # noqa: PLC0415
-    engine = get_engine()
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+    engine = get_ballast()
     parent_id = UUID(parent_thread_id_str)
     _log.info(
         "ask_human notify_parent=%s helper_thread=%s",
