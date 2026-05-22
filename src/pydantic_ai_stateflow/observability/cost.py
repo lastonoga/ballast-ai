@@ -18,7 +18,8 @@ cost off a ``ModelResponse`` — typically from ``provider_details`` or a
 provider-specific field. The framework ships a default extractor for
 ``provider_details['cost']`` (OpenRouter + several other adapters
 already populate it there). Apps register additional extractors via
-``ObservabilityProvider(cost_extractors=[...])``.
+``register_cost_extractor(...)`` (typically called once at boot, before
+``ObservabilityConfig().install()``).
 
 ``install_cost_fallback_patch()`` monkey-patches ``ModelResponse.cost``
 once: on ``LookupError`` from the original ``cost()``, it walks the
@@ -138,8 +139,8 @@ class OpenRouterUpstreamCostExtractor(ProviderDetailsCostExtractor):
 
 
 # Module-level state — the monkey-patch reads from this list so apps
-# can add extractors at any time via ``register_cost_extractor`` /
-# ``ObservabilityProvider(cost_extractors=...)``.
+# can add extractors at any time via ``register_cost_extractor``
+# (paired with the ``ObservabilityConfig`` install step at boot).
 _extractors: list[CostExtractor] = []
 _patched = False
 

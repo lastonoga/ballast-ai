@@ -1,9 +1,9 @@
-"""CORS configuration for :meth:`Engine.fastapi_app`.
+"""CORS configuration for :func:`sf.create_app`.
 
 A thin, dependency-free dataclass that mirrors Starlette's
-``CORSMiddleware`` constructor kwargs. Kept here (not in ``runtime``) so
-that the runtime layer doesn't grow a FastAPI / Starlette import surface
-beyond what :class:`Engine` already needs.
+``CORSMiddleware`` constructor kwargs. Pass an instance via
+``sf.create_app(cors=CORSConfig(...))`` and the framework will install
+the middleware in the right order.
 
 Use :meth:`CORSConfig.permissive_dev` to wire a localhost-only dev setup
 in one line; supply the dataclass directly for production where the
