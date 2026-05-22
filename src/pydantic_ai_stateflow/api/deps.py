@@ -1,8 +1,8 @@
 """FastAPI dependency providers for stateflow apps.
 
-Resolves framework infrastructure from ``request.app.state.infra`` —
-populated by ``sf.create_app(infra=...)``. Routes import these and use
-``Depends(get_X)`` in their handler signatures.
+Resolves the framework ``Engine`` from ``request.app.state.engine`` —
+populated by ``sf.create_app(thread_repo=..., event_log=..., event_stream=...)``.
+Routes import these and use ``Depends(get_X)`` in their handler signatures.
 
 Test-time override: standard FastAPI pattern,
 ``app.dependency_overrides[get_thread_repo] = lambda: my_test_repo``.
@@ -20,51 +20,40 @@ if TYPE_CHECKING:
     from pydantic_ai_stateflow.persistence.events.repository import (
         EventLogRepository,
     )
+    from pydantic_ai_stateflow.runtime.engine import Engine
     from pydantic_ai_stateflow.runtime.event_stream import EventStream
-    from pydantic_ai_stateflow.runtime.infra import Infra, RunContext
 
 
-def get_infra(request: Request) -> "Infra":
-    """Resolve the ``Infra`` bundle from ``app.state.infra``."""
-    infra = getattr(request.app.state, "infra", None)
-    if infra is None:
+def get_engine_dep(request: Request) -> "Engine":
+    """Resolve the ``Engine`` from ``app.state.engine``."""
+    engine = getattr(request.app.state, "engine", None)
+    if engine is None:
         raise ConfigurationInvariantViolation(
-            "Infra not attached to app.state",
-            hint="call sf.create_app(infra=...) at app construction",
-            context={"attr": "infra"},
+            "Engine not attached to app.state",
+            hint="call sf.create_app(thread_repo=..., event_log=..., event_stream=...) at app construction",
+            context={"attr": "engine"},
         )
-    return infra
-
-
-def get_run_context(request: Request) -> "RunContext":
-    """Mint a per-request ``RunContext`` from ``app.state.infra``.
-
-    No per-call fields are set (``parent_thread_id`` / ``workflow_id``
-    are ``None``). Apps that need them can build their own context via
-    ``ctx.with_(...)`` or ``infra.context(...)`` inside the handler.
-    """
-    return get_infra(request).context()
+    return engine
 
 
 def get_thread_repo(request: Request) -> ThreadRepository:
-    """Resolve the ``ThreadRepository`` from the Infra bundle."""
-    return cast(ThreadRepository, get_infra(request).thread_repo)
+    """Resolve the ``ThreadRepository`` from the Engine."""
+    return cast(ThreadRepository, get_engine_dep(request).thread_repo)
 
 
 def get_event_log(request: Request) -> "EventLogRepository":
-    """Resolve the ``EventLogRepository`` from the Infra bundle."""
-    return cast("EventLogRepository", get_infra(request).event_log)
+    """Resolve the ``EventLogRepository`` from the Engine."""
+    return cast("EventLogRepository", get_engine_dep(request).event_log)
 
 
 def get_event_stream(request: Request) -> "EventStream":
-    """Resolve the ``EventStream`` from the Infra bundle."""
-    return cast("EventStream", get_infra(request).event_stream)
+    """Resolve the ``EventStream`` from the Engine."""
+    return cast("EventStream", get_engine_dep(request).event_stream)
 
 
 __all__ = [
+    "get_engine_dep",
     "get_event_log",
     "get_event_stream",
-    "get_infra",
-    "get_run_context",
     "get_thread_repo",
 ]

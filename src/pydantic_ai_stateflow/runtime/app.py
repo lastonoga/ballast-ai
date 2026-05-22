@@ -2,14 +2,16 @@
 
 Builds a FastAPI app with:
 
-- ``app.state.infra = infra`` (apps read ``request.app.state.infra``)
+- ``app.state.engine = engine`` (apps read ``request.app.state.engine``)
 - Built-in routers mounted (health, threads, dbos)
 - DBOS launched + destroyed via FastAPI lifespan
 - ``ObservabilityConfig.install()`` called before any of the above
 
 No DI container, no auto-generated workflow routes, no agent registry.
 Apps own their own routes (``stream_response`` primitive available for
-streaming endpoints) and pass the ``Infra`` bundle in once at startup.
+streaming endpoints) and pass repo + event-log + event-stream into
+``create_app`` once at startup; the framework constructs the process-
+wide ``Engine`` from them.
 """
 from __future__ import annotations
 
@@ -25,12 +27,19 @@ from pydantic_ai_stateflow.api.health import build_health_router, health_router
 from pydantic_ai_stateflow.api.threads import threads_router
 from pydantic_ai_stateflow.durable import Durable
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
+from pydantic_ai_stateflow.runtime.engine import Engine, _set_engine
 
 if TYPE_CHECKING:
     from dbos import DBOSConfig
 
     from pydantic_ai_stateflow.api.cors import CORSConfig
-    from pydantic_ai_stateflow.runtime.infra import Infra
+    from pydantic_ai_stateflow.persistence.events.repository import (
+        EventLogRepository,
+    )
+    from pydantic_ai_stateflow.persistence.thread.repository import (
+        ThreadRepository,
+    )
+    from pydantic_ai_stateflow.runtime.event_stream import EventStream
 
 LifespanHook = Callable[[FastAPI], Awaitable[None]]
 
@@ -39,8 +48,10 @@ _logger = logging.getLogger("pydantic_ai_stateflow.app")
 
 def create_app(
     *,
-    # Cross-cutting infrastructure bundle (repos + event log + stream).
-    infra: "Infra",
+    # Cross-cutting infrastructure (repos + event log + stream).
+    thread_repo: "ThreadRepository",
+    event_log: "EventLogRepository",
+    event_stream: "EventStream",
     # DBOS
     dbos: "DBOSConfig | None" = None,
     manage_dbos_lifecycle: bool = True,
@@ -58,8 +69,10 @@ def create_app(
     Order of operations:
     1. ``ObservabilityConfig.install()`` configures Logfire (no-op if
        already installed with same config).
-    2. ``app.state.infra = infra`` so dependency providers + apps can
-       reach the cross-cutting singletons.
+    2. Build the ``Engine`` from the supplied repos + stream and stash
+       it both on ``app.state.engine`` and the process-wide singleton
+       (via ``_set_engine``) so framework code reading
+       ``sf.get_engine()`` from anywhere sees it.
     3. Built-in routers mounted: health, threads, dbos. Then
        ``extra_routers`` (apps mount their own streaming/cancel/etc).
     4. Lifespan registered: launches DBOS on startup, destroys on shutdown,
@@ -70,7 +83,15 @@ def create_app(
     if observability is not None:
         observability.install()
 
-    # 2. Lifespan.
+    # 2. Engine construction + singleton install.
+    engine = Engine(
+        thread_repo=thread_repo,
+        event_log=event_log,
+        event_stream=event_stream,
+    )
+    _set_engine(engine)
+
+    # 3. Lifespan.
     startup_hooks: list[LifespanHook] = list(on_startup)
     shutdown_hooks: list[LifespanHook] = list(on_shutdown)
 
@@ -110,10 +131,10 @@ def create_app(
 
     app = FastAPI(lifespan=_lifespan)
 
-    # 3. app.state population.
-    app.state.infra = infra
+    # 4. app.state population.
+    app.state.engine = engine
 
-    # 4. Mount built-in routers.
+    # 5. Mount built-in routers.
     if health_checks is not None:
         app.include_router(build_health_router(checks=health_checks))
     else:
@@ -121,7 +142,7 @@ def create_app(
     app.include_router(threads_router)
     app.include_router(dbos_router)
 
-    # 4b. Extra routers from the app.
+    # 5b. Extra routers from the app.
     for r in extra_routers:
         app.include_router(r)
 
@@ -139,7 +160,7 @@ def create_app(
             max_age=cors.max_age,
         )
 
-    # 5. FastAPI observability instrumentation.
+    # 6. FastAPI observability instrumentation.
     if observability is not None:
         observability.instrument_app(app)
 
