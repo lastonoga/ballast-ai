@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
+from pydantic_ai_stateflow.errors import AgentNotRegistered
 from pydantic import BaseModel, Field
 
 
@@ -63,8 +65,9 @@ def build_a2a_router(
     ) -> dict[str, Any]:
         adapter = registry.get(agent_name)
         if adapter is None:
-            raise HTTPException(
-                status_code=404, detail=f"unknown agent: {agent_name}",
+            raise AgentNotRegistered(
+                f"unknown agent: {agent_name}",
+                context={"requested": agent_name, "known": sorted(registry)},
             )
         return await adapter.run(messages=body.messages)
 

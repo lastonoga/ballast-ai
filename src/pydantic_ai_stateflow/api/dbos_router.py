@@ -35,7 +35,9 @@ from uuid import UUID
 from dbos import DBOS
 
 from pydantic_ai_stateflow.durable import Durable
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
+
+from pydantic_ai_stateflow.errors import WorkflowNotFound
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.logging import get_logger
@@ -198,8 +200,9 @@ def _build_dbos_router() -> APIRouter:
             load_output=True,
         )
         if not wfs:
-            raise HTTPException(
-                status_code=404, detail=f"workflow {workflow_id} not found",
+            raise WorkflowNotFound(
+                f"workflow {workflow_id} not found",
+                context={"workflow_id": workflow_id},
             )
         return _wf_to_dict(wfs[0])
 

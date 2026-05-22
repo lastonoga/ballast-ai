@@ -40,10 +40,15 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from starlette.responses import StreamingResponse
 
-from pydantic_ai_stateflow.errors import ThreadNotFound
+from pydantic_ai_stateflow.errors import (
+    AgentNotRegistered,
+    CancelNotSupported,
+    EmptyMessageBody,
+    ThreadNotFound,
+)
 from pydantic_ai_stateflow.api.streaming.history import (
     extract_text,
     messages_to_model_history,
@@ -74,13 +79,10 @@ def _resolve_agent_from_app(request: Request, name: str) -> StateflowAgent:
     agents = getattr(request.app.state, "agents", None)
     if not agents or name not in agents:
         known = sorted(agents) if agents else []
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No agent registered under name {name!r}. "
-                f"Known agents: {known}. "
-                f"Did you pass it to sf.create_app(agents=[...])?"
-            ),
+        raise AgentNotRegistered(
+            f"No agent registered under name {name!r}",
+            hint="Did you pass it to sf.create_app(agents=[...])?",
+            context={"requested": name, "known": known},
         )
     return agents[name]
 
@@ -473,9 +475,9 @@ async def _durable_post_message(
     # new user message (we just synced); if not user (somehow empty
     # body) bail.
     if not rows or rows[-1].role != "user":
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot start run: thread has no user message to respond to.",
+        raise EmptyMessageBody(
+            "Cannot start run: thread has no user message to respond to.",
+            hint="POST /threads/{id}/messages with a user message first.",
         )
     user_msg = rows[-1]
     prompt_text = extract_text(user_msg.parts)
@@ -742,13 +744,10 @@ async def _cancel_thread(
 
     stateflow_agent = _resolve_agent_from_app(request, thread.agent)
     if not isinstance(stateflow_agent, StateflowDurableAgent):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "cancel is only meaningful for StateflowDurableAgent "
-                "threads; non-durable agents don't have cancellable "
-                "workflows"
-            ),
+        raise CancelNotSupported(
+            "cancel is only meaningful for StateflowDurableAgent "
+            "threads; non-durable agents don't have cancellable workflows",
+            context={"thread_id": str(thread_id), "agent": thread.agent},
         )
     cancelled = await stateflow_agent.cancel_thread_runs(thread_id)
     return {"cancelled": cancelled}

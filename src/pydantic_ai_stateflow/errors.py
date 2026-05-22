@@ -151,6 +151,40 @@ class PatternError(StateflowError):
     code = "STATEFLOW_PATTERN"
 
 
+# ---------- Workflow / agent registry domain ----------
+
+
+class WorkflowNotFound(StateflowError):
+    """Auto-generated workflow router could not resolve a kebab name."""
+
+    code = "STATEFLOW_WORKFLOW_NOT_FOUND"
+    status_code = 404
+
+
+class AgentNotRegistered(StateflowError):
+    """Streaming / A2A route received an agent name not in the registry."""
+
+    code = "STATEFLOW_AGENT_NOT_REGISTERED"
+    status_code = 404
+
+
+# ---------- Streaming / messaging domain ----------
+
+
+class EmptyMessageBody(StateflowError):
+    """POST /chat received a user message with empty content."""
+
+    code = "STATEFLOW_STREAMING_EMPTY_MESSAGE"
+    status_code = 400
+
+
+class CancelNotSupported(StateflowError):
+    """Cancel requested on an agent that is not durable (no workflow id)."""
+
+    code = "STATEFLOW_STREAMING_CANCEL_NOT_SUPPORTED"
+    status_code = 400
+
+
 # ---------- Formatting helpers ----------
 
 
@@ -219,10 +253,13 @@ def format_error(exc: StateflowError, *, color: bool | None = None) -> str:
 
 
 __all__ = [
+    "AgentNotRegistered",
     "AuthError",
     "AuthorizationDenied",
+    "CancelNotSupported",
     "ConfigurationError",
     "ConfigurationInvariantViolation",
+    "EmptyMessageBody",
     "MissingDependencyError",
     "PatternError",
     "PersistenceError",
@@ -230,5 +267,6 @@ __all__ = [
     "StateflowError",
     "ThreadMetadataInvalid",
     "ThreadNotFound",
+    "WorkflowNotFound",
     "format_error",
 ]

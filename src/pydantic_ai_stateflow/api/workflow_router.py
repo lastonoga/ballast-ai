@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from dbos import SetWorkflowID
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from pydantic_ai_stateflow.api.deps import get_workflow_instance

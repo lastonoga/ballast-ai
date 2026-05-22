@@ -1,56 +1,48 @@
-"""pydantic-ai-stateflow — Sub-project #1 (Foundation) public API.
+"""pydantic-ai-stateflow — public framework surface.
 
-Layer 0 (GroundedSchema):
-    Ref, GroundedAgent, GroundedResult, GroundedResolver
-    GroundedError, GroundedBuildError, GroundedHydrationError
+App entry point:
+    ``create_app(...)`` builds a FastAPI app with thread CRUD, streaming
+    chat, A2A endpoints, the DBOS router, and an auto-generated
+    ``POST /workflows/{kebab-name}`` per registered ``@sf.workflow``.
 
-Runtime helpers:
-    Det, IdempotencyInput, IdempotencyValue
+Authoring primitives:
+    ``stateflow_agent`` — class decorator to register a ``StateflowAgent``
+      subclass (resolves under its kebab-name).
+    ``workflow`` — class decorator to register a durable workflow whose
+      ``async def run(self, input) -> output`` is wrapped with
+      ``@Durable.workflow()``.
+    ``Durable`` — DBOS facade that bundles workflow / step / queue
+      decoration with OTel context propagation.
 
-Patterns:
-    Pattern (Protocol)
+Errors:
+    ``StateflowError`` (base) plus structured subclasses (``ThreadNotFound``,
+    ``AgentNotRegistered``, ``WorkflowNotFound``, ``EmptyMessageBody``,
+    ``CancelNotSupported``, ``ConfigurationInvariantViolation``, …).
+    Auto-rendered as ``application/problem+json`` by the error
+    middleware that ``create_app`` installs.
 
-Sub-project #3 (Runtime):
-    Container, DefaultContainer, Engine, EngineInvariantViolation
-    ServiceProvider, CoreProvider, PersistenceProvider
-    DBOSConfig, build_dbos_config
+Configuration:
+    ``StateflowSettings`` — pydantic-settings hierarchy
+      (``api``, ``observability``, ``dbos``, …) with env-var loading.
+    ``ObservabilityConfig`` — call ``.install()`` once to enable
+      logfire + auto-instrumentation; ``.instrument_app(app)`` attaches
+      the FastAPI integration.
 
-Sub-project #4 (Capabilities):
-    BudgetExhausted, BudgetGuard, GroundedRetry, PIIGuard,
-    SemanticLoopDetector, StateflowCapability
-    Critique, Embedder, SemanticDeduper, SemanticLoopDetected,
-    TypedLoopGuard, as_critique
+Testing:
+    ``testing.TestEngine`` — boots an in-memory framework for tests,
+    drops DBOS state on teardown.
 
-Sub-project #5 (Patterns):
-    Reflection + LoopRecoveryPolicy / AbortOnLoop, MapReduce (+ Chunker /
-    Reducer), MutationPipeline (+ Proposal, Stage, ApprovalStage,
-    PartialApprovalStage, ApplyTransaction, AcceptedResult, RejectedAt,
-    RejectAction, RejectPolicy, DropOnReject, RaiseOnReject),
-    HITLGate (+ HITLChannel, InMemoryHITLChannel, HITLPrompt, HITLOption,
-    HITLResponse, ApprovedResponse, RejectedResponse, ModifiedResponse,
-    TimeoutResponse, Policy, Voter, AllowAll, DenyAll, AccessDecision),
-    pattern errors (PatternError, ReflectionExhausted, HITLDenied,
-    HITLTimedOut, MutationRejected).
+Other primitives:
+    Grounded schema (``Ref``, ``GroundedAgent``, ``Selector``, …),
+    patterns (``Reflection``, ``MapReduce``, ``HITLGate``, ``MutationPipeline``,
+    ``SemanticDedup``, ``DivergentConvergent``, …), capabilities
+    (``BudgetGuard``, ``GroundedRetry``, ``SemanticLoopDetector``, …) and
+    evals (``Dataset``, ``Scorer``, ``SchemaAdherenceScorer``).
 
-Sub-project #6 (HITL channels):
-    UIChannel, WebhookChannel, WebhookConfig, ConversationalChannel,
-    HelperVerdict, HelperAgentFactory, HelperDeps, HelperToolBox,
-    HelperSessionInput, HelperSessionRunner, DefaultHelperSessionRunner,
-    make_helper_agent_with_approval_tools, build_hitl_router.
-
-Sub-project #7 (API + Observability + Evals):
-    build_a2a_router, build_health_router, build_streaming_router,
-    build_threads_router, get_container, get_engine,
-    A2AAgentAdapter, AgentCard, DepsFactory, extract_text,
-    messages_to_model_history,
-    Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
-    ScoreResult, Scorer, ObservabilityProvider, has_logfire, traced.
-
-    Note: wire encoding, body parsing, event taxonomy, and the tool-
-    approval round-trip are delegated to
-    ``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` — the framework no
-    longer ships its own ``AGUIEncoder`` / ``VercelEncoder`` /
-    ``StreamEvent`` / ``StreamEventKind`` / ``AgentRunner`` / ``make_runner``.
+    Wire encoding, body parsing, and the tool-approval round-trip are
+    delegated to ``pydantic_ai.ui.vercel_ai.VercelAIAdapter`` — the
+    framework no longer ships its own ``AGUIEncoder`` / ``VercelEncoder``
+    / ``StreamEvent`` / ``AgentRunner`` / ``make_runner``.
 """
 
 # Side-effect import: attaches NullHandler to the framework root logger
@@ -128,16 +120,20 @@ from pydantic_ai_stateflow.observability import (
     traced,
 )
 from pydantic_ai_stateflow.errors import (
+    AgentNotRegistered,
     AuthError,
     AuthorizationDenied,
+    CancelNotSupported,
     ConfigurationError,
     ConfigurationInvariantViolation,
+    EmptyMessageBody,
     MissingDependencyError,
     PersistenceError,
     SettingsValidationError,
     StateflowError,
     ThreadMetadataInvalid,
     ThreadNotFound,
+    WorkflowNotFound,
     format_error,
 )
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
@@ -252,6 +248,7 @@ __all__ = [
     "AcceptedResult",
     "AccessDecision",
     "AgentCard",
+    "AgentNotRegistered",
     "AllowAll",
     "ApplyTransaction",
     "ApprovalStage",
@@ -261,6 +258,7 @@ __all__ = [
     "BudgetExhausted",
     "BudgetGuard",
     "CORSConfig",
+    "CancelNotSupported",
     "Chunker",
     "ConfigurationError",
     "ConfigurationInvariantViolation",
@@ -278,6 +276,7 @@ __all__ = [
     "DivergentConvergent",
     "DropOnReject",
     "Embedder",
+    "EmptyMessageBody",
     "EvalCase",
     "EvalReport",
     "EvalRunOutput",
@@ -364,6 +363,7 @@ __all__ = [
     "Voter",
     "WebhookChannel",
     "WebhookConfig",
+    "WorkflowNotFound",
     "as_critique",
     "build_a2a_router",
     "build_dbos_config",

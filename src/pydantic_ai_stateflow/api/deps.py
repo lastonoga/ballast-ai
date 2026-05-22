@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
+from pydantic_ai_stateflow.errors import ConfigurationInvariantViolation
 from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
 
 if TYPE_CHECKING:
@@ -25,10 +26,10 @@ if TYPE_CHECKING:
 def _get_state(request: Request, attr: str, friendly: str) -> Any:
     val = getattr(request.app.state, attr, None)
     if val is None:
-        raise HTTPException(
-            status_code=500,
-            detail=f"{friendly} not attached to app.state — "
-                   "call sf.create_app() or set it explicitly",
+        raise ConfigurationInvariantViolation(
+            f"{friendly} not attached to app.state",
+            hint="call sf.create_app() or set it explicitly",
+            context={"attr": attr},
         )
     return val
 
@@ -58,17 +59,17 @@ def get_workflow_instance(name: str):
     def _resolver(request: Request) -> Any:
         workflows = getattr(request.app.state, "workflows", None)
         if workflows is None:
-            raise HTTPException(
-                status_code=500,
-                detail="app.state.workflows missing — sf.create_app() "
-                       "should have populated it",
+            raise ConfigurationInvariantViolation(
+                "app.state.workflows missing",
+                hint="sf.create_app() should have populated it",
+                context={"attr": "workflows"},
             )
         try:
             return workflows[name]
         except KeyError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"No workflow instance registered under {name!r}",
+            raise ConfigurationInvariantViolation(
+                f"No workflow instance registered under {name!r}",
+                context={"name": name, "known": sorted(workflows)},
             ) from exc
 
     _resolver.__name__ = f"get_workflow_instance__{name.replace('-', '_')}"
@@ -82,17 +83,17 @@ def get_agent_instance(name: str):
     def _resolver(request: Request) -> Any:
         agents = getattr(request.app.state, "agents", None)
         if agents is None:
-            raise HTTPException(
-                status_code=500,
-                detail="app.state.agents missing — sf.create_app() "
-                       "should have populated it",
+            raise ConfigurationInvariantViolation(
+                "app.state.agents missing",
+                hint="sf.create_app() should have populated it",
+                context={"attr": "agents"},
             )
         try:
             return agents[name]
         except KeyError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"No agent instance registered under {name!r}",
+            raise ConfigurationInvariantViolation(
+                f"No agent instance registered under {name!r}",
+                context={"name": name, "known": sorted(agents)},
             ) from exc
 
     _resolver.__name__ = f"get_agent_instance__{name.replace('-', '_')}"
