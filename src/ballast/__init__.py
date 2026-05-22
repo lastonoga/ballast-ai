@@ -152,6 +152,7 @@ from ballast.errors import (
     WorkflowNotFound,
     format_error,
 )
+from ballast.app import Ballast, LifespanHook, Provider
 from ballast.observability.config import ObservabilityConfig
 from ballast.runtime.app import create_app
 from ballast.runtime.engine import Engine, get_engine
@@ -261,6 +262,7 @@ __all__ = [
     "ApprovedResponse",
     "AuthError",
     "AuthorizationDenied",
+    "Ballast",
     "BudgetExhausted",
     "BudgetGuard",
     "CORSConfig",
@@ -310,6 +312,7 @@ __all__ = [
     "IdempotencyValue",
     "InMemoryHITLChannel",
     "InsufficientDivergence",
+    "LifespanHook",
     "LoopRecoveryPolicy",
     "MapReduce",
     "MissingDependencyError",
@@ -330,6 +333,7 @@ __all__ = [
     "Policy",
     "Projector",
     "Proposal",
+    "Provider",
     "RaiseOnReject",
     "Reducer",
     "Registry",
