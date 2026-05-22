@@ -2,7 +2,7 @@ from typing import ClassVar
 
 import pytest
 
-from pydantic_ai_stateflow.patterns import Pattern
+from ballast.patterns import Pattern
 
 
 class ConcretePattern:

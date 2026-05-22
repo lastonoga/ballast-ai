@@ -3,7 +3,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import BudgetExhausted, BudgetGuard
+from ballast.capabilities import BudgetExhausted, BudgetGuard
 
 
 def make_fn_model_returning(text: str, *, input_tokens: int = 10, output_tokens: int = 5) -> FunctionModel:

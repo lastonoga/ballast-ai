@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow import (
+from ballast import (
     AcceptedResult,
     AllowAll,
     ApprovalStage,
@@ -24,8 +24,8 @@ from pydantic_ai_stateflow import (
     ReflectionExhausted,
     Stage,
 )
-from pydantic_ai_stateflow.capabilities.helpers import Critique
-from pydantic_ai_stateflow.persistence import (
+from ballast.capabilities.helpers import Critique
+from ballast.persistence import (
     InMemoryHITLRepository,
     InMemoryOutboxRepository,
 )

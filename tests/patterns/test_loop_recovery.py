@@ -1,7 +1,7 @@
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique, SemanticLoopDetected
-from pydantic_ai_stateflow.patterns import AbortOnLoop, LoopRecoveryPolicy
+from ballast.capabilities.helpers import Critique, SemanticLoopDetected
+from ballast.patterns import AbortOnLoop, LoopRecoveryPolicy
 
 
 def test_abort_on_loop_satisfies_protocol():

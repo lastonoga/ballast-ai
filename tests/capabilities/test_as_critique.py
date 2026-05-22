@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique, as_critique
+from ballast.capabilities.helpers import Critique, as_critique
 
 
 class CustomVerdict(BaseModel):

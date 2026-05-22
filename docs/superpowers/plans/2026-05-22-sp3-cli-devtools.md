@@ -8,7 +8,7 @@
 
 ## Task list
 
-- T1: `cli/` package skeleton — `main.py` (typer cli) + `app_detect.py` (STATEFLOW_APP / [tool.stateflow]) + console_script registration in `pyproject.toml`
+- T1: `cli/` package skeleton — `main.py` (typer cli) + `app_detect.py` (BALLAST_APP / [tool.stateflow]) + console_script registration in `pyproject.toml`
 - T2: `commands/dev.py` — uvicorn-reload wrapper
 - T3: `commands/migrate.py` + `alembic/env.py` SP2-settings wiring (sync/async URL branching)
 - T4: `commands/workflows.py` — `workflows ls` with rich table + `--json`

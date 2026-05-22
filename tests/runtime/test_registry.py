@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from pydantic_ai_stateflow.runtime.registry import Registry
+from ballast.runtime.registry import Registry
 
 
 @dataclass

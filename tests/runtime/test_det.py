@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 
-from pydantic_ai_stateflow.runtime import Det, IdempotencyInput
+from ballast.runtime import Det, IdempotencyInput
 
 
 @pytest.mark.asyncio

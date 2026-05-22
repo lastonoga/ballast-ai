@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from pydantic_ai_stateflow.runtime import IdempotencyInput
+from ballast.runtime import IdempotencyInput
 
 
 def test_accepts_allowed_primitive_types():

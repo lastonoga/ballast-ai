@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow import (
+from ballast import (
     ConversationalChannel,
     DefaultHelperSessionRunner,
     HelperVerdict,
@@ -22,10 +22,10 @@ from pydantic_ai_stateflow import (
     build_hitl_router,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.patterns.hitl.response import ApprovedResponse
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import (
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.patterns.hitl.response import ApprovedResponse
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import (
     InMemoryHITLRepository,
     InMemoryThreadRepository,
 )
@@ -75,7 +75,7 @@ def test_ui_channel_router_dispatches_to_gate_topic(
         sent.update(destination_id=destination_id, message=message, topic=topic)
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.api.router.DBOS.send", fake_send,
+        "ballast.patterns.hitl.api.router.DBOS.send", fake_send,
     ), TestClient(app) as client:
         r = client.post(
             f"/hitl/{req.id}/respond",
@@ -128,10 +128,10 @@ async def test_conversational_channel_exposes_helper_verdict_to_persistence(
 
     prompt = HITLPrompt(title="t", context="c", decision_kinds={"approved"})
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.start_workflow_async",
+        "ballast.patterns.hitl.channels.conversational.start_workflow_async",
         fake_start,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=payload),
     ):
         await gate.run(prompt)

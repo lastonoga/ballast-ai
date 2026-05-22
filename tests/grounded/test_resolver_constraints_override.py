@@ -3,8 +3,8 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import GroundedResolver, Ref
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded import GroundedResolver, Ref
+from ballast.grounded.errors import GroundedBuildError
 
 
 class Item(BaseModel):

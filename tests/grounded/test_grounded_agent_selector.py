@@ -15,7 +15,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.grounded import GroundedAgent, Ref, Selector, SelectorRegistry
+from ballast.grounded import GroundedAgent, Ref, Selector, SelectorRegistry
 
 
 class _Item(BaseModel):

@@ -13,8 +13,8 @@ for `os.environ.get(...)` directly. Audit (`src/` + notes-app `src/`):
 
 | File | Var |
 | --- | --- |
-| `src/pydantic_ai_stateflow/logging.py:104,125` | `STATEFLOW_LOG_LEVEL` |
-| `src/pydantic_ai_stateflow/observability/provider.py:103` | `LOGFIRE_TOKEN` (read for diagnostic logging only — logfire SDK reads it again internally) |
+| `src/ballast/logging.py:104,125` | `BALLAST_LOG_LEVEL` |
+| `src/ballast/observability/provider.py:103` | `LOGFIRE_TOKEN` (read for diagnostic logging only — logfire SDK reads it again internally) |
 | `examples/notes-app/.../main.py:69` | `DBOS_DATABASE_URL` |
 | `examples/notes-app/.../main.py:219,220` | `HOST`, `PORT` |
 | `examples/notes-app/.../brainstorm_agents.py:59` | `OPENROUTER_API_KEY` |
@@ -46,12 +46,12 @@ Neither is acceptable for an SDK that wants to ship a UI client.
 ## Goal
 
 Two pieces, designed together because errors will reference settings
-(e.g. `STATEFLOW_LLM_OPENROUTER_API_KEY missing` as a `hint`):
+(e.g. `BALLAST_LLM_OPENROUTER_API_KEY missing` as a `hint`):
 
 1. **`StateflowSettings(BaseSettings)`** — a single pydantic-settings
    class (with grouped sub-models) is the only place env vars get
    read. Lazy singleton accessed as
-   `from pydantic_ai_stateflow import settings`.
+   `from ballast import settings`.
 2. **`StateflowError` base class hierarchy** — every framework-raised
    error inherits a structured shape: `code`, `detail`, `hint`,
    `context`, plus a class-level `status_code` for HTTP mapping.
@@ -82,12 +82,12 @@ Two pieces, designed together because errors will reference settings
 
 ### A. `StateflowSettings`
 
-**Location:** `src/pydantic_ai_stateflow/settings.py` (new module).
+**Location:** `src/ballast/settings.py` (new module).
 Re-exported from the package root as `settings`.
 
-**Env prefix:** `STATEFLOW_`. Nested models use `__` as the env
+**Env prefix:** `BALLAST_`. Nested models use `__` as the env
 delimiter (pydantic-settings standard), e.g.
-`STATEFLOW_DBOS__DATABASE_URL`.
+`BALLAST_DBOS__DATABASE_URL`.
 
 **Why pydantic-settings:** already a transitive dep (logfire pulls it);
 ships `.env` parsing, secret-string types, `SettingsConfigDict` for
@@ -96,7 +96,7 @@ pydantic-based framework. Standard library for this job; no custom
 config loader.
 
 ```python
-# src/pydantic_ai_stateflow/settings.py
+# src/ballast/settings.py
 from __future__ import annotations
 
 from functools import lru_cache
@@ -113,7 +113,7 @@ class DBOSSettings(BaseModel):
     load settings without setting a useless var. The DBOS provider
     raises a structured error when it's needed but missing."""
     database_url: str | None = None
-    app_name: str = "pydantic-ai-stateflow"
+    app_name: str = "ballast-ai"
 
 
 class ObservabilitySettings(BaseModel):
@@ -121,7 +121,7 @@ class ObservabilitySettings(BaseModel):
     NOT configure logfire — apps construct ``ObservabilityConfig(...)``
     and call ``.install()`` explicitly."""
     logfire_token: SecretStr | None = None
-    service_name: str = "pydantic-ai-stateflow"
+    service_name: str = "ballast-ai"
     environment: str = "dev"
     instrument_pydantic_ai: bool = True
     instrument_httpx: bool = True
@@ -152,7 +152,7 @@ class APISettings(BaseModel):
 
 
 class LoggingSettings(BaseModel):
-    """Framework logger config. Mirrors the legacy ``STATEFLOW_LOG_LEVEL``
+    """Framework logger config. Mirrors the legacy ``BALLAST_LOG_LEVEL``
     env var so existing deployments don't break."""
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = None
 
@@ -161,16 +161,16 @@ class StateflowSettings(BaseSettings):
     """Single source of truth for framework env-driven config.
 
     Usage:
-        from pydantic_ai_stateflow import settings
+        from ballast import settings
         url = settings.dbos.database_url
 
-    Env vars use ``STATEFLOW_`` prefix + ``__`` for nesting:
-        STATEFLOW_DBOS__DATABASE_URL=postgresql://...
-        STATEFLOW_LLM__OPENROUTER__API_KEY=sk-or-...
-        STATEFLOW_OBSERVABILITY__LOGFIRE_TOKEN=...
+    Env vars use ``BALLAST_`` prefix + ``__`` for nesting:
+        BALLAST_DBOS__DATABASE_URL=postgresql://...
+        BALLAST_LLM__OPENROUTER__API_KEY=sk-or-...
+        BALLAST_OBSERVABILITY__LOGFIRE_TOKEN=...
     """
     model_config = SettingsConfigDict(
-        env_prefix="STATEFLOW_",
+        env_prefix="BALLAST_",
         env_nested_delimiter="__",
         env_file=".env",
         env_file_encoding="utf-8",
@@ -227,7 +227,7 @@ def with_settings(monkeypatch):
     def _apply(**env):
         for k, v in env.items():
             monkeypatch.setenv(k, v)
-        from pydantic_ai_stateflow.settings import reset_settings
+        from ballast.settings import reset_settings
         reset_settings()
     return _apply
 ```
@@ -238,7 +238,7 @@ Tests that need different env per case use the fixture above.
 
 ### B. `StateflowError` base + subclasses
 
-**Location:** `src/pydantic_ai_stateflow/errors.py` (new top-level module).
+**Location:** `src/ballast/errors.py` (new top-level module).
 Re-exported from the package root.
 
 **Why top-level (not under `runtime/` or `patterns/`):** errors are
@@ -247,7 +247,7 @@ api) raises them. Keeping the base in a top-level module avoids the
 import-cycle risk we'd hit if it lived inside `runtime/`.
 
 ```python
-# src/pydantic_ai_stateflow/errors.py
+# src/ballast/errors.py
 from __future__ import annotations
 
 from typing import Any, ClassVar
@@ -260,7 +260,7 @@ class StateflowError(Exception):
     ``detail`` / ``hint`` / ``context``.
 
     Attributes:
-      code: stable identifier, ``STATEFLOW_<DOMAIN>_<SPECIFIC>`` format.
+      code: stable identifier, ``BALLAST_<DOMAIN>_<SPECIFIC>`` format.
         UPPER_SNAKE; never includes free-form text. Frontends + CLI
         switch on this string.
       status_code: HTTP status used by the error middleware when this
@@ -272,7 +272,7 @@ class StateflowError(Exception):
         name, retry count, etc.). Optional; default empty dict.
     """
 
-    code: ClassVar[str] = "STATEFLOW_UNKNOWN"
+    code: ClassVar[str] = "BALLAST_UNKNOWN"
     status_code: ClassVar[int] = 500
 
     def __init__(
@@ -307,25 +307,25 @@ parent that adds no behaviour beyond grouping):
 
 ```
 StateflowError
-├── ConfigurationError                 (status 500)  STATEFLOW_CONFIG_*
-│   ├── SettingsValidationError                       STATEFLOW_CONFIG_SETTINGS_INVALID
-│   ├── MissingDependencyError                        STATEFLOW_CONFIG_DEPENDENCY_MISSING
-│   └── ConfigurationInvariantViolation               STATEFLOW_CONFIG_INVARIANT
+├── ConfigurationError                 (status 500)  BALLAST_CONFIG_*
+│   ├── SettingsValidationError                       BALLAST_CONFIG_SETTINGS_INVALID
+│   ├── MissingDependencyError                        BALLAST_CONFIG_DEPENDENCY_MISSING
+│   └── ConfigurationInvariantViolation               BALLAST_CONFIG_INVARIANT
 │           (replaces the old ``EngineInvariantViolation`` — Engine
 │            is deleted by SP1; the "invariant check at bootstrap"
 │            concept moves to ``ObservabilityConfig.install`` and
 │            other one-time config calls.)
-├── PersistenceError                   (status 500)  STATEFLOW_PERSISTENCE_*
-│   ├── ThreadNotFound                 (status 404)  STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND
-│   └── ThreadMetadataInvalid          (status 422)  STATEFLOW_PERSISTENCE_THREAD_METADATA_INVALID
-├── AuthError                          (status 401)  STATEFLOW_AUTH_*
-│   └── AuthorizationDenied            (status 403)  STATEFLOW_AUTH_FORBIDDEN
-└── PatternError                       (status 500)  STATEFLOW_PATTERN_*
-    ├── ReflectionExhausted                           STATEFLOW_PATTERN_REFLECTION_EXHAUSTED
-    ├── MutationRejected                              STATEFLOW_PATTERN_MUTATION_REJECTED
-    ├── HITLTimedOut                   (status 504)  STATEFLOW_PATTERN_HITL_TIMED_OUT
-    ├── HITLDenied                     (status 403)  STATEFLOW_PATTERN_HITL_DENIED
-    └── InsufficientDivergence                        STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE
+├── PersistenceError                   (status 500)  BALLAST_PERSISTENCE_*
+│   ├── ThreadNotFound                 (status 404)  BALLAST_PERSISTENCE_THREAD_NOT_FOUND
+│   └── ThreadMetadataInvalid          (status 422)  BALLAST_PERSISTENCE_THREAD_METADATA_INVALID
+├── AuthError                          (status 401)  BALLAST_AUTH_*
+│   └── AuthorizationDenied            (status 403)  BALLAST_AUTH_FORBIDDEN
+└── PatternError                       (status 500)  BALLAST_PATTERN_*
+    ├── ReflectionExhausted                           BALLAST_PATTERN_REFLECTION_EXHAUSTED
+    ├── MutationRejected                              BALLAST_PATTERN_MUTATION_REJECTED
+    ├── HITLTimedOut                   (status 504)  BALLAST_PATTERN_HITL_TIMED_OUT
+    ├── HITLDenied                     (status 403)  BALLAST_PATTERN_HITL_DENIED
+    └── InsufficientDivergence                        BALLAST_PATTERN_INSUFFICIENT_DIVERGENCE
 ```
 
 **Deleted from earlier draft:** `ContainerBindingMissing` (Container
@@ -337,7 +337,7 @@ classes carry the semantic info directly via `code` + `status_code`).
 
 ```python
 class InsufficientDivergence(PatternError):
-    code = "STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE"
+    code = "BALLAST_PATTERN_INSUFFICIENT_DIVERGENCE"
 
     def __init__(
         self,
@@ -367,7 +367,7 @@ class InsufficientDivergence(PatternError):
 
 ### C. HTTP middleware
 
-**Location:** `src/pydantic_ai_stateflow/api/error_middleware.py` (new).
+**Location:** `src/ballast/api/error_middleware.py` (new).
 
 **Why a Starlette middleware (not a FastAPI exception handler):**
 exception handlers don't catch errors raised in background tasks /
@@ -378,7 +378,7 @@ route exceptions get the structured JSON path; middleware is the
 fallback + observability hook.
 
 ```python
-# src/pydantic_ai_stateflow/api/error_middleware.py
+# src/ballast/api/error_middleware.py
 from __future__ import annotations
 
 from typing import Any
@@ -387,8 +387,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from pydantic_ai_stateflow.errors import StateflowError
-from pydantic_ai_stateflow.logging import get_logger
+from ballast.errors import StateflowError
+from ballast.logging import get_logger
 
 _logger = get_logger(__name__)
 
@@ -404,7 +404,7 @@ def _render(err: StateflowError, *, include_trace: bool) -> dict[str, Any]:
 
 
 async def stateflow_error_handler(request: Request, exc: StateflowError) -> JSONResponse:
-    from pydantic_ai_stateflow.settings import get_settings
+    from ballast.settings import get_settings
 
     settings = get_settings()
     # Tri-state resolution: explicit override > auto from env=="dev" > off.
@@ -447,7 +447,7 @@ Content-Type: application/problem+json
 
 {
   "error": {
-    "code": "STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND",
+    "code": "BALLAST_PERSISTENCE_THREAD_NOT_FOUND",
     "detail": "thread 7f3b... not found",
     "hint": "Confirm the thread id matches an active thread; check that it wasn't soft-deleted.",
     "context": {"thread_id": "7f3b8c00-..."}
@@ -485,7 +485,7 @@ middleware/handler runs, because that's the only choke point we control.
 ### D. CLI / log formatting
 
 **Location:** add `format_error(exc, *, color: bool | None = None) -> str`
-to `src/pydantic_ai_stateflow/errors.py`. Used by the framework's own
+to `src/ballast/errors.py`. Used by the framework's own
 log path and by SP3 CLI commands.
 
 **Strategy:** `rich` is in the lockfile (transitive via logfire). Soft
@@ -528,7 +528,7 @@ def _format_plain(exc: StateflowError) -> str:
 **Sample colored output** (rich):
 
 ```
-✗ STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE
+✗ BALLAST_PATTERN_INSUFFICIENT_DIVERGENCE
   DivergentConvergent produced 1 hypotheses; min_hypotheses=2
 
   hint  Lower min_hypotheses, raise best_of_n, or add branches with higher temperature.
@@ -549,16 +549,16 @@ def _format_plain(exc: StateflowError) -> str:
 
 | Old class | Module | New base / status | New code |
 | --- | --- | --- | --- |
-| `EngineInvariantViolation` | `runtime/engine.py` (deleted by SP1) | `ConfigurationInvariantViolation` (500) | `STATEFLOW_CONFIG_INVARIANT` |
-| `PatternError` | `patterns/errors.py` | `StateflowError` (500) | `STATEFLOW_PATTERN` (used only via subclasses) |
-| `ReflectionExhausted` | `patterns/errors.py` | `PatternError` (500) | `STATEFLOW_PATTERN_REFLECTION_EXHAUSTED` |
-| `MutationRejected` | `patterns/errors.py` | `PatternError` (500) | `STATEFLOW_PATTERN_MUTATION_REJECTED` |
-| `HITLTimedOut` | `patterns/errors.py` | `PatternError` (504) | `STATEFLOW_PATTERN_HITL_TIMED_OUT` |
-| `HITLDenied` | `patterns/errors.py` | `PatternError` (403) | `STATEFLOW_PATTERN_HITL_DENIED` |
-| `InsufficientDivergence` | `patterns/errors.py` | `PatternError` (500) | `STATEFLOW_PATTERN_INSUFFICIENT_DIVERGENCE` |
-| `GroundedError` / `GroundedBuildError` / `GroundedHydrationError` | `grounded/...` | `StateflowError` (500) | `STATEFLOW_GROUNDED_*` |
-| `BudgetExhausted` | `capabilities/...` | `StateflowError` (429) | `STATEFLOW_CAPABILITY_BUDGET_EXHAUSTED` |
-| `SemanticLoopDetected` | `capabilities/helpers/...` | `StateflowError` (500) | `STATEFLOW_CAPABILITY_SEMANTIC_LOOP` |
+| `EngineInvariantViolation` | `runtime/engine.py` (deleted by SP1) | `ConfigurationInvariantViolation` (500) | `BALLAST_CONFIG_INVARIANT` |
+| `PatternError` | `patterns/errors.py` | `StateflowError` (500) | `BALLAST_PATTERN` (used only via subclasses) |
+| `ReflectionExhausted` | `patterns/errors.py` | `PatternError` (500) | `BALLAST_PATTERN_REFLECTION_EXHAUSTED` |
+| `MutationRejected` | `patterns/errors.py` | `PatternError` (500) | `BALLAST_PATTERN_MUTATION_REJECTED` |
+| `HITLTimedOut` | `patterns/errors.py` | `PatternError` (504) | `BALLAST_PATTERN_HITL_TIMED_OUT` |
+| `HITLDenied` | `patterns/errors.py` | `PatternError` (403) | `BALLAST_PATTERN_HITL_DENIED` |
+| `InsufficientDivergence` | `patterns/errors.py` | `PatternError` (500) | `BALLAST_PATTERN_INSUFFICIENT_DIVERGENCE` |
+| `GroundedError` / `GroundedBuildError` / `GroundedHydrationError` | `grounded/...` | `StateflowError` (500) | `BALLAST_GROUNDED_*` |
+| `BudgetExhausted` | `capabilities/...` | `StateflowError` (429) | `BALLAST_CAPABILITY_BUDGET_EXHAUSTED` |
+| `SemanticLoopDetected` | `capabilities/helpers/...` | `StateflowError` (500) | `BALLAST_CAPABILITY_SEMANTIC_LOOP` |
 
 **Strategy:** clean break (per project policy — single-repo caller). Each
 subclass keeps the legacy positional/keyword args it already documents,
@@ -590,16 +590,16 @@ those aren't `StateflowError`s.
 
 | File:line | Env var | Settings field | Migration |
 | --- | --- | --- | --- |
-| `logging.py:104,125` | `STATEFLOW_LOG_LEVEL` | `settings.logging.level` | Keep direct `os.environ` read in `logging.py` — it's read at module import before settings can safely be instantiated. Settings field is the *new* canonical name; we keep reading the legacy `STATEFLOW_LOG_LEVEL` for back-compat (it equals `STATEFLOW_LOGGING__LEVEL` via the prefix anyway only if we add an alias). Concretely: add `validation_alias=AliasChoices("STATEFLOW_LOGGING__LEVEL", "STATEFLOW_LOG_LEVEL")` on `LoggingSettings.level`. |
+| `logging.py:104,125` | `BALLAST_LOG_LEVEL` | `settings.logging.level` | Keep direct `os.environ` read in `logging.py` — it's read at module import before settings can safely be instantiated. Settings field is the *new* canonical name; we keep reading the legacy `BALLAST_LOG_LEVEL` for back-compat (it equals `BALLAST_LOGGING__LEVEL` via the prefix anyway only if we add an alias). Concretely: add `validation_alias=AliasChoices("BALLAST_LOGGING__LEVEL", "BALLAST_LOG_LEVEL")` on `LoggingSettings.level`. |
 | `observability/provider.py:103` | `LOGFIRE_TOKEN` | `settings.observability.logfire_token` | Read via `settings.observability.logfire_token.get_secret_value()` when present, fall back to checking `os.environ["LOGFIRE_TOKEN"]` (logfire SDK itself reads that var, so we keep diagnostic parity). |
 | `examples/.../main.py:69` | `DBOS_DATABASE_URL` | `settings.dbos.database_url` | Replace `_default_dbos_database_url()` with `settings.dbos.database_url or _sqlite_fallback()`. Keep `DBOS_DATABASE_URL` as an alias (`AliasChoices`) to avoid breaking running deployments. |
 | `examples/.../main.py:219,220` | `HOST`, `PORT` | App-level, NOT framework | Stay as plain env reads — these are uvicorn args, not framework config. Out of scope. |
-| `examples/.../brainstorm_agents.py:59` | `OPENROUTER_API_KEY` | `settings.llm.openrouter.api_key` | Delete `_resolve_api_key`; the agent's `api_key` constructor arg falls back to `get_settings().llm.openrouter.api_key`. Raises `MissingDependencyError(code=STATEFLOW_CONFIG_DEPENDENCY_MISSING, hint="set STATEFLOW_LLM__OPENROUTER__API_KEY or pass api_key=…")` when absent. Add the same `AliasChoices` alias for the legacy `OPENROUTER_API_KEY`. |
+| `examples/.../brainstorm_agents.py:59` | `OPENROUTER_API_KEY` | `settings.llm.openrouter.api_key` | Delete `_resolve_api_key`; the agent's `api_key` constructor arg falls back to `get_settings().llm.openrouter.api_key`. Raises `MissingDependencyError(code=BALLAST_CONFIG_DEPENDENCY_MISSING, hint="set BALLAST_LLM__OPENROUTER__API_KEY or pass api_key=…")` when absent. Add the same `AliasChoices` alias for the legacy `OPENROUTER_API_KEY`. |
 | `examples/.../agent.py:188,191` | `OPENROUTER_MODEL`, `OPENROUTER_API_KEY` | `settings.llm.openrouter.default_model`, `.api_key` | Same pattern. |
 | `examples/.../todo_approval_agent.py:145,148` | same | same | same |
 
 **Aliasing strategy.** For each legacy var, the corresponding field
-declares `validation_alias=AliasChoices("STATEFLOW_FOO__BAR", "LEGACY_NAME")`
+declares `validation_alias=AliasChoices("BALLAST_FOO__BAR", "LEGACY_NAME")`
 so both names work during transition. Once notes-app + the test suite
 read exclusively via `settings`, the legacy aliases can be removed in
 a follow-up.
@@ -634,7 +634,7 @@ Each step is independently mergeable + reversible.
 
 **Settings (`tests/test_settings.py`):**
 - Default values when no env set.
-- Env var via prefix + nested delimiter (`STATEFLOW_DBOS__DATABASE_URL`).
+- Env var via prefix + nested delimiter (`BALLAST_DBOS__DATABASE_URL`).
 - Legacy alias resolves (`DBOS_DATABASE_URL`).
 - `SecretStr` doesn't appear in `repr` of the settings object.
 - `reset_settings()` actually drops the cache.

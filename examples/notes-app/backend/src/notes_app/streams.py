@@ -6,7 +6,7 @@ swapped for a Redis-backed one without a refactor.
 """
 from __future__ import annotations
 
-from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from ballast.runtime.event_stream import InProcessEventStream
 
 
 class NotesEventStream(InProcessEventStream):

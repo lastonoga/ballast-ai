@@ -1,4 +1,4 @@
-from pydantic_ai_stateflow.runtime.dbos_setup import (
+from ballast.runtime.dbos_setup import (
     DBOSConfig,
     build_dbos_config,
 )

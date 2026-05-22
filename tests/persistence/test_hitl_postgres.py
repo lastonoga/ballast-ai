@@ -2,8 +2,8 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.persistence.hitl import (
     BlockingRequirementStatus,
     DecisionVerdict,
     HITLPurpose,

@@ -6,7 +6,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import SemanticLoopDetector
+from ballast.capabilities import SemanticLoopDetector
 
 
 class _IdentityEmbedder:
@@ -23,7 +23,7 @@ class _IdentityEmbedder:
 @pytest.mark.asyncio
 async def test_default_selector_extracts_text_and_toolcalls() -> None:
     """Default selector serialises TextPart + ToolCallPart args stably."""
-    from pydantic_ai_stateflow.capabilities.semantic_loop import _default_response_text
+    from ballast.capabilities.semantic_loop import _default_response_text
 
     resp = ModelResponse(
         parts=[

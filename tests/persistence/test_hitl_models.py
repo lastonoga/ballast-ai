@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence.hitl import (
     AuthzDenial,
     BlockingRequirement,
     BlockingRequirementStatus,

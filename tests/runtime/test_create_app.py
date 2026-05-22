@@ -1,15 +1,15 @@
-"""Unit tests for ``sf.create_app()``."""
+"""Unit tests for ``ballast.create_app()``."""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime.app import create_app
-from pydantic_ai_stateflow.runtime.engine import _reset_engine_for_tests
-from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from ballast.runtime.app import create_app
+from ballast.runtime.engine import _reset_engine_for_tests
+from ballast.runtime.event_stream import InProcessEventStream
 
 
 def _build_app():

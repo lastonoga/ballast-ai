@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from pydantic import TypeAdapter
 
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns.hitl import (
     ApprovedResponse,
     HITLResponse,
     ModifiedResponse,

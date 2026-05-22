@@ -7,16 +7,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
-from pydantic_ai_stateflow.api.threads import threads_router
-from pydantic_ai_stateflow.persistence import (
+from ballast.api.error_middleware import install_error_handlers
+from ballast.api.threads import threads_router
+from ballast.persistence import (
     InMemoryEventLogRepository,
 )
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime.engine import Engine
-from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from ballast.runtime.engine import Engine
+from ballast.runtime.event_stream import InProcessEventStream
 
 
 def _app(repo: InMemoryThreadRepository) -> FastAPI:

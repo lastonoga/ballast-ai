@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic_ai_stateflow.persistence.outbox import (
+from ballast.persistence.outbox import (
     InMemoryOutboxRepository,
     OutboxRepository,
 )

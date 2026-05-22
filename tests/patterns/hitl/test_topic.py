@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 
 def test_topic_format() -> None:

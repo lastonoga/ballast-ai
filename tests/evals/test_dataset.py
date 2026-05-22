@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.evals import (
+from ballast.evals import (
     Dataset,
     EvalCase,
     EvalReport,

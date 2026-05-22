@@ -3,19 +3,19 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.errors import ConfigurationError
-from pydantic_ai_stateflow.persistence import (
+from ballast.errors import ConfigurationError
+from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime.engine import (
+from ballast.runtime.engine import (
     Engine,
     _reset_engine_for_tests,
     _set_engine,
     get_engine,
 )
-from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
-from pydantic_ai_stateflow.runtime.thread_events import ThreadEventBroadcaster
+from ballast.runtime.event_stream import InProcessEventStream
+from ballast.runtime.thread_events import ThreadEventBroadcaster
 
 
 def _build_engine() -> Engine:

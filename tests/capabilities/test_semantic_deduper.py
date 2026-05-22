@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import (
+from ballast.capabilities.helpers import (
     SemanticDeduper,
     SemanticLoopDetected,
 )

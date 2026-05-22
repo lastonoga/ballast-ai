@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique
-from pydantic_ai_stateflow.patterns import Reflection
+from ballast.capabilities.helpers import Critique
+from ballast.patterns import Reflection
 
 
 @pytest.mark.asyncio

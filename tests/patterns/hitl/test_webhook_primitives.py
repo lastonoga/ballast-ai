@@ -9,7 +9,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookConfig,
     post_webhook,
@@ -79,7 +79,7 @@ async def test_post_webhook_sends_signature_and_body(
             return _R()
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.httpx.AsyncClient",
+        "ballast.patterns.hitl.channels.webhook.httpx.AsyncClient",
         FakeClient,
     ):
         body = json.dumps({"request_id": "abc"}).encode()
@@ -125,7 +125,7 @@ async def test_post_webhook_raises_on_5xx(
             return _R()
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.httpx.AsyncClient",
+        "ballast.patterns.hitl.channels.webhook.httpx.AsyncClient",
         FakeClient,
     ), pytest.raises(httpx.HTTPStatusError):
         await post_webhook(url="https://x.example/cb", body=b"{}", signature="s")

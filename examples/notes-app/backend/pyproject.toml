@@ -1,10 +1,10 @@
 [project]
 name = "notes-app"
 version = "0.1.0"
-description = "Dogfood reference app for pydantic-ai-stateflow — iteration 2 backend"
+description = "Dogfood reference app for ballast-ai — iteration 2 backend"
 requires-python = ">=3.11"
 dependencies = [
-    "pydantic-ai-stateflow",
+    "ballast-ai",
     "pydantic-ai>=1.97",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -23,11 +23,11 @@ dev = [
     "mypy>=1.10",
 ]
 
-[tool.stateflow]
+[tool.ballast]
 app = "notes_app.main:app"
 
 [tool.uv.sources]
-pydantic-ai-stateflow = { path = "../../..", editable = true }
+ballast-ai = { path = "../../..", editable = true }
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
@@ -54,6 +54,6 @@ warn_unused_ignores = true
 # Framework ships without `py.typed`; treat it as untyped for now.
 # Recorded as a gap in RETRO.md.
 [[tool.mypy.overrides]]
-module = "pydantic_ai_stateflow.*"
+module = "ballast.*"
 ignore_missing_imports = true
 follow_imports = "skip"

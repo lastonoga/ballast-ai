@@ -1,12 +1,12 @@
 # SP7: Rename framework to Ballast + Variant 2 API — Plan
 
-**Goal:** Rename framework from `pydantic-ai-stateflow` to `ballast-ai`. Replace `sf.create_app(...)` with `Ballast(settings).use(providers...).fastapi(...)` pattern.
+**Goal:** Rename framework from `ballast-ai` to `ballast-ai`. Replace `sf.create_app(...)` with `Ballast(settings).use(providers...).fastapi(...)` pattern.
 
 **Confirmed:**
-- Package: `pydantic_ai_stateflow` → `ballast`; PyPI: `pydantic-ai-stateflow` → `ballast-ai`
+- Package: `ballast` → `ballast`; PyPI: `ballast-ai` → `ballast-ai`
 - CLI: `stateflow` → `ballast`
-- Env prefix: `STATEFLOW_` → `BALLAST_`
-- Error codes: `STATEFLOW_*` → `BALLAST_*`
+- Env prefix: `BALLAST_` → `BALLAST_`
+- Error codes: `BALLAST_*` → `BALLAST_*`
 - Pyproject section: `[tool.stateflow]` → `[tool.ballast]`
 - Classes:
   - `StateflowSettings` → `BallastSettings`
@@ -21,11 +21,11 @@
 ## Phases
 
 ### Phase 1 — Package rename (mechanical)
-- `mv src/pydantic_ai_stateflow src/ballast`
-- `sed`-replace `pydantic_ai_stateflow` → `ballast` across .py + .toml + .md
-- `sed`-replace `pydantic-ai-stateflow` → `ballast-ai`
+- `mv src/ballast src/ballast`
+- `sed`-replace `ballast` → `ballast` across .py + .toml + .md
+- `sed`-replace `ballast-ai` → `ballast-ai`
 - StateflowX class renames (order matters — most specific first)
-- `STATEFLOW_` → `BALLAST_`, `[tool.stateflow]` → `[tool.ballast]`
+- `BALLAST_` → `BALLAST_`, `[tool.stateflow]` → `[tool.ballast]`
 - CLI entrypoint rename
 - Run framework + notes-app tests
 - Commit

@@ -1,10 +1,10 @@
-"""FastAPI entry point — wires app-owned repos into ``sf.create_app``.
+"""FastAPI entry point — wires app-owned repos into ``ballast.create_app``.
 
 App-specific singletons (repos, flows, agents) live in their own
 modules and are imported here directly — no constructor DI for app
-state. The framework's ``sf.create_app`` takes the thread repo +
+state. The framework's ``ballast.create_app`` takes the thread repo +
 event log + event stream as explicit kwargs and stashes them on the
-process-wide ``Engine`` (read via ``sf.get_engine()``).
+process-wide ``Engine`` (read via ``ballast.get_engine()``).
 """
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ import os
 import tempfile
 from pathlib import Path
 
-import pydantic_ai_stateflow as sf
+import ballast
 from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from pydantic_ai_stateflow.observability.config import ObservabilityConfig
-from pydantic_ai_stateflow.settings import get_settings
+from ballast.observability.config import ObservabilityConfig
+from ballast.settings import get_settings
 
 from notes_app.agents.notes import notes_agent
 from notes_app.agents.todo_approval import approval_agent
@@ -43,11 +43,11 @@ def _dbos_db_url() -> str:
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
-app: FastAPI = sf.create_app(
+app: FastAPI = ballast.create_app(
     thread_repo=thread_repo,
     event_log=event_log,
     event_stream=event_stream,
-    cors=sf.CORSConfig.permissive_dev(),
+    cors=ballast.CORSConfig.permissive_dev(),
     dbos=DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
     observability=ObservabilityConfig(
         service_name="app",

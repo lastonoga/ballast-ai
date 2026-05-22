@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dbos import SetWorkflowID
 from fastapi import APIRouter
-from pydantic_ai_stateflow.durable import Durable
+from ballast.durable import Durable
 
 from notes_app.models.brainstorm import BrainstormTask
 from notes_app.workflows.brainstorm import BrainstormFlow, brainstorm

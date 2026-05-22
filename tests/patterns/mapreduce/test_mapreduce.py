@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.patterns import MapReduce
+from ballast.patterns import MapReduce
 
 
 class WordChunker:

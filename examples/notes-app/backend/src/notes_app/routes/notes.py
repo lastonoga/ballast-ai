@@ -14,8 +14,8 @@ from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.runtime import validate_thread_metadata
+from ballast.persistence.thread.repository import ThreadRepository
+from ballast.runtime import validate_thread_metadata
 
 from notes_app.agents.notes import NotesAgent
 

@@ -5,14 +5,14 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns import MutationPipeline, MutationRejected
-from pydantic_ai_stateflow.patterns.mutation import (
+from ballast.patterns import MutationPipeline, MutationRejected
+from ballast.patterns.mutation import (
     AcceptedResult,
     Proposal,
     RaiseOnReject,
     RejectedAt,
 )
-from pydantic_ai_stateflow.persistence import InMemoryOutboxRepository
+from ballast.persistence import InMemoryOutboxRepository
 
 
 class _PipeRefund(BaseModel):
@@ -126,8 +126,8 @@ async def test_pipeline_raises_when_raise_on_reject_policy_used(
 @pytest.mark.asyncio
 async def test_pipeline_deterministic_workflow_id(fresh_dbos_executor: None):
     """Same (pipeline_name, proposal_id) -> same workflow_id."""
-    from pydantic_ai_stateflow.runtime.det import Det
-    from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
+    from ballast.runtime.det import Det
+    from ballast.runtime.idempotency import IdempotencyInput
 
     pipeline = MutationPipeline[_PipeRefund](
         stages=[_AcceptStage()],

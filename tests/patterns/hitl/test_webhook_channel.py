@@ -11,21 +11,21 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.patterns.hitl.api.router import build_hitl_router
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.api.router import build_hitl_router
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookChannel,
     WebhookConfig,
 )
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryHITLRepository
 
 
 def test_webhook_channel_satisfies_protocol():
@@ -56,10 +56,10 @@ async def test_webhook_channel_posts_signed_payload_then_recvs():
     cfg = WebhookConfig(url="https://hooks.example/cb", secret="sssh")
     channel = WebhookChannel(config=cfg)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.post_webhook",
+        "ballast.patterns.hitl.channels.webhook.post_webhook",
         fake_post,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.DBOS.recv", recv,
+        "ballast.patterns.hitl.channels.webhook.DBOS.recv", recv,
     ):
         result = await channel.ask(prompt, request_id=rid)
 
@@ -85,10 +85,10 @@ async def test_webhook_channel_returns_timeout_on_none():
     cfg = WebhookConfig(url="https://hooks.example/cb", secret="sssh")
     channel = WebhookChannel(config=cfg)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.post_webhook",
+        "ballast.patterns.hitl.channels.webhook.post_webhook",
         AsyncMock(return_value=None),
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.DBOS.recv",
+        "ballast.patterns.hitl.channels.webhook.DBOS.recv",
         AsyncMock(return_value=None),
     ):
         result = await channel.ask(prompt, request_id=rid)
@@ -163,7 +163,7 @@ async def test_webhook_endpoint_accepts_valid_signature_and_sends():
         sent.update(destination_id=destination_id, message=message, topic=topic)
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.api.router.DBOS.send", fake_send,
+        "ballast.patterns.hitl.api.router.DBOS.send", fake_send,
     ), TestClient(app) as client:
         r = client.post(
             f"/hitl/webhook/{req.id}",

@@ -17,18 +17,18 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperDeps,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
     HelperSessionRunner,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryThreadRepository
 
 
 class _Ctx(BaseModel):
@@ -105,9 +105,9 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
         )
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send",
+        "ballast.patterns.hitl.helper.session.DBOS.send",
         fake_send,
     ):
         runner._base_agent_for_test = base
@@ -169,9 +169,9 @@ async def test_runner_loops_on_non_verdict_messages_then_completes(
         })
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send",
+        "ballast.patterns.hitl.helper.session.DBOS.send",
         fake_send,
     ):
         runner._base_agent_for_test = base
@@ -225,9 +225,9 @@ async def test_runner_bounded_by_max_turns(fresh_dbos_executor):
         sends.append((a, k))
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send",
+        "ballast.patterns.hitl.helper.session.DBOS.send",
         fake_send,
     ):
         runner._base_agent_for_test = base

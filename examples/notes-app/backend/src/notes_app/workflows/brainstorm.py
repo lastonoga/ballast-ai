@@ -9,15 +9,15 @@ optionally verifies, picks one ``TodoIdea`` → opens
 "Saved your todo" message lands in the parent thread.
 
 All the heavy lifting lives in the framework:
-- ``pydantic_ai_stateflow.patterns.DivergentConvergent`` —
+- ``ballast.patterns.DivergentConvergent`` —
   fan-out + dedup + verify + synthesise (durable, DBOS-queued).
-- ``pydantic_ai_stateflow.patterns.SemanticDedup`` — optional dedup.
-- ``pydantic_ai_stateflow.patterns.hitl.DurableHITLWorkflow`` —
+- ``ballast.patterns.SemanticDedup`` — optional dedup.
+- ``ballast.patterns.hitl.DurableHITLWorkflow`` —
   ``TodoApprovalFlow`` already subclasses it.
 
 App-specific glue here:
 - ``BrainstormDivergentAgent`` / ``BrainstormSynthesizerAgent``
-  (``notes_app.agents.brainstorm``) are real ``StateflowAgent``
+  (``notes_app.agents.brainstorm``) are real ``BallastAgent``
   subclasses that ALSO implement the framework's structural
   ``DivergentAgent`` / ``Synthesizer`` protocols directly
   (``.diverge`` / ``.synthesize``). No separate adapter layer — the
@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from dbos import DBOSConfiguredInstance
-from pydantic_ai_stateflow import (
+from ballast import (
     DivergentBranch,
     DivergentConvergent,
     Durable,
@@ -44,8 +44,8 @@ from pydantic_ai_stateflow import (
     ThreadEventType,
     get_engine,
 )
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.patterns.divergent_convergent.events import (
+from ballast.capabilities.helpers.embedder import Embedder
+from ballast.patterns.divergent_convergent.events import (
     BranchCompleted,
     BranchEnqueued,
     BranchFailed,
@@ -99,7 +99,7 @@ class BrainstormAgentSpec:
     App passes a tuple of these to ``build_brainstorm_flow`` and the
     factory wraps each in a ``BrainstormDivergentAgent``. Apps that
     want a different provider construct their own ``DivergentBranch``
-    directly with a custom ``StateflowAgent`` and bypass this helper.
+    directly with a custom ``BallastAgent`` and bypass this helper.
     """
     label: str
     model: str
@@ -245,7 +245,7 @@ class BrainstormFlow(DBOSConfiguredInstance):
 
         Pulls the broadcaster off the framework's process-wide
         ``Engine`` — no per-call ``RunContext`` is needed now that
-        ``sf.create_app`` installs the singleton at startup.
+        ``ballast.create_app`` installs the singleton at startup.
         """
         parent_thread_id = task.parent_thread_id
         topic = task.topic

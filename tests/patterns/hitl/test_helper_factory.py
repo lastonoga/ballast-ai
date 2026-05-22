@@ -17,18 +17,18 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
     HelperToolBox,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 
 class _Ctx(BaseModel):

@@ -6,13 +6,13 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.hitl.channel import InMemoryHITLChannel
-from pydantic_ai_stateflow.patterns.hitl.gate import HITLGate
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import ApprovedResponse
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.channel import InMemoryHITLChannel
+from ballast.patterns.hitl.gate import HITLGate
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import ApprovedResponse
+from ballast.patterns.hitl.verdict import HelperVerdict
+from ballast.persistence import InMemoryHITLRepository
 
 
 class _Ctx(BaseModel):

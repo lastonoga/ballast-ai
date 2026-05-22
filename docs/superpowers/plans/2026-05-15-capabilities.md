@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the L1 Capabilities layer of `pydantic-ai-stateflow`: production-grade middleware that wraps `pydantic_ai.Agent` runs. Six capabilities total in this sub-project — `BudgetGuard`, `SemanticLoopDetector`, `PIIGuard`, `GroundedRetry`, plus the shared helpers `SemanticDeduper`, `TypedLoopGuard`, `as_critique`. Two capabilities from the spec catalog (`GoalDriftDetector`, `LLMJudgeHook`) are deferred to later sub-projects because they depend on judge composition (SP5) and EvalStore (SP7) respectively.
+**Goal:** Build the L1 Capabilities layer of `ballast-ai`: production-grade middleware that wraps `pydantic_ai.Agent` runs. Six capabilities total in this sub-project — `BudgetGuard`, `SemanticLoopDetector`, `PIIGuard`, `GroundedRetry`, plus the shared helpers `SemanticDeduper`, `TypedLoopGuard`, `as_critique`. Two capabilities from the spec catalog (`GoalDriftDetector`, `LLMJudgeHook`) are deferred to later sub-projects because they depend on judge composition (SP5) and EvalStore (SP7) respectively.
 
 **Architecture:** Each capability extends a thin `StateflowCapability` base over `pydantic_ai.capabilities.AbstractCapability`. Capabilities mount lifecycle hooks (`before_model_request`, `after_model_request`, `wrap_run`, `on_output_validate_error`) and use `ctx.state` for state that persists across the run (and survives DBOS replay when the run is inside a workflow). The composition of multiple capabilities follows pydantic-ai's wrap semantics: `before_*` fires top-to-bottom, `after_*` reverse, `wrap_*` nests outermost-first.
 
@@ -20,7 +20,7 @@
 ## File Structure
 
 ```
-src/pydantic_ai_stateflow/
+src/ballast/
 ├── capabilities/
 │   ├── __init__.py                # public exports
 │   ├── base.py                    # StateflowCapability base class
@@ -56,8 +56,8 @@ tests/
 ## Task 1: `StateflowCapability` base class
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/__init__.py`
-- Create: `src/pydantic_ai_stateflow/capabilities/base.py`
+- Create: `src/ballast/capabilities/__init__.py`
+- Create: `src/ballast/capabilities/base.py`
 - Create: `tests/capabilities/__init__.py`
 - Create: `tests/capabilities/test_base.py`
 
@@ -68,7 +68,7 @@ tests/
 ```python
 import pytest
 
-from pydantic_ai_stateflow.capabilities import StateflowCapability
+from ballast.capabilities import StateflowCapability
 
 
 def test_stateflow_capability_has_name_classvar():
@@ -108,15 +108,15 @@ uv run pytest tests/capabilities/test_base.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/__init__.py`:
+`src/ballast/capabilities/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from ballast.capabilities.base import StateflowCapability
 
 __all__ = ["StateflowCapability"]
 ```
 
-`src/pydantic_ai_stateflow/capabilities/base.py`:
+`src/ballast/capabilities/base.py`:
 
 ```python
 from __future__ import annotations
@@ -158,7 +158,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/__init__.py src/pydantic_ai_stateflow/capabilities/base.py tests/capabilities
+git add src/ballast/capabilities/__init__.py src/ballast/capabilities/base.py tests/capabilities
 git commit -m "feat(capabilities): StateflowCapability base class"
 ```
 
@@ -169,8 +169,8 @@ git commit -m "feat(capabilities): StateflowCapability base class"
 Outermost capability. Tracks input/output tokens consumed across all `before/after_model_request` hooks. Raises `BudgetExhausted` on overflow.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/budget.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/__init__.py`
+- Create: `src/ballast/capabilities/budget.py`
+- Modify: `src/ballast/capabilities/__init__.py`
 - Create: `tests/capabilities/test_budget_guard.py`
 
 - [ ] **Step 1: Failing tests**
@@ -183,7 +183,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, RequestUsage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import BudgetExhausted, BudgetGuard
+from ballast.capabilities import BudgetExhausted, BudgetGuard
 
 
 def make_fn_model_returning(text: str, *, input_tokens: int = 10, output_tokens: int = 5) -> FunctionModel:
@@ -220,7 +220,7 @@ def test_budget_guard_defaults_are_unlimited_for_tokens():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/budget.py`:
+`src/ballast/capabilities/budget.py`:
 
 ```python
 from __future__ import annotations
@@ -233,7 +233,7 @@ from pydantic_ai.capabilities import CapabilityOrdering
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import ModelRequestContext
 
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from ballast.capabilities.base import StateflowCapability
 
 
 class BudgetExhausted(Exception):
@@ -319,8 +319,8 @@ class BudgetGuard(StateflowCapability):
 Update `__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
-from pydantic_ai_stateflow.capabilities.budget import BudgetExhausted, BudgetGuard
+from ballast.capabilities.base import StateflowCapability
+from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
 
 __all__ = ["BudgetExhausted", "BudgetGuard", "StateflowCapability"]
 ```
@@ -330,7 +330,7 @@ __all__ = ["BudgetExhausted", "BudgetGuard", "StateflowCapability"]
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/budget.py src/pydantic_ai_stateflow/capabilities/__init__.py tests/capabilities/test_budget_guard.py
+git add src/ballast/capabilities/budget.py src/ballast/capabilities/__init__.py tests/capabilities/test_budget_guard.py
 git commit -m "feat(capabilities): BudgetGuard (iteration + token limits)"
 ```
 
@@ -341,8 +341,8 @@ git commit -m "feat(capabilities): BudgetGuard (iteration + token limits)"
 The framework needs embeddings for semantic similarity. We define a Protocol so users can swap implementations (OpenAI / local / cached). Default uses `pydantic_ai.Embedder`.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`
-- Create: `src/pydantic_ai_stateflow/capabilities/helpers/embedder.py`
+- Create: `src/ballast/capabilities/helpers/__init__.py`
+- Create: `src/ballast/capabilities/helpers/embedder.py`
 - Create: `tests/capabilities/test_embedder.py`
 
 - [ ] **Step 1: Failing tests**
@@ -352,7 +352,7 @@ The framework needs embeddings for semantic similarity. We define a Protocol so 
 ```python
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import Embedder
+from ballast.capabilities.helpers import Embedder
 
 
 class _FakeEmbedder:
@@ -386,15 +386,15 @@ async def test_fake_embedder_embed_batch():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`:
+`src/ballast/capabilities/helpers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.embedder import Embedder
 
 __all__ = ["Embedder"]
 ```
 
-`src/pydantic_ai_stateflow/capabilities/helpers/embedder.py`:
+`src/ballast/capabilities/helpers/embedder.py`:
 
 ```python
 from __future__ import annotations
@@ -420,7 +420,7 @@ class Embedder(Protocol):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/helpers tests/capabilities/test_embedder.py
+git add src/ballast/capabilities/helpers tests/capabilities/test_embedder.py
 git commit -m "feat(capabilities): Embedder Protocol"
 ```
 
@@ -431,8 +431,8 @@ git commit -m "feat(capabilities): Embedder Protocol"
 Sliding-window embedder + cosine similarity. Used by both `SemanticLoopDetector` (Task 5) and `TypedLoopGuard` (Task 6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/helpers/semantic_deduper.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`
+- Create: `src/ballast/capabilities/helpers/semantic_deduper.py`
+- Modify: `src/ballast/capabilities/helpers/__init__.py`
 - Create: `tests/capabilities/test_semantic_deduper.py`
 
 - [ ] **Step 1: Failing tests**
@@ -442,7 +442,7 @@ Sliding-window embedder + cosine similarity. Used by both `SemanticLoopDetector`
 ```python
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import (
+from ballast.capabilities.helpers import (
     SemanticDeduper,
     SemanticLoopDetected,
 )
@@ -521,11 +521,11 @@ async def test_deduper_sliding_window_drops_old_entries():
 
 - [ ] **Step 3: Implement**
 
-Update `src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`:
+Update `src/ballast/capabilities/helpers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.capabilities.helpers.semantic_deduper import (
+from ballast.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.semantic_deduper import (
     SemanticDeduper,
     SemanticLoopDetected,
 )
@@ -533,7 +533,7 @@ from pydantic_ai_stateflow.capabilities.helpers.semantic_deduper import (
 __all__ = ["Embedder", "SemanticDeduper", "SemanticLoopDetected"]
 ```
 
-`src/pydantic_ai_stateflow/capabilities/helpers/semantic_deduper.py`:
+`src/ballast/capabilities/helpers/semantic_deduper.py`:
 
 ```python
 from __future__ import annotations
@@ -541,7 +541,7 @@ from __future__ import annotations
 import math
 from collections import deque
 
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.embedder import Embedder
 
 
 class SemanticLoopDetected(Exception):
@@ -599,7 +599,7 @@ class SemanticDeduper:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/helpers/semantic_deduper.py src/pydantic_ai_stateflow/capabilities/helpers/__init__.py tests/capabilities/test_semantic_deduper.py
+git add src/ballast/capabilities/helpers/semantic_deduper.py src/ballast/capabilities/helpers/__init__.py tests/capabilities/test_semantic_deduper.py
 git commit -m "feat(capabilities): SemanticDeduper sliding-window cosine detector"
 ```
 
@@ -610,8 +610,8 @@ git commit -m "feat(capabilities): SemanticDeduper sliding-window cosine detecto
 L1 capability that monitors raw model responses (text + tool-call args) for repetition within a single `agent.run()`.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/semantic_loop.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/__init__.py`
+- Create: `src/ballast/capabilities/semantic_loop.py`
+- Modify: `src/ballast/capabilities/__init__.py`
 - Create: `tests/capabilities/test_semantic_loop_detector.py`
 
 - [ ] **Step 1: Failing tests**
@@ -626,8 +626,8 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import SemanticLoopDetector
-from pydantic_ai_stateflow.capabilities.helpers import SemanticLoopDetected
+from ballast.capabilities import SemanticLoopDetector
+from ballast.capabilities.helpers import SemanticLoopDetected
 
 
 class _IdentityEmbedder:
@@ -644,7 +644,7 @@ class _IdentityEmbedder:
 @pytest.mark.asyncio
 async def test_default_selector_extracts_text_and_toolcalls():
     """Default selector serialises TextPart + ToolCallPart args stably."""
-    from pydantic_ai_stateflow.capabilities.semantic_loop import _default_response_text
+    from ballast.capabilities.semantic_loop import _default_response_text
 
     resp = ModelResponse(parts=[
         TextPart(content="hello"),
@@ -679,7 +679,7 @@ async def test_loop_detector_allows_diverse_responses():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/semantic_loop.py`:
+`src/ballast/capabilities/semantic_loop.py`:
 
 ```python
 from __future__ import annotations
@@ -692,8 +692,8 @@ from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models import ModelRequestContext
 
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
-from pydantic_ai_stateflow.capabilities.helpers import Embedder, SemanticDeduper
+from ballast.capabilities.base import StateflowCapability
+from ballast.capabilities.helpers import Embedder, SemanticDeduper
 
 
 def _default_response_text(response: ModelResponse) -> str:
@@ -753,9 +753,9 @@ class SemanticLoopDetector(StateflowCapability):
 Update `__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
-from pydantic_ai_stateflow.capabilities.budget import BudgetExhausted, BudgetGuard
-from pydantic_ai_stateflow.capabilities.semantic_loop import SemanticLoopDetector
+from ballast.capabilities.base import StateflowCapability
+from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
+from ballast.capabilities.semantic_loop import SemanticLoopDetector
 
 __all__ = [
     "BudgetExhausted",
@@ -770,7 +770,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/semantic_loop.py src/pydantic_ai_stateflow/capabilities/__init__.py tests/capabilities/test_semantic_loop_detector.py
+git add src/ballast/capabilities/semantic_loop.py src/ballast/capabilities/__init__.py tests/capabilities/test_semantic_loop_detector.py
 git commit -m "feat(capabilities): SemanticLoopDetector (raw model-response level)"
 ```
 
@@ -781,8 +781,8 @@ git commit -m "feat(capabilities): SemanticLoopDetector (raw model-response leve
 Used by `Reflection` (SP5) and similar Patterns to detect typed-output loops across iterations.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/helpers/typed_loop_guard.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`
+- Create: `src/ballast/capabilities/helpers/typed_loop_guard.py`
+- Modify: `src/ballast/capabilities/helpers/__init__.py`
 - Create: `tests/capabilities/test_typed_loop_guard.py`
 
 - [ ] **Step 1: Failing tests**
@@ -793,7 +793,7 @@ Used by `Reflection` (SP5) and similar Patterns to detect typed-output loops acr
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.capabilities.helpers import (
+from ballast.capabilities.helpers import (
     SemanticLoopDetected,
     TypedLoopGuard,
 )
@@ -863,12 +863,12 @@ async def test_guard_supports_list_selector():
 Update `helpers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.capabilities.helpers.semantic_deduper import (
+from ballast.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.semantic_deduper import (
     SemanticDeduper,
     SemanticLoopDetected,
 )
-from pydantic_ai_stateflow.capabilities.helpers.typed_loop_guard import TypedLoopGuard
+from ballast.capabilities.helpers.typed_loop_guard import TypedLoopGuard
 
 __all__ = [
     "Embedder",
@@ -878,7 +878,7 @@ __all__ = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/capabilities/helpers/typed_loop_guard.py`:
+`src/ballast/capabilities/helpers/typed_loop_guard.py`:
 
 ```python
 from __future__ import annotations
@@ -886,8 +886,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.capabilities.helpers.semantic_deduper import SemanticDeduper
+from ballast.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.semantic_deduper import SemanticDeduper
 
 OutT = TypeVar("OutT")
 
@@ -934,7 +934,7 @@ class TypedLoopGuard(Generic[OutT]):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/helpers/typed_loop_guard.py src/pydantic_ai_stateflow/capabilities/helpers/__init__.py tests/capabilities/test_typed_loop_guard.py
+git add src/ballast/capabilities/helpers/typed_loop_guard.py src/ballast/capabilities/helpers/__init__.py tests/capabilities/test_typed_loop_guard.py
 git commit -m "feat(capabilities): TypedLoopGuard (Pattern-side typed field loop check)"
 ```
 
@@ -945,8 +945,8 @@ git commit -m "feat(capabilities): TypedLoopGuard (Pattern-side typed field loop
 Innermost capability: redacts PII patterns from `TextPart` responses before any downstream processing.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/pii.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/__init__.py`
+- Create: `src/ballast/capabilities/pii.py`
+- Modify: `src/ballast/capabilities/__init__.py`
 - Create: `tests/capabilities/test_pii_guard.py`
 
 - [ ] **Step 1: Failing tests**
@@ -961,7 +961,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import PIIGuard
+from ballast.capabilities import PIIGuard
 
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
@@ -1012,7 +1012,7 @@ async def test_pii_guard_passes_through_clean_text():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/pii.py`:
+`src/ballast/capabilities/pii.py`:
 
 ```python
 from __future__ import annotations
@@ -1025,7 +1025,7 @@ from pydantic_ai.capabilities import CapabilityOrdering
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestContext
 
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from ballast.capabilities.base import StateflowCapability
 
 
 class PIIGuard(StateflowCapability):
@@ -1070,10 +1070,10 @@ class PIIGuard(StateflowCapability):
 Update `__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
-from pydantic_ai_stateflow.capabilities.budget import BudgetExhausted, BudgetGuard
-from pydantic_ai_stateflow.capabilities.pii import PIIGuard
-from pydantic_ai_stateflow.capabilities.semantic_loop import SemanticLoopDetector
+from ballast.capabilities.base import StateflowCapability
+from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
+from ballast.capabilities.pii import PIIGuard
+from ballast.capabilities.semantic_loop import SemanticLoopDetector
 
 __all__ = [
     "BudgetExhausted",
@@ -1089,7 +1089,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/pii.py src/pydantic_ai_stateflow/capabilities/__init__.py tests/capabilities/test_pii_guard.py
+git add src/ballast/capabilities/pii.py src/ballast/capabilities/__init__.py tests/capabilities/test_pii_guard.py
 git commit -m "feat(capabilities): PIIGuard (regex-based redaction)"
 ```
 
@@ -1100,8 +1100,8 @@ git commit -m "feat(capabilities): PIIGuard (regex-based redaction)"
 Transforms `ValidationError` on output into a structured `ModelRetry` with field-specific feedback.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/grounded_retry.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/__init__.py`
+- Create: `src/ballast/capabilities/grounded_retry.py`
+- Modify: `src/ballast/capabilities/__init__.py`
 - Create: `tests/capabilities/test_grounded_retry.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1112,7 +1112,7 @@ Transforms `ValidationError` on output into a structured `ModelRetry` with field
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.capabilities.grounded_retry import (
+from ballast.capabilities.grounded_retry import (
     GroundedRetry,
     _build_feedback,
 )
@@ -1165,7 +1165,7 @@ def test_grounded_retry_accepts_custom_max_retries():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/capabilities/grounded_retry.py`:
+`src/ballast/capabilities/grounded_retry.py`:
 
 ```python
 from __future__ import annotations
@@ -1175,7 +1175,7 @@ from typing import Any
 from pydantic import ValidationError
 from pydantic_ai import ModelRetry, RunContext
 
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
+from ballast.capabilities.base import StateflowCapability
 
 
 def _build_feedback(error: ValidationError, raw_output: Any) -> str:
@@ -1237,11 +1237,11 @@ class GroundedRetry(StateflowCapability):
 Update `__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.base import StateflowCapability
-from pydantic_ai_stateflow.capabilities.budget import BudgetExhausted, BudgetGuard
-from pydantic_ai_stateflow.capabilities.grounded_retry import GroundedRetry
-from pydantic_ai_stateflow.capabilities.pii import PIIGuard
-from pydantic_ai_stateflow.capabilities.semantic_loop import SemanticLoopDetector
+from ballast.capabilities.base import StateflowCapability
+from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
+from ballast.capabilities.grounded_retry import GroundedRetry
+from ballast.capabilities.pii import PIIGuard
+from ballast.capabilities.semantic_loop import SemanticLoopDetector
 
 __all__ = [
     "BudgetExhausted",
@@ -1258,7 +1258,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/grounded_retry.py src/pydantic_ai_stateflow/capabilities/__init__.py tests/capabilities/test_grounded_retry.py
+git add src/ballast/capabilities/grounded_retry.py src/ballast/capabilities/__init__.py tests/capabilities/test_grounded_retry.py
 git commit -m "feat(capabilities): GroundedRetry (structured ValidationError feedback)"
 ```
 
@@ -1269,8 +1269,8 @@ git commit -m "feat(capabilities): GroundedRetry (structured ValidationError fee
 Lets Pattern code (Reflection in SP5) accept either an `Agent[..., Critique]` or a plain Python `async def critic(input) -> X` for the critic.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/capabilities/helpers/as_critique.py`
-- Modify: `src/pydantic_ai_stateflow/capabilities/helpers/__init__.py`
+- Create: `src/ballast/capabilities/helpers/as_critique.py`
+- Modify: `src/ballast/capabilities/helpers/__init__.py`
 - Create: `tests/capabilities/test_as_critique.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1281,7 +1281,7 @@ Lets Pattern code (Reflection in SP5) accept either an `Agent[..., Critique]` or
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique, as_critique
+from ballast.capabilities.helpers import Critique, as_critique
 
 
 class CustomVerdict(BaseModel):
@@ -1342,13 +1342,13 @@ Add `Critique` to helpers `__init__.py` exports + new module.
 Update `helpers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.capabilities.helpers.as_critique import Critique, as_critique
-from pydantic_ai_stateflow.capabilities.helpers.embedder import Embedder
-from pydantic_ai_stateflow.capabilities.helpers.semantic_deduper import (
+from ballast.capabilities.helpers.as_critique import Critique, as_critique
+from ballast.capabilities.helpers.embedder import Embedder
+from ballast.capabilities.helpers.semantic_deduper import (
     SemanticDeduper,
     SemanticLoopDetected,
 )
-from pydantic_ai_stateflow.capabilities.helpers.typed_loop_guard import TypedLoopGuard
+from ballast.capabilities.helpers.typed_loop_guard import TypedLoopGuard
 
 __all__ = [
     "Critique",
@@ -1360,7 +1360,7 @@ __all__ = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/capabilities/helpers/as_critique.py`:
+`src/ballast/capabilities/helpers/as_critique.py`:
 
 ```python
 from __future__ import annotations
@@ -1434,7 +1434,7 @@ def as_critique(fn: Callable[[Any], Awaitable[Any]] | Any) -> Agent[Any, Critiqu
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/capabilities/helpers/as_critique.py src/pydantic_ai_stateflow/capabilities/helpers/__init__.py tests/capabilities/test_as_critique.py
+git add src/ballast/capabilities/helpers/as_critique.py src/ballast/capabilities/helpers/__init__.py tests/capabilities/test_as_critique.py
 git commit -m "feat(capabilities): as_critique adapter (non-LLM critics as Agent)"
 ```
 
@@ -1443,15 +1443,15 @@ git commit -m "feat(capabilities): as_critique adapter (non-LLM critics as Agent
 ## Task 10: Public API + integration smoke
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/__init__.py`
+- Modify: `src/ballast/__init__.py`
 - Create: `tests/capabilities/test_public_api.py`
 
 - [ ] **Step 1: Update top-level exports**
 
-In `src/pydantic_ai_stateflow/__init__.py`, ADD:
+In `src/ballast/__init__.py`, ADD:
 
 ```python
-from pydantic_ai_stateflow.capabilities import (
+from ballast.capabilities import (
     BudgetExhausted,
     BudgetGuard,
     GroundedRetry,
@@ -1459,7 +1459,7 @@ from pydantic_ai_stateflow.capabilities import (
     SemanticLoopDetector,
     StateflowCapability,
 )
-from pydantic_ai_stateflow.capabilities.helpers import (
+from ballast.capabilities.helpers import (
     Critique,
     Embedder,
     SemanticDeduper,
@@ -1495,7 +1495,7 @@ __all__ = [
 
 ```python
 def test_capabilities_visible_at_top_level():
-    from pydantic_ai_stateflow import (
+    from ballast import (
         BudgetExhausted,
         BudgetGuard,
         Critique,
@@ -1524,7 +1524,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow import BudgetGuard, PIIGuard
+from ballast import BudgetGuard, PIIGuard
 
 
 @pytest.mark.asyncio
@@ -1551,7 +1551,7 @@ async def test_two_capabilities_compose_in_one_agent():
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/__init__.py tests/capabilities/test_public_api.py
+git add src/ballast/__init__.py tests/capabilities/test_public_api.py
 git commit -m "feat: Sub-project #4 public API (capabilities + helpers)"
 ```
 
@@ -1561,7 +1561,7 @@ git commit -m "feat: Sub-project #4 public API (capabilities + helpers)"
 
 After all 10 tasks:
 
-- ✅ `from pydantic_ai_stateflow import BudgetGuard, SemanticLoopDetector, PIIGuard, GroundedRetry, as_critique, TypedLoopGuard, Embedder, Critique, ...` works
+- ✅ `from ballast import BudgetGuard, SemanticLoopDetector, PIIGuard, GroundedRetry, as_critique, TypedLoopGuard, Embedder, Critique, ...` works
 - ✅ `BudgetGuard(max_iterations=N, max_input_tokens=N, max_output_tokens=N)` enforces during `agent.run()` via `before_model_request` / `after_model_request` hooks
 - ✅ `PIIGuard(patterns=[regex])` redacts text in `TextPart`s via `after_model_request` (innermost)
 - ✅ `SemanticLoopDetector(embedder=..., threshold=..., window=...)` detects repeated raw responses via `SemanticDeduper`

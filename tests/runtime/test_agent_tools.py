@@ -1,4 +1,4 @@
-"""``@StateflowAgent.tool`` decorator + auto-grounded ``prepare`` hooks.
+"""``@BallastAgent.tool`` decorator + auto-grounded ``prepare`` hooks.
 
 NOTE: this module intentionally does NOT use
 ``from __future__ import annotations``. pydantic-ai's tool registration
@@ -17,14 +17,14 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_stateflow.grounded import Ref, Selector
-from pydantic_ai_stateflow.runtime import StateflowAgent
+from ballast.grounded import Ref, Selector
+from ballast.runtime import BallastAgent
 
 
 # ── Toolly: mixed ctx and plain tools ────────────────────────────────────────
 
 
-class _Toolly(StateflowAgent):
+class _Toolly(BallastAgent):
     name = "toolly"
 
     def build_agent(self) -> Agent[None, str]:
@@ -73,7 +73,7 @@ def test_tool_decorator_runs_idempotently() -> None:
 # ── Parent/Child inheritance ────────────────────────────────────────────────
 
 
-class _Parent(StateflowAgent):
+class _Parent(BallastAgent):
     name = "parent"
 
     def build_agent(self) -> Agent[None, str]:
@@ -112,7 +112,7 @@ def test_parent_in_isolation_has_only_own_tools() -> None:
 # ── Subclass override of a parent tool ──────────────────────────────────────
 
 
-class _Base(StateflowAgent):
+class _Base(BallastAgent):
     name = "base"
 
     def build_agent(self) -> Agent[None, str]:
@@ -165,7 +165,7 @@ async def _list_items(c: Any) -> list[_Item]:
     return list(c.deps.items)
 
 
-class _ItemAgent(StateflowAgent):
+class _ItemAgent(BallastAgent):
     name = "items"
 
     def build_agent(self) -> Agent[_ItemDeps, str]:

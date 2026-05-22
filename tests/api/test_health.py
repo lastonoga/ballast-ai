@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.health import build_health_router
+from ballast.api.health import build_health_router
 
 
 def test_healthz_returns_200_ok():

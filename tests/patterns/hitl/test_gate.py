@@ -4,8 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from pydantic_ai_stateflow.patterns import HITLDenied, HITLGate, HITLTimedOut
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns import HITLDenied, HITLGate, HITLTimedOut
+from ballast.patterns.hitl import (
     AllowAll,
     ApprovedResponse,
     DenyAll,
@@ -14,7 +14,7 @@ from pydantic_ai_stateflow.patterns.hitl import (
     RejectedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.persistence import InMemoryHITLRepository
 
 
 @pytest.mark.asyncio

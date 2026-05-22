@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 
 class _Ctx(BaseModel):

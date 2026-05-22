@@ -5,10 +5,10 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded import Ref
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
+from ballast.grounded.errors import GroundedBuildError
 
 
 class Item(BaseModel):

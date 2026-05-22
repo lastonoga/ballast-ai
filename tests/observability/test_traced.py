@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pydantic_ai_stateflow.observability.spans import traced
+from ballast.observability.spans import traced
 
 
 @pytest.mark.asyncio

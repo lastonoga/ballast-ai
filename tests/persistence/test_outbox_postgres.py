@@ -1,7 +1,7 @@
 import pytest
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.persistence.outbox import PostgresOutboxRepository
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.persistence.outbox import PostgresOutboxRepository
 
 
 @pytest.mark.asyncio

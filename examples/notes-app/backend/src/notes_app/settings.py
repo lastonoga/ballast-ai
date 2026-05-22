@@ -1,6 +1,6 @@
 """Notes-app settings — pydantic-settings module owned by THIS app.
 
-The framework (``pydantic_ai_stateflow.settings``) only knows about
+The framework (``ballast.settings``) only knows about
 framework-owned config (DBOS, observability, logging, API middleware).
 App-specific config (LLM provider keys, model choices) lives here.
 

@@ -1,18 +1,18 @@
-from pydantic_ai_stateflow.capabilities import StateflowCapability
+from ballast.capabilities import BallastCapability
 
 
 def test_stateflow_capability_has_name_classvar() -> None:
-    class FakeCap(StateflowCapability):
+    class FakeCap(BallastCapability):
         name = "fake"
     assert FakeCap.name == "fake"
 
 
 def test_stateflow_capability_is_abstract_capability() -> None:
     from pydantic_ai.capabilities import AbstractCapability
-    assert issubclass(StateflowCapability, AbstractCapability)
+    assert issubclass(BallastCapability, AbstractCapability)
 
 
 def test_stateflow_capability_requires_name_attribute_in_subclass() -> None:
-    class NamelessCap(StateflowCapability):
+    class NamelessCap(BallastCapability):
         pass
     assert NamelessCap.name == "NamelessCap"

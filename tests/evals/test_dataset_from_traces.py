@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.evals.traces import (
+from ballast.evals.traces import (
     InMemoryTraceSource,
     TraceRecord,
     dataset_from_traces,

@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
+from ballast.grounded import Ref
 
 
 class Order(BaseModel):

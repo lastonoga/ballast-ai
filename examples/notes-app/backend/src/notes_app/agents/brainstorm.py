@@ -1,6 +1,6 @@
-"""StateflowAgents for the brainstorm flow.
+"""BallastAgents for the brainstorm flow.
 
-Why ``StateflowAgent`` instead of building bare ``pydantic_ai.Agent``
+Why ``BallastAgent`` instead of building bare ``pydantic_ai.Agent``
 instances in the flow file:
 
 1. ``model_settings()`` lives where the model config does — same place
@@ -47,9 +47,9 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow.errors import MissingDependencyError
-from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.runtime import StateflowAgent
+from ballast.errors import MissingDependencyError
+from ballast.persistence.thread.domain import Thread
+from ballast.runtime import BallastAgent
 
 from notes_app.agents.openrouter_profile import profile_for
 from notes_app.models.todo import TodoIdea, TodoIdeas
@@ -67,7 +67,7 @@ def _resolve_api_key() -> str:
     )
 
 
-class BrainstormDivergentAgent(StateflowAgent):
+class BrainstormDivergentAgent(BallastAgent):
     """One branch of the divergent fan-out.
 
     Parameterized by constructor args (model / system_prompt /
@@ -122,7 +122,7 @@ class BrainstormDivergentAgent(StateflowAgent):
         )
 
 
-class BrainstormSynthesizerAgent(StateflowAgent):
+class BrainstormSynthesizerAgent(BallastAgent):
     """Convergent synthesizer. Picks ONE ``TodoIdea`` from the merged
     candidate pool produced by the divergent agents.
 

@@ -1,7 +1,7 @@
-"""Tests for ``StateflowDurableAgent`` — the durable-by-default StateflowAgent.
+"""Tests for ``DurableAgent`` — the durable-by-default BallastAgent.
 
 The agent's ``__init__`` no longer takes the infra triplet — the
-process-wide ``Engine`` (built by ``sf.create_app``) supplies repos +
+process-wide ``Engine`` (built by ``ballast.create_app``) supplies repos +
 event log + stream via ``get_engine()`` whenever the DBOS workflow
 body needs them.
 """
@@ -19,17 +19,17 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import (
+from ballast.runtime import (
     EventNotification,
     InProcessEventStream,
-    StateflowDurableAgent,
+    DurableAgent,
     thread_channel,
 )
-from pydantic_ai_stateflow.runtime.engine import (
+from ballast.runtime.engine import (
     Engine,
     _reset_engine_for_tests,
     _set_engine,
@@ -38,8 +38,8 @@ from pydantic_ai_stateflow.runtime.engine import (
 _counter = itertools.count()
 
 
-class _NotesStateflowDurableAgent(StateflowDurableAgent):
-    """Minimal ``StateflowDurableAgent`` subclass for tests — TestModel-backed."""
+class _NotesDurableAgent(DurableAgent):
+    """Minimal ``DurableAgent`` subclass for tests — TestModel-backed."""
 
     name = "notes-durable-test"
     metadata_model = None
@@ -57,13 +57,13 @@ class _NotesStateflowDurableAgent(StateflowDurableAgent):
         return None
 
 
-def _build(thread_repo, log, stream) -> _NotesStateflowDurableAgent:
+def _build(thread_repo, log, stream) -> _NotesDurableAgent:
     """Return a durable-agent instance for tests.
 
     Also installs a fresh process-wide ``Engine`` so the workflow body's
     ``get_engine()`` resolves to the test repos.
     """
-    durable = _NotesStateflowDurableAgent(
+    durable = _NotesDurableAgent(
         config_name=f"durable-test-{next(_counter)}",
     )
     _reset_engine_for_tests()
@@ -199,7 +199,7 @@ async def test_cancel_thread_runs_emits_cancelled_event(
 async def test_enqueue_run_deterministic_workflow_id(
     fresh_dbos_executor: None,
 ) -> None:
-    from pydantic_ai_stateflow.runtime.durable_agent import (
+    from ballast.runtime.durable_agent import (
         agent_run_workflow_id,
     )
 
@@ -221,11 +221,11 @@ async def test_enqueue_run_deterministic_workflow_id(
 
 @pytest.mark.asyncio
 async def test_subclass_inherits_stateflow_agent_machinery() -> None:
-    """``StateflowDurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools."""
-    from pydantic_ai_stateflow.runtime.agents import StateflowAgent
+    """``DurableAgent`` subclasses retain ``name`` / ``metadata_model`` / tools."""
+    from ballast.runtime.agents import BallastAgent
 
-    assert issubclass(_NotesStateflowDurableAgent, StateflowAgent)
-    assert _NotesStateflowDurableAgent.name == "notes-durable-test"
-    assert _NotesStateflowDurableAgent.metadata_model is None
-    assert hasattr(_NotesStateflowDurableAgent, "tool")
-    assert hasattr(_NotesStateflowDurableAgent, "system_prompt")
+    assert issubclass(_NotesDurableAgent, BallastAgent)
+    assert _NotesDurableAgent.name == "notes-durable-test"
+    assert _NotesDurableAgent.metadata_model is None
+    assert hasattr(_NotesDurableAgent, "tool")
+    assert hasattr(_NotesDurableAgent, "system_prompt")

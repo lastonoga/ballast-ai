@@ -6,11 +6,11 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow import BudgetGuard, PIIGuard
+from ballast import BudgetGuard, PIIGuard
 
 
 def test_capabilities_visible_at_top_level() -> None:
-    from pydantic_ai_stateflow import (
+    from ballast import (
         BudgetExhausted,
         BudgetGuard,
         Critique,
@@ -20,7 +20,7 @@ def test_capabilities_visible_at_top_level() -> None:
         SemanticDeduper,
         SemanticLoopDetected,
         SemanticLoopDetector,
-        StateflowCapability,
+        BallastCapability,
         TypedLoopGuard,
         as_critique,
     )
@@ -35,7 +35,7 @@ def test_capabilities_visible_at_top_level() -> None:
     assert Embedder is not None
     assert SemanticDeduper is not None
     assert SemanticLoopDetected is not None
-    assert StateflowCapability is not None
+    assert BallastCapability is not None
     assert TypedLoopGuard is not None
 
 
@@ -51,7 +51,7 @@ async def test_two_capabilities_compose_in_one_agent() -> None:
     ) -> AsyncIterator[str]:
         yield "contact alice@example.com"
 
-    from pydantic_ai_stateflow.capabilities import RegexDetector
+    from ballast.capabilities import RegexDetector
     agent = Agent(
         model=FunctionModel(fn, stream_function=stream_fn),
         capabilities=[

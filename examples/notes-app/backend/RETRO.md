@@ -27,7 +27,7 @@
    `stream_text(...)`), diff against the last emitted prefix to compute a
    true text delta, emit `text_delta` + `done` + `error`. This is the
    single biggest copy-paste hazard. A shipping
-   `pydantic_ai_stateflow.adapters.pydantic_ai.make_runner(agent, *,
+   `ballast.adapters.pydantic_ai.make_runner(agent, *,
    text_field="reply")` would erase ~80 lines of boilerplate per app.
 2. **`_PostMessageBody.parts: list[dict]` has no documented schema.** The
    router validates "it's a list of dicts" and stops. Every agent_runner
@@ -109,9 +109,9 @@ here and either patch the frontend mapping or extend `AGUIEncoder`.
 
 ## Framework gaps for iteration 3
 
-- [x] ~~`pydantic_ai_stateflow.adapters.pydantic_ai.make_runner(agent, ...)`
+- [x] ~~`ballast.adapters.pydantic_ai.make_runner(agent, ...)`
       that owns the run-stream + diff + emit loop.~~ Landed as
-      `pydantic_ai_stateflow.api.streaming.make_runner` in iteration 2.1.
+      `ballast.api.streaming.make_runner` in iteration 2.1.
 - [x] ~~Typed `MessagePart` union for `_PostMessageBody.parts`, plus
       `extract_text(parts)` helper.~~ Landed in iteration 2.1.
 - [x] ~~`AgentRunner` as a typed `Protocol` (not `Callable[..., ...]`).~~
@@ -220,7 +220,7 @@ servers that *do* propagate cancellation.
    (notes, tickets, etc.) re-invent `Protocol + InMemoryImpl + TODO
    Postgres impl` for every domain. A documented "domain template"
    (Protocol shape, tenant-scoping conventions, idempotency rules) or even
-   a `pydantic_ai_stateflow.persistence.scaffolds.repository` mini-helper
+   a `ballast.persistence.scaffolds.repository` mini-helper
    would shorten the iteration-N onboarding.
 
 4. **Module-scope app state for the notes repo feels off.** `build_app()`

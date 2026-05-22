@@ -5,7 +5,7 @@ DBOS launch (covered by Task 11 smoke test). Instead this test inspects
 the DBOS step registry to confirm registration.
 """
 
-from pydantic_ai_stateflow.runtime import Det
+from ballast.runtime import Det
 
 
 def _is_dbos_step(fn) -> bool:

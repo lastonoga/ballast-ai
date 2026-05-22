@@ -1,7 +1,7 @@
 import pytest
 
-from pydantic_ai_stateflow.patterns import MutationRejected
-from pydantic_ai_stateflow.patterns.mutation import (
+from ballast.patterns import MutationRejected
+from ballast.patterns.mutation import (
     DropOnReject,
     RaiseOnReject,
     RejectAction,

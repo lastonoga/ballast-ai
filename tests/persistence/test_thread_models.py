@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadStatus
+from ballast.persistence.thread.domain import Message, Thread, ThreadStatus
 
 
 def test_thread_table_registered() -> None:

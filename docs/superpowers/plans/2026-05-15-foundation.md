@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the foundation layer of `pydantic-ai-stateflow`: L0 GroundedSchema (`Ref[T]`, resolver, hydration, escape hatch), `Pattern` Protocol, and `Det` runtime helpers (including `Det.uuid_for` with `IdempotencyInput`). Project skeleton with uv-based tooling, ruff, mypy, pytest. Standalone library; no DBOS, no state, no agent runtime required.
+**Goal:** Build the foundation layer of `ballast-ai`: L0 GroundedSchema (`Ref[T]`, resolver, hydration, escape hatch), `Pattern` Protocol, and `Det` runtime helpers (including `Det.uuid_for` with `IdempotencyInput`). Project skeleton with uv-based tooling, ruff, mypy, pytest. Standalone library; no DBOS, no state, no agent runtime required.
 
 **Architecture:** Pure Pydantic 2.x for L0 (`Ref[T]` is a Pydantic-native type via `__get_pydantic_core_schema__`). `GroundedResolver` recursively scans output_type → finds `Ref[T]` / `Literal` fields → recursively scans context for entity instances → builds dynamic output model via `pydantic.create_model` with `Literal[*ids]` substitutions. `Det.uuid_for(IdempotencyInput)` produces stable UUID5 from a strictly-typed input (`IdempotencyInput` forbids floats and loose dicts to prevent serialization drift). `Pattern` is a Protocol, not a base class.
 
@@ -19,7 +19,7 @@ philadelphia-v1/                       # repo root
 ├── pyproject.toml                     # uv project, dependencies, tool config
 ├── README.md
 ├── .python-version
-├── src/pydantic_ai_stateflow/
+├── src/ballast/
 │   ├── __init__.py                    # public re-exports
 │   ├── _typing.py                     # NewType aliases (ActorId, etc); shared TypeVars
 │   ├── grounded/
@@ -77,8 +77,8 @@ philadelphia-v1/                       # repo root
 - Create: `pyproject.toml`
 - Create: `.python-version`
 - Create: `README.md`
-- Create: `src/pydantic_ai_stateflow/__init__.py` (empty marker)
-- Create: `src/pydantic_ai_stateflow/_typing.py` (empty placeholder for now)
+- Create: `src/ballast/__init__.py` (empty marker)
+- Create: `src/ballast/_typing.py` (empty placeholder for now)
 - Create: `tests/__init__.py` (empty)
 - Create: `tests/conftest.py` (empty)
 
@@ -92,7 +92,7 @@ philadelphia-v1/                       # repo root
 
 ```toml
 [project]
-name = "pydantic-ai-stateflow"
+name = "ballast-ai"
 version = "0.1.0"
 description = "Production-grade orchestration framework for Pydantic AI agents"
 readme = "README.md"
@@ -115,7 +115,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydantic_ai_stateflow"]
+packages = ["src/ballast"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -141,11 +141,11 @@ disallow_any_explicit = false  # Generic Any needed for Pattern[Any, Any]
 - [ ] **Step 3: Create `README.md`**
 
 ```markdown
-# pydantic-ai-stateflow
+# ballast-ai
 
 Production-grade orchestration framework for Pydantic AI agents.
 
-See `docs/superpowers/specs/2026-05-15-pydantic-ai-stateflow-engine-design.md`
+See `docs/superpowers/specs/2026-05-15-ballast-ai-engine-design.md`
 for the full architecture spec.
 
 Sub-project #1 (Foundation) is currently being implemented:
@@ -169,9 +169,9 @@ uv run pytest
 - [ ] **Step 4: Create empty package and test placeholders**
 
 ```bash
-mkdir -p src/pydantic_ai_stateflow tests
-touch src/pydantic_ai_stateflow/__init__.py
-touch src/pydantic_ai_stateflow/_typing.py
+mkdir -p src/ballast tests
+touch src/ballast/__init__.py
+touch src/ballast/_typing.py
 touch tests/__init__.py
 touch tests/conftest.py
 ```
@@ -206,8 +206,8 @@ git commit -m "chore: project skeleton with uv, ruff, mypy, pytest"
 ## Task 2: `Ref[T]` minimal class
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/__init__.py`
-- Create: `src/pydantic_ai_stateflow/grounded/ref.py`
+- Create: `src/ballast/grounded/__init__.py`
+- Create: `src/ballast/grounded/ref.py`
 - Create: `tests/grounded/__init__.py`
 - Create: `tests/grounded/test_ref.py`
 
@@ -221,7 +221,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
+from ballast.grounded import Ref
 
 
 class Entity(BaseModel):
@@ -265,19 +265,19 @@ def test_ref_inequality_different_types():
 uv run pytest tests/grounded/test_ref.py -v
 ```
 
-Expected: ImportError — `pydantic_ai_stateflow.grounded` module not found.
+Expected: ImportError — `ballast.grounded` module not found.
 
 - [ ] **Step 3: Implement `Ref[T]` minimal class**
 
-`src/pydantic_ai_stateflow/grounded/__init__.py`:
+`src/ballast/grounded/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.grounded.ref import Ref
+from ballast.grounded.ref import Ref
 
 __all__ = ["Ref"]
 ```
 
-`src/pydantic_ai_stateflow/grounded/ref.py`:
+`src/ballast/grounded/ref.py`:
 
 ```python
 from __future__ import annotations
@@ -358,7 +358,7 @@ Expected: both clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded tests/grounded
+git add src/ballast/grounded tests/grounded
 git commit -m "feat(grounded): Ref[T] minimal class with subscription cache"
 ```
 
@@ -367,7 +367,7 @@ git commit -m "feat(grounded): Ref[T] minimal class with subscription cache"
 ## Task 3: `Ref[T]` Pydantic core schema (UUID string ↔ Ref)
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/ref.py`
+- Modify: `src/ballast/grounded/ref.py`
 - Create: `tests/grounded/test_ref_pydantic.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -381,7 +381,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import Ref
+from ballast.grounded import Ref
 
 
 class Item(BaseModel):
@@ -438,7 +438,7 @@ Expected: `PydanticSchemaGenerationError` — Ref has no Pydantic schema.
 
 - [ ] **Step 3: Add `__get_pydantic_core_schema__` to `Ref`**
 
-In `src/pydantic_ai_stateflow/grounded/ref.py`, replace the `Ref` class with:
+In `src/ballast/grounded/ref.py`, replace the `Ref` class with:
 
 ```python
 from __future__ import annotations
@@ -543,7 +543,7 @@ Expected: all tests pass (Task 2 + Task 3 = 9 tests).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/ref.py tests/grounded/test_ref_pydantic.py
+git add src/ballast/grounded/ref.py tests/grounded/test_ref_pydantic.py
 git commit -m "feat(grounded): Ref[T] Pydantic core schema (UUID string ↔ Ref)"
 ```
 
@@ -552,7 +552,7 @@ git commit -m "feat(grounded): Ref[T] Pydantic core schema (UUID string ↔ Ref)
 ## Task 4: `Ref[T].hydrate(repo)` async materialization
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/ref.py`
+- Modify: `src/ballast/grounded/ref.py`
 - Create: `tests/grounded/test_ref_hydrate.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -565,7 +565,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
+from ballast.grounded import Ref
 
 
 class Order(BaseModel):
@@ -612,7 +612,7 @@ Expected: `AttributeError: 'Ref' object has no attribute 'hydrate'`.
 
 - [ ] **Step 3: Implement `hydrate`**
 
-In `src/pydantic_ai_stateflow/grounded/ref.py`, add at the end of the `Ref` class (before `__eq__`):
+In `src/ballast/grounded/ref.py`, add at the end of the `Ref` class (before `__eq__`):
 
 ```python
     async def hydrate(self, repo: "RepositoryLike[EntityT]") -> EntityT:
@@ -654,7 +654,7 @@ Expected: all clean.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/ref.py tests/grounded/test_ref_hydrate.py
+git add src/ballast/grounded/ref.py tests/grounded/test_ref_hydrate.py
 git commit -m "feat(grounded): Ref[T].hydrate(repo) async materialization"
 ```
 
@@ -663,8 +663,8 @@ git commit -m "feat(grounded): Ref[T].hydrate(repo) async materialization"
 ## Task 5: `IdempotencyInput` strict type
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/__init__.py`
-- Create: `src/pydantic_ai_stateflow/runtime/idempotency.py`
+- Create: `src/ballast/runtime/__init__.py`
+- Create: `src/ballast/runtime/idempotency.py`
 - Create: `tests/runtime/__init__.py`
 - Create: `tests/runtime/test_idempotency.py`
 
@@ -680,7 +680,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from pydantic_ai_stateflow.runtime import IdempotencyInput
+from ballast.runtime import IdempotencyInput
 
 
 def test_accepts_allowed_primitive_types():
@@ -741,19 +741,19 @@ def test_canonical_json_distinguishes_namespaces():
 uv run pytest tests/runtime/test_idempotency.py -v
 ```
 
-Expected: ImportError — `pydantic_ai_stateflow.runtime` not found.
+Expected: ImportError — `ballast.runtime` not found.
 
 - [ ] **Step 3: Implement `IdempotencyInput`**
 
-`src/pydantic_ai_stateflow/runtime/__init__.py`:
+`src/ballast/runtime/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, IdempotencyValue
+from ballast.runtime.idempotency import IdempotencyInput, IdempotencyValue
 
 __all__ = ["IdempotencyInput", "IdempotencyValue"]
 ```
 
-`src/pydantic_ai_stateflow/runtime/idempotency.py`:
+`src/ballast/runtime/idempotency.py`:
 
 ```python
 from __future__ import annotations
@@ -848,7 +848,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime tests/runtime
+git add src/ballast/runtime tests/runtime
 git commit -m "feat(runtime): IdempotencyInput strict type rejects floats and unknown objects"
 ```
 
@@ -857,8 +857,8 @@ git commit -m "feat(runtime): IdempotencyInput strict type rejects floats and un
 ## Task 6: `Det` helpers (`now`, `uuid4`, `random_choice`) without DBOS
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/det.py`
-- Modify: `src/pydantic_ai_stateflow/runtime/__init__.py`
+- Create: `src/ballast/runtime/det.py`
+- Modify: `src/ballast/runtime/__init__.py`
 - Create: `tests/runtime/test_det.py`
 
 > **Note:** In Sub-project #3 (Runtime + DI) these helpers will be wrapped as `@DBOS.step` decorators. For Sub-project #1 they are plain async functions — the DBOS integration is an additive change.
@@ -873,7 +873,7 @@ from uuid import UUID
 
 import pytest
 
-from pydantic_ai_stateflow.runtime import Det
+from ballast.runtime import Det
 
 
 @pytest.mark.asyncio
@@ -915,7 +915,7 @@ Expected: `ImportError: cannot import name 'Det'`.
 
 - [ ] **Step 3: Implement `Det` minus `uuid_for` (added in Task 7)**
 
-`src/pydantic_ai_stateflow/runtime/det.py`:
+`src/ballast/runtime/det.py`:
 
 ```python
 from __future__ import annotations
@@ -950,11 +950,11 @@ class Det:
         return random.choice(seq)
 ```
 
-Modify `src/pydantic_ai_stateflow/runtime/__init__.py`:
+Modify `src/ballast/runtime/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.runtime.det import Det
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, IdempotencyValue
+from ballast.runtime.det import Det
+from ballast.runtime.idempotency import IdempotencyInput, IdempotencyValue
 
 __all__ = ["Det", "IdempotencyInput", "IdempotencyValue"]
 ```
@@ -976,7 +976,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/det.py src/pydantic_ai_stateflow/runtime/__init__.py tests/runtime/test_det.py
+git add src/ballast/runtime/det.py src/ballast/runtime/__init__.py tests/runtime/test_det.py
 git commit -m "feat(runtime): Det.now / uuid4 / random_choice (pre-DBOS)"
 ```
 
@@ -985,7 +985,7 @@ git commit -m "feat(runtime): Det.now / uuid4 / random_choice (pre-DBOS)"
 ## Task 7: `Det.uuid_for(IdempotencyInput)` deterministic UUID5
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/runtime/det.py`
+- Modify: `src/ballast/runtime/det.py`
 - Modify: `tests/runtime/test_det.py`
 
 - [ ] **Step 1: Add failing tests for `Det.uuid_for`**
@@ -994,7 +994,7 @@ Append to `tests/runtime/test_det.py`:
 
 ```python
 from uuid import UUID
-from pydantic_ai_stateflow.runtime import IdempotencyInput
+from ballast.runtime import IdempotencyInput
 
 
 @pytest.mark.asyncio
@@ -1036,7 +1036,7 @@ Expected: 4 new tests fail with `AttributeError: type object 'Det' has no attrib
 
 - [ ] **Step 3: Implement `Det.uuid_for`**
 
-In `src/pydantic_ai_stateflow/runtime/det.py`, replace the file with:
+In `src/ballast/runtime/det.py`, replace the file with:
 
 ```python
 from __future__ import annotations
@@ -1046,7 +1046,7 @@ from datetime import datetime, timezone
 from typing import TypeVar
 from uuid import UUID, uuid4 as _uuid4, uuid5
 
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
+from ballast.runtime.idempotency import IdempotencyInput
 
 T = TypeVar("T")
 
@@ -1111,7 +1111,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/det.py tests/runtime/test_det.py
+git add src/ballast/runtime/det.py tests/runtime/test_det.py
 git commit -m "feat(runtime): Det.uuid_for deterministic UUID5 from IdempotencyInput"
 ```
 
@@ -1120,8 +1120,8 @@ git commit -m "feat(runtime): Det.uuid_for deterministic UUID5 from IdempotencyI
 ## Task 8: `Pattern` Protocol
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/__init__.py`
-- Create: `src/pydantic_ai_stateflow/patterns/protocol.py`
+- Create: `src/ballast/patterns/__init__.py`
+- Create: `src/ballast/patterns/protocol.py`
 - Create: `tests/patterns/__init__.py`
 - Create: `tests/patterns/test_protocol.py`
 
@@ -1135,7 +1135,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.patterns import Pattern
+from ballast.patterns import Pattern
 
 
 class ConcretePattern:
@@ -1181,15 +1181,15 @@ Expected: ImportError.
 
 - [ ] **Step 3: Implement `Pattern` Protocol**
 
-`src/pydantic_ai_stateflow/patterns/__init__.py`:
+`src/ballast/patterns/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.protocol import Pattern
+from ballast.patterns.protocol import Pattern
 
 __all__ = ["Pattern"]
 ```
 
-`src/pydantic_ai_stateflow/patterns/protocol.py`:
+`src/ballast/patterns/protocol.py`:
 
 ```python
 from __future__ import annotations
@@ -1234,7 +1234,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns tests/patterns
+git add src/ballast/patterns tests/patterns
 git commit -m "feat(patterns): Pattern Protocol (runtime_checkable, structural)"
 ```
 
@@ -1243,8 +1243,8 @@ git commit -m "feat(patterns): Pattern Protocol (runtime_checkable, structural)"
 ## Task 9: `GroundedResolver._scan_output` — detect field roles
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/_spec.py`
-- Create: `src/pydantic_ai_stateflow/grounded/_scan.py`
+- Create: `src/ballast/grounded/_spec.py`
+- Create: `src/ballast/grounded/_scan.py`
 - Create: `tests/grounded/test_resolver_scan_output.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -1257,9 +1257,9 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._scan import scan_output
-from pydantic_ai_stateflow.grounded._spec import FieldRole
+from ballast.grounded import Ref
+from ballast.grounded._scan import scan_output
+from ballast.grounded._spec import FieldRole
 
 
 class Item(BaseModel):
@@ -1344,7 +1344,7 @@ Expected: ImportError on `_scan` / `_spec`.
 
 - [ ] **Step 3: Implement `_spec.py` and `_scan.py`**
 
-`src/pydantic_ai_stateflow/grounded/_spec.py`:
+`src/ballast/grounded/_spec.py`:
 
 ```python
 from __future__ import annotations
@@ -1395,7 +1395,7 @@ class OutputSpec:
         return out
 ```
 
-`src/pydantic_ai_stateflow/grounded/_scan.py`:
+`src/ballast/grounded/_scan.py`:
 
 ```python
 from __future__ import annotations
@@ -1405,8 +1405,8 @@ from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded._spec import FieldRole, FieldSpec, OutputSpec
-from pydantic_ai_stateflow.grounded.ref import Ref
+from ballast.grounded._spec import FieldRole, FieldSpec, OutputSpec
+from ballast.grounded.ref import Ref
 
 
 def scan_output(model: type[BaseModel], path: str = "") -> OutputSpec:
@@ -1493,7 +1493,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_spec.py src/pydantic_ai_stateflow/grounded/_scan.py tests/grounded/test_resolver_scan_output.py
+git add src/ballast/grounded/_spec.py src/ballast/grounded/_scan.py tests/grounded/test_resolver_scan_output.py
 git commit -m "feat(grounded): scan_output classifies field roles (REF/LIST_REF/OPTIONAL_REF/NESTED/LIST_NESTED/LITERAL/FREE)"
 ```
 
@@ -1502,7 +1502,7 @@ git commit -m "feat(grounded): scan_output classifies field roles (REF/LIST_REF/
 ## Task 10: `GroundedResolver._scan_context` — collect entity instances
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/_scan.py`
+- Modify: `src/ballast/grounded/_scan.py`
 - Create: `tests/grounded/test_resolver_scan_context.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -1515,7 +1515,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Item(BaseModel):
@@ -1616,8 +1616,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded import Ref
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Item(BaseModel):
@@ -1711,7 +1711,7 @@ Expected: `ImportError: cannot import name 'scan_context'`.
 
 - [ ] **Step 3: Implement `scan_context` + `ContextSources`**
 
-In `src/pydantic_ai_stateflow/grounded/_spec.py`, add at the bottom:
+In `src/ballast/grounded/_spec.py`, add at the bottom:
 
 ```python
 @dataclass
@@ -1720,10 +1720,10 @@ class ContextSources:
     by_enum_type: dict[type, set[Any]] = field(default_factory=dict)
 ```
 
-In `src/pydantic_ai_stateflow/grounded/_scan.py`, add:
+In `src/ballast/grounded/_scan.py`, add:
 
 ```python
-from pydantic_ai_stateflow.grounded._spec import ContextSources
+from ballast.grounded._spec import ContextSources
 
 
 def scan_context(context: BaseModel, output_spec: OutputSpec, *, max_depth: int = 5) -> ContextSources:
@@ -1777,7 +1777,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_spec.py src/pydantic_ai_stateflow/grounded/_scan.py tests/grounded/test_resolver_scan_context.py
+git add src/ballast/grounded/_spec.py src/ballast/grounded/_scan.py tests/grounded/test_resolver_scan_context.py
 git commit -m "feat(grounded): scan_context collects entity instances recursively"
 ```
 
@@ -1786,8 +1786,8 @@ git commit -m "feat(grounded): scan_context collects entity instances recursivel
 ## Task 11: `_build_dynamic` for simple `Ref` field
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/_build.py`
-- Create: `src/pydantic_ai_stateflow/grounded/errors.py`
+- Create: `src/ballast/grounded/_build.py`
+- Create: `src/ballast/grounded/errors.py`
 - Create: `tests/grounded/test_resolver_build_simple_ref.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -1801,10 +1801,10 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded import Ref
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
+from ballast.grounded.errors import GroundedBuildError
 
 
 class Item(BaseModel):
@@ -1884,7 +1884,7 @@ Expected: ImportError.
 
 - [ ] **Step 3: Implement `errors.py` + `_build.py`**
 
-`src/pydantic_ai_stateflow/grounded/errors.py`:
+`src/ballast/grounded/errors.py`:
 
 ```python
 class GroundedError(Exception):
@@ -1900,7 +1900,7 @@ class GroundedHydrationError(GroundedError):
     """Raised when hydration cannot resolve a Ref via the given repos."""
 ```
 
-`src/pydantic_ai_stateflow/grounded/_build.py`:
+`src/ballast/grounded/_build.py`:
 
 ```python
 from __future__ import annotations
@@ -1909,8 +1909,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, create_model
 
-from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, OutputSpec
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded._spec import ContextSources, FieldRole, OutputSpec
+from ballast.grounded.errors import GroundedBuildError
 
 
 def build_dynamic(
@@ -1946,15 +1946,15 @@ def build_dynamic(
     return create_model(f"Dynamic{model.__name__}", __base__=BaseModel, **fields)
 ```
 
-Modify `src/pydantic_ai_stateflow/grounded/__init__.py` to export errors:
+Modify `src/ballast/grounded/__init__.py` to export errors:
 
 ```python
-from pydantic_ai_stateflow.grounded.errors import (
+from ballast.grounded.errors import (
     GroundedBuildError,
     GroundedError,
     GroundedHydrationError,
 )
-from pydantic_ai_stateflow.grounded.ref import Ref
+from ballast.grounded.ref import Ref
 
 __all__ = [
     "Ref",
@@ -1981,7 +1981,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_build.py src/pydantic_ai_stateflow/grounded/errors.py src/pydantic_ai_stateflow/grounded/__init__.py tests/grounded/test_resolver_build_simple_ref.py
+git add src/ballast/grounded/_build.py src/ballast/grounded/errors.py src/ballast/grounded/__init__.py tests/grounded/test_resolver_build_simple_ref.py
 git commit -m "feat(grounded): build_dynamic replaces Ref[T] with Literal[*ids] for simple case"
 ```
 
@@ -1990,7 +1990,7 @@ git commit -m "feat(grounded): build_dynamic replaces Ref[T] with Literal[*ids] 
 ## Task 12: `_build_dynamic` for `list[Ref]` and `Optional[Ref]`
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/_build.py`
+- Modify: `src/ballast/grounded/_build.py`
 - Create: `tests/grounded/test_resolver_build_collections.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2004,9 +2004,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded import Ref
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Item(BaseModel):
@@ -2085,7 +2085,7 @@ Expected: most fail because `_build.py` currently passes through non-REF roles u
 
 - [ ] **Step 3: Extend `_build.py` to handle `LIST_REF` and `OPTIONAL_REF`**
 
-In `src/pydantic_ai_stateflow/grounded/_build.py`, replace the `match` block in `build_dynamic` with:
+In `src/ballast/grounded/_build.py`, replace the `match` block in `build_dynamic` with:
 
 ```python
         match fspec.role:
@@ -2139,7 +2139,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_build.py tests/grounded/test_resolver_build_collections.py
+git add src/ballast/grounded/_build.py tests/grounded/test_resolver_build_collections.py
 git commit -m "feat(grounded): build_dynamic supports list[Ref] and Optional[Ref]"
 ```
 
@@ -2148,7 +2148,7 @@ git commit -m "feat(grounded): build_dynamic supports list[Ref] and Optional[Ref
 ## Task 13: `_build_dynamic` recurses into nested models
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/_build.py`
+- Modify: `src/ballast/grounded/_build.py`
 - Create: `tests/grounded/test_resolver_build_nested.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2162,9 +2162,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded import Ref
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Item(BaseModel):
@@ -2287,7 +2287,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_build.py tests/grounded/test_resolver_build_nested.py
+git add src/ballast/grounded/_build.py tests/grounded/test_resolver_build_nested.py
 git commit -m "feat(grounded): build_dynamic recurses into nested models and list-of-nested"
 ```
 
@@ -2296,8 +2296,8 @@ git commit -m "feat(grounded): build_dynamic recurses into nested models and lis
 ## Task 14: `_build_dynamic` for `Literal` field — intersection with context
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/_scan.py`
-- Modify: `src/pydantic_ai_stateflow/grounded/_build.py`
+- Modify: `src/ballast/grounded/_scan.py`
+- Modify: `src/ballast/grounded/_build.py`
 - Create: `tests/grounded/test_resolver_build_enums.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2311,8 +2311,8 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Order(BaseModel):
@@ -2375,7 +2375,7 @@ Expected: scan_context doesn't collect Literal values yet, so intersection never
 
 - [ ] **Step 3: Extend `scan_context` to collect Literal values**
 
-In `src/pydantic_ai_stateflow/grounded/_scan.py`, modify `_walk` so that BaseModel walks also collect Literal-typed field values into `sources.by_literal_values`:
+In `src/ballast/grounded/_scan.py`, modify `_walk` so that BaseModel walks also collect Literal-typed field values into `sources.by_literal_values`:
 
 First, extend `ContextSources` in `_spec.py`:
 
@@ -2467,7 +2467,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_spec.py src/pydantic_ai_stateflow/grounded/_scan.py src/pydantic_ai_stateflow/grounded/_build.py tests/grounded/test_resolver_build_enums.py
+git add src/ballast/grounded/_spec.py src/ballast/grounded/_scan.py src/ballast/grounded/_build.py tests/grounded/test_resolver_build_enums.py
 git commit -m "feat(grounded): Literal fields intersect with context-observed values"
 ```
 
@@ -2476,7 +2476,7 @@ git commit -m "feat(grounded): Literal fields intersect with context-observed va
 ## Task 15: Construction-time errors and warnings
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/grounded/_build.py`
+- Modify: `src/ballast/grounded/_build.py`
 - Create: `tests/grounded/test_resolver_errors.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2491,10 +2491,10 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded import Ref
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
+from ballast.grounded.errors import GroundedBuildError
 
 
 class Item(BaseModel):
@@ -2559,7 +2559,7 @@ Expected: large-set warning test fails (no warning emitted yet); other tests may
 
 - [ ] **Step 3: Add large-set warning**
 
-In `src/pydantic_ai_stateflow/grounded/_build.py`, in the `REF` and `LIST_REF` cases, after `ids = sources.by_entity_type.get(...)`:
+In `src/ballast/grounded/_build.py`, in the `REF` and `LIST_REF` cases, after `ids = sources.by_entity_type.get(...)`:
 
 ```python
                 if len(ids) > 1000:
@@ -2590,7 +2590,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/_build.py tests/grounded/test_resolver_errors.py
+git add src/ballast/grounded/_build.py tests/grounded/test_resolver_errors.py
 git commit -m "feat(grounded): construction-time errors and large-set warnings"
 ```
 
@@ -2599,7 +2599,7 @@ git commit -m "feat(grounded): construction-time errors and large-set warnings"
 ## Task 16: Escape-hatch `constraints={...}` in resolver
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/resolver.py`
+- Create: `src/ballast/grounded/resolver.py`
 - Create: `tests/grounded/test_resolver_constraints_override.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2613,9 +2613,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded import Ref
+from ballast.grounded.resolver import GroundedResolver
+from ballast.grounded.errors import GroundedBuildError
 
 
 class Item(BaseModel):
@@ -2677,7 +2677,7 @@ Expected: ImportError on `resolver.GroundedResolver`.
 
 - [ ] **Step 3: Implement `resolver.py` with `constraints` override**
 
-`src/pydantic_ai_stateflow/grounded/resolver.py`:
+`src/ballast/grounded/resolver.py`:
 
 ```python
 from __future__ import annotations
@@ -2687,10 +2687,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
-from pydantic_ai_stateflow.grounded._spec import ContextSources, FieldRole, OutputSpec
-from pydantic_ai_stateflow.grounded.errors import GroundedBuildError
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
+from ballast.grounded._spec import ContextSources, FieldRole, OutputSpec
+from ballast.grounded.errors import GroundedBuildError
 
 
 class GroundedResolver:
@@ -2742,16 +2742,16 @@ class GroundedResolver:
         return self._spec.fields.get(path)
 ```
 
-Update `src/pydantic_ai_stateflow/grounded/__init__.py`:
+Update `src/ballast/grounded/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.grounded.errors import (
+from ballast.grounded.errors import (
     GroundedBuildError,
     GroundedError,
     GroundedHydrationError,
 )
-from pydantic_ai_stateflow.grounded.ref import Ref
-from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
+from ballast.grounded.ref import Ref
+from ballast.grounded.resolver import GroundedResolver
 
 __all__ = [
     "Ref",
@@ -2779,7 +2779,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/resolver.py src/pydantic_ai_stateflow/grounded/__init__.py tests/grounded/test_resolver_constraints_override.py
+git add src/ballast/grounded/resolver.py src/ballast/grounded/__init__.py tests/grounded/test_resolver_constraints_override.py
 git commit -m "feat(grounded): GroundedResolver with escape-hatch constraints override"
 ```
 
@@ -2788,7 +2788,7 @@ git commit -m "feat(grounded): GroundedResolver with escape-hatch constraints ov
 ## Task 17: `GroundedAgent` wrapper + `GroundedResult`
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/agent.py`
+- Create: `src/ballast/grounded/agent.py`
 - Create: `tests/grounded/test_grounded_agent.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2804,7 +2804,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 
-from pydantic_ai_stateflow.grounded import GroundedAgent, Ref
+from ballast.grounded import GroundedAgent, Ref
 
 
 class Item(BaseModel):
@@ -2876,7 +2876,7 @@ Expected: ImportError on `GroundedAgent`.
 
 - [ ] **Step 3: Implement `GroundedAgent` + `GroundedResult`**
 
-`src/pydantic_ai_stateflow/grounded/agent.py`:
+`src/ballast/grounded/agent.py`:
 
 ```python
 from __future__ import annotations
@@ -2887,8 +2887,8 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRunResult
 
-from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
-from pydantic_ai_stateflow.grounded._spec import OutputSpec
+from ballast.grounded.resolver import GroundedResolver
+from ballast.grounded._spec import OutputSpec
 
 OutT = TypeVar("OutT", bound=BaseModel)
 
@@ -2933,17 +2933,17 @@ class GroundedAgent(Generic[OutT]):
 
 > **Note on `agent.override(output_type=...)`:** pydantic-ai's `agent.override` context manager supports overriding the output type per-call. If a version doesn't support this exact kwarg, instead construct a fresh `Agent(model=self.agent.model, output_type=dynamic_output)` and call its `.run`. The first test will guide if a fallback is needed.
 
-Update `src/pydantic_ai_stateflow/grounded/__init__.py`:
+Update `src/ballast/grounded/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.grounded.agent import GroundedAgent, GroundedResult
-from pydantic_ai_stateflow.grounded.errors import (
+from ballast.grounded.agent import GroundedAgent, GroundedResult
+from ballast.grounded.errors import (
     GroundedBuildError,
     GroundedError,
     GroundedHydrationError,
 )
-from pydantic_ai_stateflow.grounded.ref import Ref
-from pydantic_ai_stateflow.grounded.resolver import GroundedResolver
+from ballast.grounded.ref import Ref
+from ballast.grounded.resolver import GroundedResolver
 
 __all__ = [
     "Ref",
@@ -2973,7 +2973,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/agent.py src/pydantic_ai_stateflow/grounded/__init__.py tests/grounded/test_grounded_agent.py
+git add src/ballast/grounded/agent.py src/ballast/grounded/__init__.py tests/grounded/test_grounded_agent.py
 git commit -m "feat(grounded): GroundedAgent wrapper + GroundedResult"
 ```
 
@@ -2982,8 +2982,8 @@ git commit -m "feat(grounded): GroundedAgent wrapper + GroundedResult"
 ## Task 18: `HydrationMap` + `GroundedResult.hydrate(**repos)`
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/grounded/hydration.py`
-- Modify: `src/pydantic_ai_stateflow/grounded/agent.py`
+- Create: `src/ballast/grounded/hydration.py`
+- Modify: `src/ballast/grounded/agent.py`
 - Create: `tests/grounded/test_hydration_map.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -2996,9 +2996,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._scan import scan_output
-from pydantic_ai_stateflow.grounded.hydration import HydrationMap
+from ballast.grounded import Ref
+from ballast.grounded._scan import scan_output
+from ballast.grounded.hydration import HydrationMap
 
 
 class Item(BaseModel):
@@ -3071,7 +3071,7 @@ Expected: ImportError on `hydration`.
 
 - [ ] **Step 3: Implement `HydrationMap`**
 
-`src/pydantic_ai_stateflow/grounded/hydration.py`:
+`src/ballast/grounded/hydration.py`:
 
 ```python
 from __future__ import annotations
@@ -3080,9 +3080,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded._spec import FieldRole, OutputSpec
-from pydantic_ai_stateflow.grounded.errors import GroundedHydrationError
-from pydantic_ai_stateflow.grounded.ref import Ref
+from ballast.grounded._spec import FieldRole, OutputSpec
+from ballast.grounded.errors import GroundedHydrationError
+from ballast.grounded.ref import Ref
 
 
 class HydrationMap:
@@ -3151,10 +3151,10 @@ async def _hydrate_model(
     return out
 ```
 
-Add `hydrate` method on `GroundedResult` — modify `src/pydantic_ai_stateflow/grounded/agent.py`:
+Add `hydrate` method on `GroundedResult` — modify `src/ballast/grounded/agent.py`:
 
 ```python
-from pydantic_ai_stateflow.grounded.hydration import HydrationMap
+from ballast.grounded.hydration import HydrationMap
 
 
 class GroundedResult(BaseModel, Generic[OutT]):
@@ -3204,7 +3204,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/grounded/hydration.py src/pydantic_ai_stateflow/grounded/agent.py tests/grounded/test_hydration_map.py
+git add src/ballast/grounded/hydration.py src/ballast/grounded/agent.py tests/grounded/test_hydration_map.py
 git commit -m "feat(grounded): HydrationMap + GroundedResult.hydrate(**repos) by type-name"
 ```
 
@@ -3213,16 +3213,16 @@ git commit -m "feat(grounded): HydrationMap + GroundedResult.hydrate(**repos) by
 ## Task 19: End-to-end smoke test and public API
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/__init__.py`
+- Modify: `src/ballast/__init__.py`
 - Create: `tests/integration/__init__.py`
 - Create: `tests/integration/test_smoke_end_to_end.py`
 
 - [ ] **Step 1: Wire top-level public API**
 
-`src/pydantic_ai_stateflow/__init__.py`:
+`src/ballast/__init__.py`:
 
 ```python
-"""pydantic-ai-stateflow — Sub-project #1 (Foundation) public API.
+"""ballast-ai — Sub-project #1 (Foundation) public API.
 
 Layer 0 (GroundedSchema):
     Ref, GroundedAgent, GroundedResult, GroundedResolver
@@ -3235,7 +3235,7 @@ Patterns:
     Pattern (Protocol)
 """
 
-from pydantic_ai_stateflow.grounded import (
+from ballast.grounded import (
     GroundedAgent,
     GroundedBuildError,
     GroundedError,
@@ -3244,8 +3244,8 @@ from pydantic_ai_stateflow.grounded import (
     GroundedResult,
     Ref,
 )
-from pydantic_ai_stateflow.patterns import Pattern
-from pydantic_ai_stateflow.runtime import Det, IdempotencyInput, IdempotencyValue
+from ballast.patterns import Pattern
+from ballast.runtime import Det, IdempotencyInput, IdempotencyValue
 
 __all__ = [
     "Det",
@@ -3279,7 +3279,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow import (
+from ballast import (
     Det,
     GroundedAgent,
     IdempotencyInput,
@@ -3387,7 +3387,7 @@ Expected: all tests pass, no type or lint errors.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/__init__.py tests/integration
+git add src/ballast/__init__.py tests/integration
 git commit -m "feat: public API + end-to-end smoke test (Sub-project #1 complete)"
 ```
 
@@ -3397,7 +3397,7 @@ git commit -m "feat: public API + end-to-end smoke test (Sub-project #1 complete
 
 After all 19 tasks:
 
-- ✅ `from pydantic_ai_stateflow import Ref, GroundedAgent, Det, IdempotencyInput, Pattern` works
+- ✅ `from ballast import Ref, GroundedAgent, Det, IdempotencyInput, Pattern` works
 - ✅ A `Ref[Entity]` field serializes to / deserializes from a plain UUID string in Pydantic models
 - ✅ `GroundedResolver` builds a dynamic Pydantic class from output_type + context where every Ref becomes `Literal[*context_ids]`
 - ✅ Hallucinated UUIDs are rejected by Pydantic validation at parse time (no possible silent acceptance)

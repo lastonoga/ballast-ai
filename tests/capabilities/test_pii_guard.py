@@ -19,7 +19,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.capabilities import (
+from ballast.capabilities import (
     PIIGuard,
     PIISpan,
     RegexDetector,

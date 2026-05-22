@@ -16,4 +16,4 @@
 - T6: `format_error()` impl in `errors.py` (rich fallback to plain) + sample colored output snapshot
 - T7: Final test sweep + commit
 
-After all tasks pass: framework + notes-app tests green; `/threads/{nonexistent}` returns `application/problem+json` with code `STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND`.
+After all tasks pass: framework + notes-app tests green; `/threads/{nonexistent}` returns `application/problem+json` with code `BALLAST_PERSISTENCE_THREAD_NOT_FOUND`.

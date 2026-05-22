@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns import (
+from ballast.patterns import (
     SemanticDedup,
     SemanticDedupConfig,
 )

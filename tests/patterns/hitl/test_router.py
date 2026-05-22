@@ -9,10 +9,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.patterns.hitl.api.router import build_hitl_router
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll, DenyAll, Policy
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import (
+from ballast.patterns.hitl.api.router import build_hitl_router
+from ballast.patterns.hitl.policy import AllowAll, DenyAll, Policy
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import (
     HITLRepository,
     InMemoryHITLRepository,
 )
@@ -84,7 +84,7 @@ async def test_respond_200_sends_to_topic_on_grant() -> None:
         sent["topic"] = topic
 
     with (
-        patch("pydantic_ai_stateflow.patterns.hitl.api.router.DBOS.send", fake_send),
+        patch("ballast.patterns.hitl.api.router.DBOS.send", fake_send),
         TestClient(app) as client,
     ):
         r = client.post(f"/hitl/{req.id}/respond", json=body)

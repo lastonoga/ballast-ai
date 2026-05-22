@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the L4 state infrastructure layer of `pydantic-ai-stateflow`: SQLModel framework tables (Tenant, Thread, Message, Outbox, HITL family), Repository Protocols with InMemory + Postgres implementations, `UnitOfWork` Protocol with `SqlAlchemyUnitOfWork` concrete, Alembic migrations, and a testcontainers-based PG integration test setup. Multi-tenant first-class (every method requires `tenant_id`).
+**Goal:** Build the L4 state infrastructure layer of `ballast-ai`: SQLModel framework tables (Tenant, Thread, Message, Outbox, HITL family), Repository Protocols with InMemory + Postgres implementations, `UnitOfWork` Protocol with `SqlAlchemyUnitOfWork` concrete, Alembic migrations, and a testcontainers-based PG integration test setup. Multi-tenant first-class (every method requires `tenant_id`).
 
 **Architecture:** SQLModel (Pydantic 2 + SQLAlchemy 2 async) for persistence rows. Pydantic domain models stay separate (per spec 1.4 #6: Persistence ≠ Domain). `UnitOfWork` Protocol hides SQLAlchemy `AsyncSession` from Pattern signatures (spec 4A.0.5). Repositories are Protocols + InMemory + Postgres concrete pairs. Alembic for migrations; framework migrations run first, app migrations after. `testcontainers[postgresql]` for integration test fixture.
 
@@ -17,7 +17,7 @@
 ## File Structure
 
 ```
-src/pydantic_ai_stateflow/
+src/ballast/
 ├── persistence/
 │   ├── __init__.py                  # public: UnitOfWork, Repos, ...
 │   ├── uow.py                       # UnitOfWork Protocol + SqlAlchemyUnitOfWork
@@ -119,8 +119,8 @@ git commit -m "chore: add SQLModel, SQLAlchemy async, Alembic, testcontainers de
 ## Task 2: `UnitOfWork` Protocol + `SqlAlchemyUnitOfWork`
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/persistence/__init__.py`
-- Create: `src/pydantic_ai_stateflow/persistence/uow.py`
+- Create: `src/ballast/persistence/__init__.py`
+- Create: `src/ballast/persistence/uow.py`
 - Create: `tests/persistence/__init__.py`
 - Create: `tests/persistence/test_uow.py`
 
@@ -135,7 +135,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork, UnitOfWork
+from ballast.persistence import SqlAlchemyUnitOfWork, UnitOfWork
 
 
 @pytest.fixture
@@ -201,15 +201,15 @@ dev = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/persistence/__init__.py`:
+`src/ballast/persistence/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
+from ballast.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
 
 __all__ = ["SqlAlchemyUnitOfWork", "UnitOfWork"]
 ```
 
-`src/pydantic_ai_stateflow/persistence/uow.py`:
+`src/ballast/persistence/uow.py`:
 
 ```python
 from __future__ import annotations
@@ -294,7 +294,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence tests/persistence pyproject.toml uv.lock
+git add src/ballast/persistence tests/persistence pyproject.toml uv.lock
 git commit -m "feat(persistence): UnitOfWork Protocol + SqlAlchemyUnitOfWork"
 ```
 
@@ -303,10 +303,10 @@ git commit -m "feat(persistence): UnitOfWork Protocol + SqlAlchemyUnitOfWork"
 ## Task 3: Alembic skeleton + env.py
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/alembic/env.py`
-- Create: `src/pydantic_ai_stateflow/alembic/script.py.mako`
-- Create: `src/pydantic_ai_stateflow/alembic/versions/__init__.py`
-- Create: `src/pydantic_ai_stateflow/alembic.ini`
+- Create: `src/ballast/alembic/env.py`
+- Create: `src/ballast/alembic/script.py.mako`
+- Create: `src/ballast/alembic/versions/__init__.py`
+- Create: `src/ballast/alembic.ini`
 - Create: `tests/persistence/test_alembic_metadata.py`
 
 - [ ] **Step 1: Write failing test**
@@ -338,9 +338,9 @@ def test_alembic_ini_exists():
     """Alembic config file exists and is loadable."""
     from pathlib import Path
 
-    import pydantic_ai_stateflow
+    import ballast
 
-    pkg_dir = Path(pydantic_ai_stateflow.__file__).parent
+    pkg_dir = Path(ballast.__file__).parent
     assert (pkg_dir / "alembic.ini").exists()
     assert (pkg_dir / "alembic" / "env.py").exists()
     assert (pkg_dir / "alembic" / "script.py.mako").exists()
@@ -350,7 +350,7 @@ def test_alembic_ini_exists():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/alembic.ini`:
+`src/ballast/alembic.ini`:
 
 ```ini
 [alembic]
@@ -394,13 +394,13 @@ format = %(levelname)-5.5s [%(name)s] %(message)s
 datefmt = %H:%M:%S
 ```
 
-`src/pydantic_ai_stateflow/alembic/env.py`:
+`src/ballast/alembic/env.py`:
 
 ```python
-"""Alembic environment for pydantic-ai-stateflow framework tables.
+"""Alembic environment for ballast-ai framework tables.
 
 Importing this module imports every persistence module under
-`pydantic_ai_stateflow.persistence.*` so SQLModel.metadata is populated.
+`ballast.persistence.*` so SQLModel.metadata is populated.
 """
 
 import asyncio
@@ -414,10 +414,10 @@ from sqlmodel import SQLModel
 
 # Import all framework persistence modules so their tables register with SQLModel.metadata.
 # Each new persistence module added below must also be imported here.
-import pydantic_ai_stateflow.persistence.tenant.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.thread.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.outbox.persistence  # noqa: F401
-import pydantic_ai_stateflow.persistence.hitl.persistence    # noqa: F401
+import ballast.persistence.tenant.persistence  # noqa: F401
+import ballast.persistence.thread.persistence  # noqa: F401
+import ballast.persistence.outbox.persistence  # noqa: F401
+import ballast.persistence.hitl.persistence    # noqa: F401
 
 config = context.config
 
@@ -462,7 +462,7 @@ else:
     asyncio.run(run_migrations_online())
 ```
 
-`src/pydantic_ai_stateflow/alembic/script.py.mako`:
+`src/ballast/alembic/script.py.mako`:
 
 ```
 """${message}
@@ -493,34 +493,34 @@ def downgrade() -> None:
     ${downgrades if downgrades else "pass"}
 ```
 
-`src/pydantic_ai_stateflow/alembic/versions/__init__.py`: empty file.
+`src/ballast/alembic/versions/__init__.py`: empty file.
 
 The persistence modules don't exist yet (Tasks 4-9 create them). For env.py to import without error, create placeholder package init files now:
 
 ```bash
-mkdir -p src/pydantic_ai_stateflow/persistence/tenant
-mkdir -p src/pydantic_ai_stateflow/persistence/thread
-mkdir -p src/pydantic_ai_stateflow/persistence/outbox
-mkdir -p src/pydantic_ai_stateflow/persistence/hitl
-touch src/pydantic_ai_stateflow/persistence/tenant/__init__.py
-touch src/pydantic_ai_stateflow/persistence/tenant/persistence.py
-touch src/pydantic_ai_stateflow/persistence/thread/__init__.py
-touch src/pydantic_ai_stateflow/persistence/thread/persistence.py
-touch src/pydantic_ai_stateflow/persistence/outbox/__init__.py
-touch src/pydantic_ai_stateflow/persistence/outbox/persistence.py
-touch src/pydantic_ai_stateflow/persistence/hitl/__init__.py
-touch src/pydantic_ai_stateflow/persistence/hitl/persistence.py
+mkdir -p src/ballast/persistence/tenant
+mkdir -p src/ballast/persistence/thread
+mkdir -p src/ballast/persistence/outbox
+mkdir -p src/ballast/persistence/hitl
+touch src/ballast/persistence/tenant/__init__.py
+touch src/ballast/persistence/tenant/persistence.py
+touch src/ballast/persistence/thread/__init__.py
+touch src/ballast/persistence/thread/persistence.py
+touch src/ballast/persistence/outbox/__init__.py
+touch src/ballast/persistence/outbox/persistence.py
+touch src/ballast/persistence/hitl/__init__.py
+touch src/ballast/persistence/hitl/persistence.py
 ```
 
 Update `pyproject.toml` to ship `alembic.ini` and the `alembic/` folder as package data:
 
 ```toml
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydantic_ai_stateflow"]
-include = ["src/pydantic_ai_stateflow/alembic.ini"]
+packages = ["src/ballast"]
+include = ["src/ballast/alembic.ini"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/pydantic_ai_stateflow/alembic" = "pydantic_ai_stateflow/alembic"
+"src/ballast/alembic" = "ballast/alembic"
 ```
 
 - [ ] **Step 4: Verify tests pass**
@@ -541,7 +541,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/alembic.ini src/pydantic_ai_stateflow/alembic src/pydantic_ai_stateflow/persistence pyproject.toml tests/persistence/test_alembic_metadata.py
+git add src/ballast/alembic.ini src/ballast/alembic src/ballast/persistence pyproject.toml tests/persistence/test_alembic_metadata.py
 git commit -m "feat(persistence): Alembic skeleton (env.py, script.py.mako, alembic.ini)"
 ```
 
@@ -550,9 +550,9 @@ git commit -m "feat(persistence): Alembic skeleton (env.py, script.py.mako, alem
 ## Task 4: TenantRow + Tenant domain
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/persistence/tenant/persistence.py`
-- Create: `src/pydantic_ai_stateflow/persistence/tenant/domain.py`
-- Create: `src/pydantic_ai_stateflow/persistence/tenant/__init__.py`
+- Modify: `src/ballast/persistence/tenant/persistence.py`
+- Create: `src/ballast/persistence/tenant/domain.py`
+- Create: `src/ballast/persistence/tenant/__init__.py`
 - Create: `tests/persistence/test_tenant.py`
 
 - [ ] **Step 1: Failing test**
@@ -565,8 +565,8 @@ from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.tenant.domain import Tenant
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
+from ballast.persistence.tenant.domain import Tenant
+from ballast.persistence.tenant.persistence import TenantRow
 
 
 def test_tenant_row_registered_with_metadata():
@@ -592,16 +592,16 @@ def test_tenant_domain_roundtrip_from_row():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/tenant/__init__.py`:
+`src/ballast/persistence/tenant/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.tenant.domain import Tenant
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
+from ballast.persistence.tenant.domain import Tenant
+from ballast.persistence.tenant.persistence import TenantRow
 
 __all__ = ["Tenant", "TenantRow"]
 ```
 
-`src/pydantic_ai_stateflow/persistence/tenant/persistence.py`:
+`src/ballast/persistence/tenant/persistence.py`:
 
 ```python
 from __future__ import annotations
@@ -623,7 +623,7 @@ class TenantRow(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now_utc)
 ```
 
-`src/pydantic_ai_stateflow/persistence/tenant/domain.py`:
+`src/ballast/persistence/tenant/domain.py`:
 
 ```python
 from __future__ import annotations
@@ -633,7 +633,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
+from ballast.persistence.tenant.persistence import TenantRow
 
 
 class Tenant(BaseModel):
@@ -656,7 +656,7 @@ class Tenant(BaseModel):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/tenant tests/persistence/test_tenant.py
+git add src/ballast/persistence/tenant tests/persistence/test_tenant.py
 git commit -m "feat(persistence): TenantRow table + Tenant domain"
 ```
 
@@ -665,9 +665,9 @@ git commit -m "feat(persistence): TenantRow table + Tenant domain"
 ## Task 5: ThreadRow + MessageRow tables + Thread/Message domain
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/persistence/thread/persistence.py`
-- Create: `src/pydantic_ai_stateflow/persistence/thread/domain.py`
-- Create: `src/pydantic_ai_stateflow/persistence/thread/__init__.py`
+- Modify: `src/ballast/persistence/thread/persistence.py`
+- Create: `src/ballast/persistence/thread/domain.py`
+- Create: `src/ballast/persistence/thread/__init__.py`
 - Create: `tests/persistence/test_thread_models.py`
 
 - [ ] **Step 1: Failing test**
@@ -679,8 +679,8 @@ from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadPurpose
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.domain import Message, Thread, ThreadPurpose
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
 
 
 def test_thread_table_registered():
@@ -757,7 +757,7 @@ def test_message_domain_from_row():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/thread/persistence.py`:
+`src/ballast/persistence/thread/persistence.py`:
 
 ```python
 from __future__ import annotations
@@ -804,7 +804,7 @@ class MessageRow(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now_utc)
 ```
 
-`src/pydantic_ai_stateflow/persistence/thread/domain.py`:
+`src/ballast/persistence/thread/domain.py`:
 
 ```python
 from __future__ import annotations
@@ -816,7 +816,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
 
 
 class ThreadPurpose(StrEnum):
@@ -866,11 +866,11 @@ class Message(BaseModel):
         )
 ```
 
-`src/pydantic_ai_stateflow/persistence/thread/__init__.py`:
+`src/ballast/persistence/thread/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadPurpose
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.domain import Message, Thread, ThreadPurpose
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
 
 __all__ = ["Message", "MessageRow", "Thread", "ThreadPurpose", "ThreadRow"]
 ```
@@ -882,7 +882,7 @@ __all__ = ["Message", "MessageRow", "Thread", "ThreadPurpose", "ThreadRow"]
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/thread tests/persistence/test_thread_models.py
+git add src/ballast/persistence/thread tests/persistence/test_thread_models.py
 git commit -m "feat(persistence): ThreadRow + MessageRow tables + Thread/Message domain"
 ```
 
@@ -891,8 +891,8 @@ git commit -m "feat(persistence): ThreadRow + MessageRow tables + Thread/Message
 ## Task 6: `ThreadRepository` Protocol + `InMemoryThreadRepository`
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/persistence/thread/repository.py`
-- Modify: `src/pydantic_ai_stateflow/persistence/thread/__init__.py`
+- Create: `src/ballast/persistence/thread/repository.py`
+- Modify: `src/ballast/persistence/thread/__init__.py`
 - Create: `tests/persistence/test_thread_inmemory.py`
 
 - [ ] **Step 1: Failing tests**
@@ -904,7 +904,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence.thread import (
     InMemoryThreadRepository,
     ThreadPurpose,
     ThreadRepository,
@@ -1008,7 +1008,7 @@ async def test_history_cross_tenant_isolation(repo, tenant_id, other_tenant_id):
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/thread/repository.py`:
+`src/ballast/persistence/thread/repository.py`:
 
 ```python
 from __future__ import annotations
@@ -1017,7 +1017,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread
+from ballast.persistence.thread.domain import Message, Thread
 
 
 @runtime_checkable
@@ -1086,12 +1086,12 @@ class InMemoryThreadRepository:
         return self._messages[thread_id][:limit]
 ```
 
-Modify `src/pydantic_ai_stateflow/persistence/thread/__init__.py` to add the new exports:
+Modify `src/ballast/persistence/thread/__init__.py` to add the new exports:
 
 ```python
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadPurpose
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.persistence.thread.domain import Message, Thread, ThreadPurpose
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
 )
@@ -1112,7 +1112,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/thread tests/persistence/test_thread_inmemory.py
+git add src/ballast/persistence/thread tests/persistence/test_thread_inmemory.py
 git commit -m "feat(persistence): ThreadRepository Protocol + InMemoryThreadRepository"
 ```
 
@@ -1122,8 +1122,8 @@ git commit -m "feat(persistence): ThreadRepository Protocol + InMemoryThreadRepo
 
 **Files:**
 - Create: `tests/persistence/conftest.py`
-- Create: `src/pydantic_ai_stateflow/persistence/thread/postgres.py`
-- Modify: `src/pydantic_ai_stateflow/persistence/thread/__init__.py`
+- Create: `src/ballast/persistence/thread/postgres.py`
+- Modify: `src/ballast/persistence/thread/__init__.py`
 - Create: `tests/persistence/test_thread_postgres.py`
 
 - [ ] **Step 1: PG fixture in conftest**
@@ -1143,7 +1143,7 @@ from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
-import pydantic_ai_stateflow
+import ballast
 
 
 @pytest.fixture(scope="session")
@@ -1173,7 +1173,7 @@ def pg_dsn_sync(pg_container: PostgresContainer) -> str:
 @pytest.fixture(scope="session", autouse=True)
 def apply_alembic_migrations(pg_dsn_sync: str) -> None:
     """Run Alembic upgrade once per session, before any test runs."""
-    pkg_dir = Path(pydantic_ai_stateflow.__file__).parent
+    pkg_dir = Path(ballast.__file__).parent
     cfg = Config(str(pkg_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(pkg_dir / "alembic"))
     cfg.set_main_option("sqlalchemy.url", pg_dsn_sync)
@@ -1210,10 +1210,10 @@ def create_all_tables(pg_dsn_sync: str) -> None:
     from sqlmodel import SQLModel
 
     # Import persistence modules to populate metadata
-    import pydantic_ai_stateflow.persistence.tenant.persistence  # noqa: F401
-    import pydantic_ai_stateflow.persistence.thread.persistence  # noqa: F401
-    import pydantic_ai_stateflow.persistence.outbox.persistence  # noqa: F401
-    import pydantic_ai_stateflow.persistence.hitl.persistence    # noqa: F401
+    import ballast.persistence.tenant.persistence  # noqa: F401
+    import ballast.persistence.thread.persistence  # noqa: F401
+    import ballast.persistence.outbox.persistence  # noqa: F401
+    import ballast.persistence.hitl.persistence    # noqa: F401
 
     engine = create_engine(pg_dsn_sync)
     SQLModel.metadata.create_all(engine)
@@ -1230,9 +1230,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.persistence.tenant.persistence import TenantRow
+from ballast.persistence.thread import (
     PostgresThreadRepository,
     ThreadPurpose,
 )
@@ -1312,7 +1312,7 @@ async def test_add_message_and_history(session_factory, tenant_id):
 
 - [ ] **Step 4: Implement PostgresThreadRepository**
 
-`src/pydantic_ai_stateflow/persistence/thread/postgres.py`:
+`src/ballast/persistence/thread/postgres.py`:
 
 ```python
 from __future__ import annotations
@@ -1323,8 +1323,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.domain import Message, Thread
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
 
 
 class PostgresThreadRepository:
@@ -1384,13 +1384,13 @@ class PostgresThreadRepository:
         return [Message.from_row(r) for r in rows]
 ```
 
-Update `src/pydantic_ai_stateflow/persistence/thread/__init__.py`:
+Update `src/ballast/persistence/thread/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.thread.domain import Message, Thread, ThreadPurpose
-from pydantic_ai_stateflow.persistence.thread.persistence import MessageRow, ThreadRow
-from pydantic_ai_stateflow.persistence.thread.postgres import PostgresThreadRepository
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.persistence.thread.domain import Message, Thread, ThreadPurpose
+from ballast.persistence.thread.persistence import MessageRow, ThreadRow
+from ballast.persistence.thread.postgres import PostgresThreadRepository
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadRepository,
 )
@@ -1414,7 +1414,7 @@ __all__ = [
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/thread/postgres.py src/pydantic_ai_stateflow/persistence/thread/__init__.py tests/persistence/conftest.py tests/persistence/test_thread_postgres.py
+git add src/ballast/persistence/thread/postgres.py src/ballast/persistence/thread/__init__.py tests/persistence/conftest.py tests/persistence/test_thread_postgres.py
 git commit -m "feat(persistence): PostgresThreadRepository + testcontainers PG fixture"
 ```
 
@@ -1425,11 +1425,11 @@ git commit -m "feat(persistence): PostgresThreadRepository + testcontainers PG f
 Follows the same shape as Tasks 5–7 for Thread but for the Outbox. Outbox enables transactional outbox pattern (Apply + EmitEvent in one transaction) used by MutationPipeline in Sub-project #5.
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/persistence/outbox/persistence.py`
-- Create: `src/pydantic_ai_stateflow/persistence/outbox/domain.py`
-- Create: `src/pydantic_ai_stateflow/persistence/outbox/repository.py`
-- Create: `src/pydantic_ai_stateflow/persistence/outbox/postgres.py`
-- Create: `src/pydantic_ai_stateflow/persistence/outbox/__init__.py`
+- Modify: `src/ballast/persistence/outbox/persistence.py`
+- Create: `src/ballast/persistence/outbox/domain.py`
+- Create: `src/ballast/persistence/outbox/repository.py`
+- Create: `src/ballast/persistence/outbox/postgres.py`
+- Create: `src/ballast/persistence/outbox/__init__.py`
 - Create: `tests/persistence/test_outbox_inmemory.py`
 - Create: `tests/persistence/test_outbox_postgres.py`
 
@@ -1442,7 +1442,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence.outbox import (
+from ballast.persistence.outbox import (
     InMemoryOutboxRepository,
     OutboxRepository,
 )
@@ -1491,9 +1491,9 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.persistence.outbox import PostgresOutboxRepository
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.persistence.outbox import PostgresOutboxRepository
+from ballast.persistence.tenant.persistence import TenantRow
 
 
 @pytest.fixture
@@ -1540,7 +1540,7 @@ async def test_mark_delivered_postgres(session_factory, tenant_id):
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/outbox/persistence.py`:
+`src/ballast/persistence/outbox/persistence.py`:
 
 ```python
 from __future__ import annotations
@@ -1573,7 +1573,7 @@ class OutboxRow(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_now_utc, index=True)
 ```
 
-`src/pydantic_ai_stateflow/persistence/outbox/domain.py`:
+`src/ballast/persistence/outbox/domain.py`:
 
 ```python
 from __future__ import annotations
@@ -1584,7 +1584,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from pydantic_ai_stateflow.persistence.outbox.persistence import OutboxRow
+from ballast.persistence.outbox.persistence import OutboxRow
 
 
 class OutboxEvent(BaseModel):
@@ -1607,7 +1607,7 @@ class OutboxEvent(BaseModel):
         )
 ```
 
-`src/pydantic_ai_stateflow/persistence/outbox/repository.py`:
+`src/ballast/persistence/outbox/repository.py`:
 
 ```python
 from __future__ import annotations
@@ -1616,7 +1616,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from pydantic_ai_stateflow.persistence.outbox.domain import OutboxEvent
+from ballast.persistence.outbox.domain import OutboxEvent
 
 
 @runtime_checkable
@@ -1660,7 +1660,7 @@ class InMemoryOutboxRepository:
                 return
 ```
 
-`src/pydantic_ai_stateflow/persistence/outbox/postgres.py`:
+`src/ballast/persistence/outbox/postgres.py`:
 
 ```python
 from __future__ import annotations
@@ -1672,8 +1672,8 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pydantic_ai_stateflow.persistence.outbox.domain import OutboxEvent
-from pydantic_ai_stateflow.persistence.outbox.persistence import OutboxRow
+from ballast.persistence.outbox.domain import OutboxEvent
+from ballast.persistence.outbox.persistence import OutboxRow
 
 
 class PostgresOutboxRepository:
@@ -1714,13 +1714,13 @@ class PostgresOutboxRepository:
         await self._s.execute(stmt)
 ```
 
-`src/pydantic_ai_stateflow/persistence/outbox/__init__.py`:
+`src/ballast/persistence/outbox/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.outbox.domain import OutboxEvent
-from pydantic_ai_stateflow.persistence.outbox.persistence import OutboxRow
-from pydantic_ai_stateflow.persistence.outbox.postgres import PostgresOutboxRepository
-from pydantic_ai_stateflow.persistence.outbox.repository import (
+from ballast.persistence.outbox.domain import OutboxEvent
+from ballast.persistence.outbox.persistence import OutboxRow
+from ballast.persistence.outbox.postgres import PostgresOutboxRepository
+from ballast.persistence.outbox.repository import (
     InMemoryOutboxRepository,
     OutboxRepository,
 )
@@ -1739,7 +1739,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/outbox tests/persistence/test_outbox_inmemory.py tests/persistence/test_outbox_postgres.py
+git add src/ballast/persistence/outbox tests/persistence/test_outbox_inmemory.py tests/persistence/test_outbox_postgres.py
 git commit -m "feat(persistence): OutboxRepository (Row + Protocol + InMemory + Postgres)"
 ```
 
@@ -1748,9 +1748,9 @@ git commit -m "feat(persistence): OutboxRepository (Row + Protocol + InMemory + 
 ## Task 9: HITL persistence (3 tables: BlockingRequirement, Decision, AuthzDenial)
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/persistence/hitl/persistence.py`
-- Create: `src/pydantic_ai_stateflow/persistence/hitl/domain.py`
-- Create: `src/pydantic_ai_stateflow/persistence/hitl/__init__.py`
+- Modify: `src/ballast/persistence/hitl/persistence.py`
+- Create: `src/ballast/persistence/hitl/domain.py`
+- Create: `src/ballast/persistence/hitl/__init__.py`
 - Create: `tests/persistence/test_hitl_models.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1763,7 +1763,7 @@ from uuid import uuid4
 
 from sqlmodel import SQLModel
 
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence.hitl import (
     AuthzDenialRow,
     BlockingRequirement,
     BlockingRequirementRow,
@@ -1838,7 +1838,7 @@ def test_domain_models_from_rows():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/hitl/persistence.py`:
+`src/ballast/persistence/hitl/persistence.py`:
 
 ```python
 from __future__ import annotations
@@ -1911,7 +1911,7 @@ class AuthzDenialRow(SQLModel, table=True):
     attempted_at: datetime = Field(default_factory=_now_utc)
 ```
 
-`src/pydantic_ai_stateflow/persistence/hitl/domain.py`:
+`src/ballast/persistence/hitl/domain.py`:
 
 ```python
 from __future__ import annotations
@@ -1923,7 +1923,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from pydantic_ai_stateflow.persistence.hitl.persistence import (
+from ballast.persistence.hitl.persistence import (
     AuthzDenialRow,
     BlockingRequirementRow,
     DecisionRow,
@@ -2021,10 +2021,10 @@ class AuthzDenial(BaseModel):
         )
 ```
 
-`src/pydantic_ai_stateflow/persistence/hitl/__init__.py`:
+`src/ballast/persistence/hitl/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.persistence.hitl.domain import (
+from ballast.persistence.hitl.domain import (
     AuthzDenial,
     BlockingRequirement,
     BlockingRequirementStatus,
@@ -2032,7 +2032,7 @@ from pydantic_ai_stateflow.persistence.hitl.domain import (
     DecisionVerdict,
     HITLPurpose,
 )
-from pydantic_ai_stateflow.persistence.hitl.persistence import (
+from ballast.persistence.hitl.persistence import (
     AuthzDenialRow,
     BlockingRequirementRow,
     DecisionRow,
@@ -2056,7 +2056,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/hitl tests/persistence/test_hitl_models.py
+git add src/ballast/persistence/hitl tests/persistence/test_hitl_models.py
 git commit -m "feat(persistence): HITL tables (BlockingRequirement, Decision, AuthzDenial) + domain"
 ```
 
@@ -2065,9 +2065,9 @@ git commit -m "feat(persistence): HITL tables (BlockingRequirement, Decision, Au
 ## Task 10: `HITLRepository` Protocol + InMemory + Postgres
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/persistence/hitl/repository.py`
-- Create: `src/pydantic_ai_stateflow/persistence/hitl/postgres.py`
-- Modify: `src/pydantic_ai_stateflow/persistence/hitl/__init__.py`
+- Create: `src/ballast/persistence/hitl/repository.py`
+- Create: `src/ballast/persistence/hitl/postgres.py`
+- Modify: `src/ballast/persistence/hitl/__init__.py`
 - Create: `tests/persistence/test_hitl_inmemory.py`
 - Create: `tests/persistence/test_hitl_postgres.py`
 
@@ -2080,7 +2080,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence.hitl import (
     BlockingRequirementStatus,
     DecisionVerdict,
     HITLPurpose,
@@ -2172,14 +2172,14 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.persistence.hitl import (
     BlockingRequirementStatus,
     DecisionVerdict,
     HITLPurpose,
     PostgresHITLRepository,
 )
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
+from ballast.persistence.tenant.persistence import TenantRow
 
 
 @pytest.fixture
@@ -2224,7 +2224,7 @@ async def test_request_response_postgres(session_factory, tenant_id):
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/persistence/hitl/repository.py`:
+`src/ballast/persistence/hitl/repository.py`:
 
 ```python
 from __future__ import annotations
@@ -2233,7 +2233,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
-from pydantic_ai_stateflow.persistence.hitl.domain import (
+from ballast.persistence.hitl.domain import (
     AuthzDenial,
     BlockingRequirement,
     BlockingRequirementStatus,
@@ -2346,7 +2346,7 @@ class InMemoryHITLRepository:
                 and r.status == BlockingRequirementStatus.PENDING][:limit]
 ```
 
-`src/pydantic_ai_stateflow/persistence/hitl/postgres.py`:
+`src/ballast/persistence/hitl/postgres.py`:
 
 ```python
 from __future__ import annotations
@@ -2358,13 +2358,13 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pydantic_ai_stateflow.persistence.hitl.domain import (
+from ballast.persistence.hitl.domain import (
     AuthzDenial,
     BlockingRequirement,
     BlockingRequirementStatus,
     Decision,
 )
-from pydantic_ai_stateflow.persistence.hitl.persistence import (
+from ballast.persistence.hitl.persistence import (
     AuthzDenialRow,
     BlockingRequirementRow,
     DecisionRow,
@@ -2461,10 +2461,10 @@ class PostgresHITLRepository:
         return [BlockingRequirement.from_row(r) for r in rows]
 ```
 
-Update `src/pydantic_ai_stateflow/persistence/hitl/__init__.py` adding the new exports:
+Update `src/ballast/persistence/hitl/__init__.py` adding the new exports:
 
 ```python
-from pydantic_ai_stateflow.persistence.hitl.domain import (
+from ballast.persistence.hitl.domain import (
     AuthzDenial,
     BlockingRequirement,
     BlockingRequirementStatus,
@@ -2472,13 +2472,13 @@ from pydantic_ai_stateflow.persistence.hitl.domain import (
     DecisionVerdict,
     HITLPurpose,
 )
-from pydantic_ai_stateflow.persistence.hitl.persistence import (
+from ballast.persistence.hitl.persistence import (
     AuthzDenialRow,
     BlockingRequirementRow,
     DecisionRow,
 )
-from pydantic_ai_stateflow.persistence.hitl.postgres import PostgresHITLRepository
-from pydantic_ai_stateflow.persistence.hitl.repository import (
+from ballast.persistence.hitl.postgres import PostgresHITLRepository
+from ballast.persistence.hitl.repository import (
     HITLRepository,
     InMemoryHITLRepository,
 )
@@ -2504,7 +2504,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/hitl tests/persistence/test_hitl_inmemory.py tests/persistence/test_hitl_postgres.py
+git add src/ballast/persistence/hitl tests/persistence/test_hitl_inmemory.py tests/persistence/test_hitl_postgres.py
 git commit -m "feat(persistence): HITLRepository Protocol + InMemory + Postgres"
 ```
 
@@ -2513,7 +2513,7 @@ git commit -m "feat(persistence): HITLRepository Protocol + InMemory + Postgres"
 ## Task 11: `testing` package — public InMemory aliases for downstream consumers
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/testing/__init__.py`
+- Create: `src/ballast/testing/__init__.py`
 - Create: `tests/test_testing_package.py`
 
 - [ ] **Step 1: Failing test**
@@ -2521,7 +2521,7 @@ git commit -m "feat(persistence): HITLRepository Protocol + InMemory + Postgres"
 `tests/test_testing_package.py`:
 
 ```python
-from pydantic_ai_stateflow.testing import (
+from ballast.testing import (
     InMemoryHITLRepository,
     InMemoryOutboxRepository,
     InMemoryThreadRepository,
@@ -2538,7 +2538,7 @@ def test_testing_exports_inmemory_repos():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/testing/__init__.py`:
+`src/ballast/testing/__init__.py`:
 
 ```python
 """Test doubles and helpers for downstream consumers.
@@ -2546,12 +2546,12 @@ def test_testing_exports_inmemory_repos():
 Re-exports all `InMemory*` repository implementations so test code can
 import everything from one place:
 
-    from pydantic_ai_stateflow.testing import InMemoryThreadRepository
+    from ballast.testing import InMemoryThreadRepository
 """
 
-from pydantic_ai_stateflow.persistence.hitl import InMemoryHITLRepository
-from pydantic_ai_stateflow.persistence.outbox import InMemoryOutboxRepository
-from pydantic_ai_stateflow.persistence.thread import InMemoryThreadRepository
+from ballast.persistence.hitl import InMemoryHITLRepository
+from ballast.persistence.outbox import InMemoryOutboxRepository
+from ballast.persistence.thread import InMemoryThreadRepository
 
 __all__ = [
     "InMemoryHITLRepository",
@@ -2565,7 +2565,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/testing tests/test_testing_package.py
+git add src/ballast/testing tests/test_testing_package.py
 git commit -m "feat(testing): public InMemory* repository aliases"
 ```
 
@@ -2574,8 +2574,8 @@ git commit -m "feat(testing): public InMemory* repository aliases"
 ## Task 12: Top-level `persistence` public API
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/persistence/__init__.py`
-- Modify: `src/pydantic_ai_stateflow/__init__.py`
+- Modify: `src/ballast/persistence/__init__.py`
+- Modify: `src/ballast/__init__.py`
 - Create: `tests/persistence/test_public_api.py`
 
 - [ ] **Step 1: Failing test**
@@ -2585,7 +2585,7 @@ git commit -m "feat(testing): public InMemory* repository aliases"
 ```python
 def test_persistence_public_api():
     """Persistence-layer Protocols are importable from top-level package."""
-    from pydantic_ai_stateflow.persistence import (
+    from ballast.persistence import (
         HITLRepository,
         OutboxRepository,
         SqlAlchemyUnitOfWork,
@@ -2602,25 +2602,25 @@ def test_persistence_public_api():
 
 - [ ] **Step 2: Run — fails**
 
-- [ ] **Step 3: Update `src/pydantic_ai_stateflow/persistence/__init__.py`**
+- [ ] **Step 3: Update `src/ballast/persistence/__init__.py`**
 
 ```python
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence.hitl import (
     HITLRepository,
     InMemoryHITLRepository,
     PostgresHITLRepository,
 )
-from pydantic_ai_stateflow.persistence.outbox import (
+from ballast.persistence.outbox import (
     InMemoryOutboxRepository,
     OutboxRepository,
     PostgresOutboxRepository,
 )
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence.thread import (
     InMemoryThreadRepository,
     PostgresThreadRepository,
     ThreadRepository,
 )
-from pydantic_ai_stateflow.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
+from ballast.persistence.uow import SqlAlchemyUnitOfWork, UnitOfWork
 
 __all__ = [
     "HITLRepository",
@@ -2642,7 +2642,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/persistence/__init__.py tests/persistence/test_public_api.py
+git add src/ballast/persistence/__init__.py tests/persistence/test_public_api.py
 git commit -m "feat(persistence): top-level persistence public API"
 ```
 
@@ -2651,7 +2651,7 @@ git commit -m "feat(persistence): top-level persistence public API"
 ## Task 13: Alembic 0001 — generate the framework migration
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/alembic/versions/0001_framework_tables.py`
+- Create: `src/ballast/alembic/versions/0001_framework_tables.py`
 - Create: `tests/persistence/test_alembic_migration.py`
 
 - [ ] **Step 1: Failing test**
@@ -2668,7 +2668,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
-import pydantic_ai_stateflow
+import ballast
 
 
 @pytest.fixture
@@ -2682,7 +2682,7 @@ def fresh_engine(pg_dsn_sync: str):
 
 def test_alembic_upgrade_creates_framework_tables(fresh_engine, pg_dsn_sync):
     """Run alembic upgrade head and inspect that all expected tables exist."""
-    pkg_dir = Path(pydantic_ai_stateflow.__file__).parent
+    pkg_dir = Path(ballast.__file__).parent
     cfg = Config(str(pkg_dir / "alembic.ini"))
     cfg.set_main_option("script_location", str(pkg_dir / "alembic"))
     cfg.set_main_option("sqlalchemy.url", pg_dsn_sync)
@@ -2715,7 +2715,7 @@ Since `apply_alembic_migrations` doesn't run autogenerate as part of the test, w
 
 Recommended approach for this task: write the migration by hand from the row definitions.
 
-`src/pydantic_ai_stateflow/alembic/versions/0001_framework_tables.py`:
+`src/ballast/alembic/versions/0001_framework_tables.py`:
 
 ```python
 """framework tables: tenants, threads, messages, outbox, hitl_*
@@ -2854,7 +2854,7 @@ uv run pytest tests/persistence/test_alembic_migration.py -v
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/alembic/versions/0001_framework_tables.py tests/persistence/test_alembic_migration.py
+git add src/ballast/alembic/versions/0001_framework_tables.py tests/persistence/test_alembic_migration.py
 git commit -m "feat(persistence): Alembic 0001 — framework tables migration"
 ```
 
@@ -2876,19 +2876,19 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     PostgresHITLRepository,
     PostgresOutboxRepository,
     PostgresThreadRepository,
     SqlAlchemyUnitOfWork,
 )
-from pydantic_ai_stateflow.persistence.hitl import (
+from ballast.persistence.hitl import (
     BlockingRequirementStatus,
     DecisionVerdict,
     HITLPurpose,
 )
-from pydantic_ai_stateflow.persistence.tenant.persistence import TenantRow
-from pydantic_ai_stateflow.persistence.thread import ThreadPurpose
+from ballast.persistence.tenant.persistence import TenantRow
+from ballast.persistence.thread import ThreadPurpose
 
 
 @pytest.mark.asyncio
@@ -2989,8 +2989,8 @@ git commit -m "test: end-to-end state smoke test (tenant + thread + messages + o
 
 After all 14 tasks:
 
-- ✅ `from pydantic_ai_stateflow.persistence import UnitOfWork, ThreadRepository, OutboxRepository, HITLRepository` works
-- ✅ `from pydantic_ai_stateflow.testing import InMemoryThreadRepository, InMemoryOutboxRepository, InMemoryHITLRepository` works for unit tests
+- ✅ `from ballast.persistence import UnitOfWork, ThreadRepository, OutboxRepository, HITLRepository` works
+- ✅ `from ballast.testing import InMemoryThreadRepository, InMemoryOutboxRepository, InMemoryHITLRepository` works for unit tests
 - ✅ 4 framework SQLModel rows: TenantRow, ThreadRow, MessageRow, OutboxRow + 3 HITL rows = 7 tables
 - ✅ Alembic env.py + 0001 migration runs `upgrade head` cleanly on empty PG
 - ✅ Each Repository has Protocol + InMemory + Postgres implementations

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns.hitl import (
     AllowAll,
     DenyAll,
     Policy,

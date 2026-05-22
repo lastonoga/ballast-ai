@@ -1,4 +1,4 @@
-"""Tests for ``pydantic_ai_stateflow.errors`` — base hierarchy + formatters."""
+"""Tests for ``ballast.errors`` — base hierarchy + formatters."""
 from __future__ import annotations
 
 import re
@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.errors import (
+from ballast.errors import (
     AuthError,
     AuthorizationDenied,
     ConfigurationError,
@@ -14,7 +14,7 @@ from pydantic_ai_stateflow.errors import (
     MissingDependencyError,
     PersistenceError,
     SettingsValidationError,
-    StateflowError,
+    BallastError,
     ThreadMetadataInvalid,
     ThreadNotFound,
     format_error,
@@ -25,13 +25,13 @@ from pydantic_ai_stateflow.errors import (
 
 
 def test_to_dict_shape() -> None:
-    err = StateflowError(
+    err = BallastError(
         "something blew up",
         hint="restart it",
         context={"k": "v"},
     )
     assert err.to_dict() == {
-        "code": "STATEFLOW_UNKNOWN",
+        "code": "BALLAST_UNKNOWN",
         "detail": "something blew up",
         "hint": "restart it",
         "context": {"k": "v"},
@@ -39,20 +39,20 @@ def test_to_dict_shape() -> None:
 
 
 def test_default_status_code() -> None:
-    assert StateflowError.status_code == 500
-    err = StateflowError("x")
+    assert BallastError.status_code == 500
+    err = BallastError("x")
     assert err.status_code == 500
 
 
 def test_repr_mentions_code() -> None:
-    err = StateflowError("boom")
+    err = BallastError("boom")
     r = repr(err)
-    assert "STATEFLOW_UNKNOWN" in r
+    assert "BALLAST_UNKNOWN" in r
     assert "boom" in r
 
 
 def test_context_defaults_to_empty_dict() -> None:
-    err = StateflowError("x")
+    err = BallastError("x")
     assert err.context == {}
     assert err.hint is None
 
@@ -61,14 +61,14 @@ def test_context_defaults_to_empty_dict() -> None:
 
 
 def test_custom_subclass_code_and_status() -> None:
-    class MyErr(StateflowError):
-        code = "STATEFLOW_TEST_THING"
+    class MyErr(BallastError):
+        code = "BALLAST_TEST_THING"
         status_code = 418
 
     err = MyErr("teapot")
-    assert err.code == "STATEFLOW_TEST_THING"
+    assert err.code == "BALLAST_TEST_THING"
     assert err.status_code == 418
-    assert err.to_dict()["code"] == "STATEFLOW_TEST_THING"
+    assert err.to_dict()["code"] == "BALLAST_TEST_THING"
 
 
 def test_hint_and_context_propagate_through_subclass() -> None:
@@ -79,7 +79,7 @@ def test_hint_and_context_propagate_through_subclass() -> None:
 
 
 def test_hierarchy_inheritance() -> None:
-    assert issubclass(ConfigurationError, StateflowError)
+    assert issubclass(ConfigurationError, BallastError)
     assert issubclass(SettingsValidationError, ConfigurationError)
     assert issubclass(MissingDependencyError, ConfigurationError)
     assert issubclass(ConfigurationInvariantViolation, ConfigurationError)
@@ -95,7 +95,7 @@ def test_thread_not_found_with_thread_id() -> None:
     tid = str(uuid4())
     err = ThreadNotFound(thread_id=tid)
     assert err.status_code == 404
-    assert err.code == "STATEFLOW_PERSISTENCE_THREAD_NOT_FOUND"
+    assert err.code == "BALLAST_PERSISTENCE_THREAD_NOT_FOUND"
     assert tid in err.detail
     assert err.context["thread_id"] == tid
     assert err.hint is not None
@@ -125,7 +125,7 @@ def test_auth_error_status() -> None:
 
 def test_configuration_invariant_violation_code() -> None:
     err = ConfigurationInvariantViolation("startup invariant broken")
-    assert err.code == "STATEFLOW_CONFIG_INVARIANT"
+    assert err.code == "BALLAST_CONFIG_INVARIANT"
     assert isinstance(err, ConfigurationError)
 
 
@@ -142,7 +142,7 @@ def test_format_error_plain_no_ansi() -> None:
         context={"provider": "openrouter"},
     )
     out = format_error(err, color=False)
-    assert "STATEFLOW_CONFIG" in out
+    assert "BALLAST_CONFIG" in out
     assert "missing API key" in out
     assert "hint" in out
     assert "set OPENROUTER_API_KEY" in out
@@ -151,16 +151,16 @@ def test_format_error_plain_no_ansi() -> None:
 
 
 def test_format_error_plain_omits_hint_when_none() -> None:
-    err = StateflowError("simple")
+    err = BallastError("simple")
     out = format_error(err, color=False)
     assert "hint" not in out
     assert "context" not in out
-    assert "STATEFLOW_UNKNOWN" in out
+    assert "BALLAST_UNKNOWN" in out
 
 
 def test_format_error_color_true_emits_ansi() -> None:
     pytest.importorskip("rich")
-    err = StateflowError("colorful", hint="fix")
+    err = BallastError("colorful", hint="fix")
     out = format_error(err, color=True)
     assert _ANSI_RE.search(out) is not None
-    assert "STATEFLOW_UNKNOWN" in out
+    assert "BALLAST_UNKNOWN" in out

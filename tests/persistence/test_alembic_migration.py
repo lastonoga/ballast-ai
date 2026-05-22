@@ -9,7 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlmodel import SQLModel
 
-import pydantic_ai_stateflow
+import ballast
 
 
 def test_alembic_upgrade_creates_framework_tables(pg_dsn: str) -> None:
@@ -19,7 +19,7 @@ def test_alembic_upgrade_creates_framework_tables(pg_dsn: str) -> None:
     schema). The migration must work on a fresh database — that's the
     production contract.
     """
-    pkg_dir = Path(pydantic_ai_stateflow.__file__).parent
+    pkg_dir = Path(ballast.__file__).parent
 
     # Drop all framework tables (and any leftover alembic_version) for a clean slate.
     async def _reset_schema() -> None:

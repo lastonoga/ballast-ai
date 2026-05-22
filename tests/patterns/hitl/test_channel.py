@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns.hitl import (
     ApprovedResponse,
     HITLChannel,
     HITLPrompt,

@@ -7,7 +7,7 @@ and context rehydration. This module just supplies the
 notification message back to the parent thread.
 
 Repos + stream are reached via the process-wide ``Engine`` installed
-by ``sf.create_app`` at startup — no per-call ``RunContext`` is
+by ``ballast.create_app`` at startup — no per-call ``RunContext`` is
 threaded through ``open(...)`` anymore.
 
 Note on annotations: like ``notes_app.agents.notes`` we do NOT use
@@ -18,15 +18,15 @@ resolve concrete types at decoration time.
 from uuid import UUID
 
 from pydantic import BaseModel
-from pydantic_ai_stateflow import get_engine
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast import get_engine
+from ballast.patterns.hitl import (
     ApprovedResponse,
     DurableHITLWorkflow,
     HITLResponse,
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.runtime.event_stream import (
+from ballast.runtime.event_stream import (
     EventNotification,
     thread_channel,
 )
@@ -43,8 +43,8 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     finished its conversation.
 
     Reaches the thread repo + event log + event stream through
-    ``sf.get_engine()`` — the framework owns the singleton wired by
-    ``sf.create_app`` at startup, so ``_notify`` doesn't need per-call
+    ``ballast.get_engine()`` — the framework owns the singleton wired by
+    ``ballast.create_app`` at startup, so ``_notify`` doesn't need per-call
     infra injection.
     """
 

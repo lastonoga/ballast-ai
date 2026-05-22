@@ -1,6 +1,6 @@
 # Notes — dogfood reference app
 
-Iteratively-built reference application that exercises `pydantic-ai-stateflow-engine` one layer at a time. Each iteration adds exactly one new framework concern; at every checkpoint we pause, write what we learned in `RETRO.md`, and (if needed) change the framework before moving on.
+Iteratively-built reference application that exercises `ballast-ai-engine` one layer at a time. Each iteration adds exactly one new framework concern; at every checkpoint we pause, write what we learned in `RETRO.md`, and (if needed) change the framework before moving on.
 
 ## Domain
 
@@ -26,4 +26,4 @@ examples/notes-app/
 7. **ObservabilityProvider** — logfire traces.
 8. **Evals from this app's traces** — `dataset-from-traces` against the app's real DBOS state.
 
-Each iteration corresponds to one or two PRs and ends with a RETRO entry. Framework gaps surfaced here become tasks for the next round of changes in `src/pydantic_ai_stateflow/`.
+Each iteration corresponds to one or two PRs and ends with a RETRO entry. Framework gaps surfaced here become tasks for the next round of changes in `src/ballast/`.

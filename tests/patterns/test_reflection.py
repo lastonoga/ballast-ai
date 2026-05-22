@@ -7,8 +7,8 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique, TypedLoopGuard
-from pydantic_ai_stateflow.patterns import AbortOnLoop, Reflection, ReflectionExhausted
+from ballast.capabilities.helpers import Critique, TypedLoopGuard
+from ballast.patterns import AbortOnLoop, Reflection, ReflectionExhausted
 
 
 class Draft(BaseModel):

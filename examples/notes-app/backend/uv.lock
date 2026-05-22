@@ -356,6 +356,49 @@ wheels = [
 ]
 
 [[package]]
+name = "ballast-ai"
+version = "0.1.0"
+source = { editable = "../../../" }
+dependencies = [
+    { name = "alembic" },
+    { name = "asyncpg" },
+    { name = "dbos" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-ai" },
+    { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "sqlmodel" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20" },
+    { name = "alembic", specifier = ">=1.13" },
+    { name = "asyncpg", specifier = ">=0.29" },
+    { name = "dbos", specifier = ">=1.0" },
+    { name = "fastapi", specifier = ">=0.136.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pydantic-ai", specifier = ">=0.0.13" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
+    { name = "sqlmodel", specifier = ">=0.0.22" },
+    { name = "testcontainers", extras = ["postgresql"], marker = "extra == 'dev'", specifier = ">=4.7" },
+    { name = "typer", specifier = ">=0.25.1" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "types-pyyaml", specifier = ">=6.0.12.20260518" }]
+
+[[package]]
 name = "beartype"
 version = "0.22.9"
 source = { registry = "https://pypi.org/simple" }
@@ -2097,12 +2140,12 @@ name = "notes-app"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "ballast-ai" },
     { name = "dbos" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "logfire", extra = ["fastapi", "httpx"] },
     { name = "pydantic-ai" },
-    { name = "pydantic-ai-stateflow" },
     { name = "python-dotenv" },
     { name = "sqlmodel" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2118,13 +2161,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "ballast-ai", editable = "../../../" },
     { name = "dbos", specifier = ">=1.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "logfire", extras = ["fastapi", "httpx"], specifier = ">=4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pydantic-ai", specifier = ">=1.97" },
-    { name = "pydantic-ai-stateflow", editable = "../../../" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
@@ -2745,49 +2788,6 @@ vertexai = [
 xai = [
     { name = "xai-sdk" },
 ]
-
-[[package]]
-name = "pydantic-ai-stateflow"
-version = "0.1.0"
-source = { editable = "../../../" }
-dependencies = [
-    { name = "alembic" },
-    { name = "asyncpg" },
-    { name = "dbos" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "pydantic-ai" },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "sqlmodel" },
-    { name = "typer" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20" },
-    { name = "alembic", specifier = ">=1.13" },
-    { name = "asyncpg", specifier = ">=0.29" },
-    { name = "dbos", specifier = ">=1.0" },
-    { name = "fastapi", specifier = ">=0.136.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pydantic-ai", specifier = ">=0.0.13" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
-    { name = "sqlmodel", specifier = ">=0.0.22" },
-    { name = "testcontainers", extras = ["postgresql"], marker = "extra == 'dev'", specifier = ">=4.7" },
-    { name = "typer", specifier = ">=0.25.1" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "types-pyyaml", specifier = ">=6.0.12.20260518" }]
 
 [[package]]
 name = "pydantic-core"

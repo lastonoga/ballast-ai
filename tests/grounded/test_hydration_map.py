@@ -3,9 +3,9 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._scan import scan_output
-from pydantic_ai_stateflow.grounded.hydration import HydrationMap
+from ballast.grounded import Ref
+from ballast.grounded._scan import scan_output
+from ballast.grounded.hydration import HydrationMap
 
 
 class Item(BaseModel):

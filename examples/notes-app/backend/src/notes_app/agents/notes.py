@@ -1,8 +1,8 @@
-"""OpenRouter-backed ``StateflowAgent`` for the notes app.
+"""OpenRouter-backed ``BallastAgent`` for the notes app.
 
 One file = one agent. ``NotesAgent`` is the framework's per-thread agent
 abstraction (see
-``pydantic_ai_stateflow.runtime.agents.StateflowAgent``); the registry
+``ballast.runtime.agents.BallastAgent``); the registry
 binds ``Thread.agent == "notes"`` to this class.
 
 Tools are declared inline with ``@NotesAgent.tool`` decorators at module
@@ -42,16 +42,16 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow.capabilities import (
+from ballast.capabilities import (
     BudgetGuard,
     PIIGuard,
     RegexDetector,
-    StateflowCapability,
+    BallastCapability,
 )
-from pydantic_ai_stateflow.errors import MissingDependencyError
-from pydantic_ai_stateflow.grounded import Ref, Selector
-from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.runtime import StateflowDurableAgent
+from ballast.errors import MissingDependencyError
+from ballast.grounded import Ref, Selector
+from ballast.persistence.thread.domain import Thread
+from ballast.runtime import DurableAgent
 
 from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.note import Note
@@ -81,7 +81,7 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_RE = re.compile(r"\+?\d[\d\s\-().]{8,}\d")
 
 
-def default_notes_capabilities() -> list[StateflowCapability]:
+def default_notes_capabilities() -> list[BallastCapability]:
     """Capabilities applied to every ``NotesAgent`` run.
 
     - ``BudgetGuard`` bounds iteration count + token spend per run so a
@@ -124,7 +124,7 @@ class NoteToolDeps:
     per-test override (constructed manually in unit tests).
 
     Framework infra (thread repo / event log / event stream) is reached
-    by ``propose_todo`` via ``sf.get_engine()`` — no per-call context
+    by ``propose_todo`` via ``ballast.get_engine()`` — no per-call context
     is threaded through ``NoteToolDeps`` anymore.
     """
 
@@ -132,13 +132,13 @@ class NoteToolDeps:
     parent_thread_id: UUID | None = None
 
 
-class NotesAgent(StateflowDurableAgent):
+class NotesAgent(DurableAgent):
     """Personal-notes durable agent.
 
-    Extends ``StateflowDurableAgent`` so the run loop is a
+    Extends ``DurableAgent`` so the run loop is a
     ``@DBOS.workflow`` — survives SSE disconnects, process restarts,
     and resumable via Last-Event-ID. Tools / system_prompt / metadata
-    semantics are identical to ``StateflowAgent``; the only difference
+    semantics are identical to ``BallastAgent``; the only difference
     is the constructor (which now needs ``thread_repo`` + ``event_log``
     + ``event_stream`` for the durable infrastructure) and the run
     loop (which the streaming router dispatches into a workflow).
@@ -228,7 +228,7 @@ async def create_note(
     Returns the saved note (including its ``id``, which you should use
     for any follow-up edit/delete in the same turn).
 
-    Persisted by default (``StateflowDurableAgent`` wraps in @DBOS.step) —
+    Persisted by default (``DurableAgent`` wraps in @DBOS.step) —
     crash recovery returns the memoized note instead of creating a
     duplicate.
     """
@@ -285,7 +285,7 @@ async def propose_todo(
 ) -> str:
     """Open a confirmation thread for a todo and return immediately.
 
-    Tools run inline in the agent's DBOS workflow context (StateflowDurableAgent
+    Tools run inline in the agent's DBOS workflow context (DurableAgent
     does NOT step-wrap them — DBOSAgent only step-wraps model requests
     and MCP), so calling ``DBOS.start_workflow_async`` here works
     directly: the spawned helper workflow is itself durable on its own.

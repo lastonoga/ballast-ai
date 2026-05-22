@@ -6,16 +6,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.a2a import (
+from ballast.api.a2a import (
     AgentCard,
     build_a2a_router,
 )
-from pydantic_ai_stateflow.api.error_middleware import stateflow_error_handler
-from pydantic_ai_stateflow.errors import StateflowError
+from ballast.api.error_middleware import stateflow_error_handler
+from ballast.errors import BallastError
 
 
 def _install_error_handler(app: FastAPI) -> None:
-    app.add_exception_handler(StateflowError, stateflow_error_handler)
+    app.add_exception_handler(BallastError, stateflow_error_handler)
 
 
 class _EchoAgent:
@@ -68,7 +68,7 @@ async def test_a2a_invoke_404_when_unknown_agent() -> None:
     with TestClient(app) as c:
         r = c.post("/a2a/ghost", json={"messages": []})
     assert r.status_code == 404
-    assert r.json()["error"]["code"] == "STATEFLOW_AGENT_NOT_REGISTERED"
+    assert r.json()["error"]["code"] == "BALLAST_AGENT_NOT_REGISTERED"
 
 
 def test_agent_card_includes_optional_metadata() -> None:

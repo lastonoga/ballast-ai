@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.mutation import (
+from ballast.patterns.mutation import (
     AcceptedResult,
     ApplyTransaction,
     Proposal,

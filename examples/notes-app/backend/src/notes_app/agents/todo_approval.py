@@ -1,4 +1,4 @@
-"""HITL approval ``StateflowAgent`` for the notes-app todo-creation flow.
+"""HITL approval ``BallastAgent`` for the notes-app todo-creation flow.
 
 Threads bound to ``agent="todo_approval"`` are spawned by
 ``NotesAgent.propose_todo`` (see ``notes_app.agents.notes``). Each carries
@@ -28,20 +28,20 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic_ai_stateflow.durable import Durable
+from ballast.durable import Durable
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openrouter import OpenRouterProvider
-from pydantic_ai_stateflow.errors import MissingDependencyError
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.errors import MissingDependencyError
+from ballast.patterns.hitl import (
     ApprovedResponse,
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence.thread.domain import Thread
-from pydantic_ai_stateflow.runtime import StateflowAgent
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence.thread.domain import Thread
+from ballast.runtime import BallastAgent
 
 from notes_app.models.todo_approval import TodoApprovalContext
 from notes_app.repositories.note import NoteRepository
@@ -77,8 +77,8 @@ class TodoApprovalDeps:
     metadata: TodoApprovalContext
 
 
-class NotesTodoApprovalAgent(StateflowAgent):
-    """Confirmation-helper ``StateflowAgent`` for the notes-app todo flow.
+class NotesTodoApprovalAgent(BallastAgent):
+    """Confirmation-helper ``BallastAgent`` for the notes-app todo flow.
 
     Constructor takes only the ``NoteRepository`` (currently unused by
     tools — they just route the decision to the durable workflow). The

@@ -142,7 +142,7 @@ upstream — Vercel's adapter handles approvals out of the box.
   Qwen endpoint requires `content` as a string. Other upstreams for
   the same model accept it.
 - **Status**: fixed at framework level. See
-  `src/pydantic_ai_stateflow/_compat/openai_assistant_content.py` —
+  `src/ballast/_compat/openai_assistant_content.py` —
   an import-time monkey-patch on
   `OpenAIChatModel._MapModelResponseContext._into_message_param`
   rewrites `content: None` → `content: ""` whenever `tool_calls` is

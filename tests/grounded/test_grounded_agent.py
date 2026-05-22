@@ -7,7 +7,7 @@ from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.grounded import GroundedAgent, Ref
+from ballast.grounded import GroundedAgent, Ref
 
 
 class Item(BaseModel):

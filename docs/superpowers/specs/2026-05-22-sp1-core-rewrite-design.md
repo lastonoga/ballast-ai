@@ -15,18 +15,18 @@ The framework grew a Spring-style DI container (`Container` + `ServiceProvider` 
   manage_dbos_lifecycle=True)` — nine optional kwargs whose only purpose is
   test injection. This is the `build_X(dep=None)` anti-pattern called out in
   user memory (`project_anti_pattern_build_factory_as_di.md`).
-- `Engine` (`src/pydantic_ai_stateflow/runtime/engine.py:32`) ceremoniously
+- `Engine` (`src/ballast/runtime/engine.py:32`) ceremoniously
   registers a `providers[]` list to bind values onto a `Container`
-  (`src/pydantic_ai_stateflow/runtime/container.py:58`) that then nobody
+  (`src/ballast/runtime/container.py:58`) that then nobody
   actually resolves: routes don't call `Depends(get_container)` (declared at
-  `src/pydantic_ai_stateflow/api/deps.py:11` but unused by `threads.py`,
+  `src/ballast/api/deps.py:11` but unused by `threads.py`,
   `streaming/router.py`, `dbos_router.py`, `brainstorm_router.py`); workflows
   read deps directly from constructor args. The container exists only so
   `_bind_domain_repos` (`main.py:163`) can later call
   `app.state.container.bind(NoteRepository, notes)` for a single test
   (`tests/test_smoke.py:165`).
 - Agent registration is imperative (`register_agent(agent)` —
-  `src/pydantic_ai_stateflow/runtime/agents.py:350`), called from app bootstrap
+  `src/ballast/runtime/agents.py:350`), called from app bootstrap
   with implicit ordering rules and zero static checkability.
 - Workflows have no registration story at all — apps hand-write a
   `build_brainstorm_router(*, flow, thread_repo)` wrapper
@@ -46,7 +46,7 @@ no FastAPI integration apps use) while taxing every app and every test.
 After this rewrite, an app's `main.py` looks like:
 
 ```python
-import pydantic_ai_stateflow as sf
+import ballast as sf
 from notes_app.agent import NotesAgent  # @sf.stateflow_agent — side-effect import
 from notes_app.brainstorm_flow import BrainstormFlow  # @sf.workflow
 from notes_app.todo_flow import TodoApprovalFlow  # @sf.workflow
@@ -76,7 +76,7 @@ apps lose `build_app(dep=None)` and all its callers.
 
 ## Non-goals
 
-- **Settings module** (env-var-driven config, secrets, `STATEFLOW_*` knobs) —
+- **Settings module** (env-var-driven config, secrets, `BALLAST_*` knobs) —
   deferred to SP2.
 - **Error hierarchy unification** (`EngineInvariantViolation` etc. rename /
   consolidation) — deferred to SP2.
@@ -101,9 +101,9 @@ and singletons are resolved by `Depends(get_thread_repo)` style helpers that
 read from `request.app.state`. There is no framework Container interposed.
 
 ```python
-# src/pydantic_ai_stateflow/api/deps.py (rewritten)
+# src/ballast/api/deps.py (rewritten)
 from fastapi import Request
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from ballast.persistence.thread.repository import ThreadRepository
 
 def get_thread_repo(request: Request) -> ThreadRepository:
     return request.app.state.thread_repo
@@ -119,7 +119,7 @@ Framework routers become plain `APIRouter`s (no `build_X(thread_repo=...)`
 factory):
 
 ```python
-# src/pydantic_ai_stateflow/api/threads.py (rewritten)
+# src/ballast/api/threads.py (rewritten)
 router = APIRouter()
 
 @router.get("/threads/{thread_id}")
@@ -168,7 +168,7 @@ constructor argument on `create_app`.
 #### B.1 `@sf.stateflow_agent` on the agent class
 
 ```python
-# src/pydantic_ai_stateflow/runtime/agents.py (rewritten section)
+# src/ballast/runtime/agents.py (rewritten section)
 def stateflow_agent(cls: type[StateflowAgent]) -> type[StateflowAgent]:
     """Register the agent class in the process-wide registry.
 
@@ -220,7 +220,7 @@ to look up the kebab-name + register the instance in `app.state.agents[name]`.
 #### B.2 `@sf.workflow` on the workflow class
 
 ```python
-# src/pydantic_ai_stateflow/runtime/workflows.py (new)
+# src/ballast/runtime/workflows.py (new)
 def workflow(
     cls: type | None = None,
     /,
@@ -373,11 +373,11 @@ registration. There is no separate `mount_workflows(app, *flows)` call —
 
 ### D. TestEngine
 
-`pydantic_ai_stateflow.testing` package, new — single import surface for
+`ballast.testing` package, new — single import surface for
 test wiring.
 
 ```python
-# src/pydantic_ai_stateflow/testing/__init__.py
+# src/ballast/testing/__init__.py
 
 class TestEngine:
     """Pre-wired Stateflow app for tests.
@@ -467,7 +467,7 @@ class MockFlow:
 ```
 
 **Pytest plugin.** `sf.testing` exports a pytest plugin (`pytest_plugins =
-["pydantic_ai_stateflow.testing.pytest_plugin"]`) providing:
+["ballast.testing.pytest_plugin"]`) providing:
 
 ```python
 @pytest.fixture
@@ -481,7 +481,7 @@ def client(engine) -> Iterator[TestClient]:
         yield c
 ```
 
-Tests opt in by adding `pytest_plugins = ["pydantic_ai_stateflow.testing"]`
+Tests opt in by adding `pytest_plugins = ["ballast.testing"]`
 to their `conftest.py`. The plugin is opt-in (not auto-loaded) so apps that
 want different defaults (e.g. Postgres repos for integration tests) can
 build their own fixture layer.
@@ -511,7 +511,7 @@ boilerplate.
 
 ### E. Single import surface
 
-`import pydantic_ai_stateflow as sf` exposes the following commonly-used
+`import ballast as sf` exposes the following commonly-used
 symbols. Apps target 5-7 imports max for 95% of code.
 
 | `sf.*` symbol            | Source module                              | Purpose                                |
@@ -551,7 +551,7 @@ e.g. only the threads router get `sf.routers.threads` exposed.
 ### F. App entrypoint: `sf.create_app`
 
 ```python
-# src/pydantic_ai_stateflow/runtime/app.py (new)
+# src/ballast/runtime/app.py (new)
 
 def create_app(
     *,
@@ -609,7 +609,7 @@ App example (full notes-app `main.py` post-rewrite):
 from __future__ import annotations
 import os, tempfile
 from pathlib import Path
-import pydantic_ai_stateflow as sf
+import ballast as sf
 from dotenv import load_dotenv
 
 # Side-effect imports register the @stateflow_agent / @sf.workflow classes.
@@ -680,11 +680,11 @@ the runtime-spawn pattern. Decorators are for HTTP-exposed singletons.
 
 Files:
 
-- `src/pydantic_ai_stateflow/runtime/container.py` — entire file.
-- `src/pydantic_ai_stateflow/runtime/engine.py` — entire file.
-- `src/pydantic_ai_stateflow/runtime/provider.py` — entire file.
-- `src/pydantic_ai_stateflow/runtime/event_stream_provider.py` — entire file.
-- `src/pydantic_ai_stateflow/providers/` package (CoreProvider,
+- `src/ballast/runtime/container.py` — entire file.
+- `src/ballast/runtime/engine.py` — entire file.
+- `src/ballast/runtime/provider.py` — entire file.
+- `src/ballast/runtime/event_stream_provider.py` — entire file.
+- `src/ballast/providers/` package (CoreProvider,
   PersistenceProvider) — entire package.
 
 Symbols (with their files):
@@ -731,17 +731,17 @@ Sequential, one PR per step so each step is independently reviewable.
 ### Framework
 
 1. **Add new modules side-by-side with the old ones.**
-   - Create `src/pydantic_ai_stateflow/runtime/app.py` with `create_app`.
-   - Create `src/pydantic_ai_stateflow/runtime/workflows.py` with
+   - Create `src/ballast/runtime/app.py` with `create_app`.
+   - Create `src/ballast/runtime/workflows.py` with
      `workflow` decorator + workflow registry.
    - Add `stateflow_agent` decorator to `runtime/agents.py` alongside the
      existing `register_agent`.
-   - Add `src/pydantic_ai_stateflow/testing/` package with `TestEngine`,
+   - Add `src/ballast/testing/` package with `TestEngine`,
      `MockAgent`, `MockFlow`, and `pytest_plugin.py`.
    - Add module-level `threads_router`, `streaming_router`, `dbos_router`
      in their respective modules, using `Depends`-based dep resolution.
    - Add `ObservabilityConfig` dataclass in `observability/config.py`.
-2. **Wire the new exports** in `pydantic_ai_stateflow/__init__.py`. Keep
+2. **Wire the new exports** in `ballast/__init__.py`. Keep
    old exports temporarily for the migration window.
 3. **Migrate notes-app** (next section).
 4. **Delete old code** in a single sweep PR: `container.py`, `engine.py`,
@@ -872,7 +872,7 @@ isolates the rewrite blast radius: pattern tests don't need to change.
    a fourth (e.g. a `MetricsRepository`) lands in SP2 the bag pattern
    becomes worth considering.
 
-3. **Are tests using `pytest_plugins = ["pydantic_ai_stateflow.testing"]`
+3. **Are tests using `pytest_plugins = ["ballast.testing"]`
    robust against test files that intentionally don't want the fixture
    loaded?** pytest treats `pytest_plugins` per-conftest; modules outside
    that conftest's scope don't see the fixture. This is the standard

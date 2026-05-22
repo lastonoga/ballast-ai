@@ -13,11 +13,11 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     EventLogRepository,
     InMemoryEventLogRepository,
 )
-from pydantic_ai_stateflow.runtime import (
+from ballast.runtime import (
     EventNotification,
     EventStream,
     InProcessEventStream,

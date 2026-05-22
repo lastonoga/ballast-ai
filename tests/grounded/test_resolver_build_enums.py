@@ -4,8 +4,8 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.grounded._build import build_dynamic
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded._build import build_dynamic
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Order(BaseModel):

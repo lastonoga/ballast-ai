@@ -6,14 +6,14 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.ui import UIChannel
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.ui import UIChannel
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 
 def test_ui_channel_satisfies_protocol():
@@ -34,7 +34,7 @@ async def test_ui_channel_returns_received_response():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -54,7 +54,7 @@ async def test_ui_channel_returns_timeout_on_none():
     )
     recv = AsyncMock(return_value=None)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -80,7 +80,7 @@ async def test_ui_channel_no_timeout_passes_large_finite_ceiling():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv_async", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv_async", recv,
     ):
         channel = UIChannel()
         await channel.ask(prompt, request_id=rid)

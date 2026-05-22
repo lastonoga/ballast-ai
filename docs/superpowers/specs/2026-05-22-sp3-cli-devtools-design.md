@@ -2,7 +2,7 @@
 
 **Status:** Approved (design)
 **Date:** 2026-05-22
-**Scope:** New `pydantic_ai_stateflow.cli` package + Alembic env.py wiring
+**Scope:** New `ballast.cli` package + Alembic env.py wiring
 to SP2 settings + `stateflow` console script.
 
 ## Problem
@@ -14,7 +14,7 @@ directly. Framework users have no first-class tooling and must wire up:
 - their own `uvicorn` invocation per project (`uv run uvicorn ...`),
 - their own Alembic invocation against the framework's bundled
   `alembic.ini` (which currently has a placeholder `sqlalchemy.url`
-  baked in — see `src/pydantic_ai_stateflow/alembic.ini` line 5),
+  baked in — see `src/ballast/alembic.ini` line 5),
 - their own ad-hoc curl/HTTPie commands against the DBOS introspection
   router (`/dbos/threads/.../workflows`) to inspect workflow state,
 - their own SSE consumer (browser devtools, or `curl -N`) to tail
@@ -44,7 +44,7 @@ Ship a single `stateflow` binary covering the day-1 dev loop:
   against a running dev server.
 
 Convention-over-configuration: zero CLI args needed in the common case
-once `STATEFLOW_APP` (env var) or `[tool.stateflow] app = "..."`
+once `BALLAST_APP` (env var) or `[tool.stateflow] app = "..."`
 (pyproject.toml) is set.
 
 ## Non-goals
@@ -59,7 +59,7 @@ once `STATEFLOW_APP` (env var) or `[tool.stateflow] app = "..."`
   directly against the app object.
 - **Multi-app projects** — one `stateflow` invocation maps to one app
   instance. Monorepos with multiple stateflow apps configure
-  `STATEFLOW_APP` per shell or pass `--app`.
+  `BALLAST_APP` per shell or pass `--app`.
 - **Interactive Alembic flags** — no `migrate downgrade` or `migrate stamp`
   in v1; users drop down to `alembic` directly for those (we document
   the escape hatch).
@@ -68,13 +68,13 @@ once `STATEFLOW_APP` (env var) or `[tool.stateflow] app = "..."`
 
 ### A. CLI architecture
 
-Package: `src/pydantic_ai_stateflow/cli/` (new).
+Package: `src/ballast/cli/` (new).
 
 ```
-src/pydantic_ai_stateflow/cli/
+src/ballast/cli/
     __init__.py
     main.py            # typer app + subcommand registration
-    app_detect.py      # STATEFLOW_APP + pyproject.toml resolution
+    app_detect.py      # BALLAST_APP + pyproject.toml resolution
     commands/
         __init__.py
         dev.py         # `stateflow dev`
@@ -88,11 +88,11 @@ with subcommands mounted as typer sub-apps:
 
 ```python
 import typer
-from pydantic_ai_stateflow.cli.commands import dev, migrate, workflows, events
+from ballast.cli.commands import dev, migrate, workflows, events
 
 cli = typer.Typer(
     name="stateflow",
-    help="Devtools for pydantic-ai-stateflow apps.",
+    help="Devtools for ballast-ai apps.",
     no_args_is_help=True,
 )
 cli.command(name="dev")(dev.dev)
@@ -116,7 +116,7 @@ Convention (in resolution order):
 
 1. **`--app`** CLI flag (overrides everything; mainly for tests and
    monorepo escape hatch). Form: `module.path:variable_name`.
-2. **`STATEFLOW_APP` env var.** Form: `module.path:variable_name`,
+2. **`BALLAST_APP` env var.** Form: `module.path:variable_name`,
    e.g. `notes_app.main:app`.
 3. **`[tool.stateflow] app = "..."`** in `./pyproject.toml` (walk up
    from CWD to first `pyproject.toml`).
@@ -139,12 +139,12 @@ def resolve_app_ref(explicit: str | None = None) -> AppRef:
     """Find the app reference; raise typer.BadParameter with a hint."""
     raw = (
         explicit
-        or os.environ.get("STATEFLOW_APP")
+        or os.environ.get("BALLAST_APP")
         or _read_pyproject_app()  # walks up, returns str | None
     )
     if not raw:
         raise typer.BadParameter(
-            "Could not locate the stateflow app. Set STATEFLOW_APP="
+            "Could not locate the stateflow app. Set BALLAST_APP="
             "'module.path:variable_name' or add\n"
             "    [tool.stateflow]\n"
             "    app = \"module.path:variable_name\"\n"
@@ -218,7 +218,7 @@ def dev(
 **Why uvicorn `--reload` and not `watchfiles` directly?** Parity. Users
 who outgrow `stateflow dev` should be able to copy the equivalent
 `uvicorn` invocation 1:1; routing reload through uvicorn means
-`stateflow dev` ≡ `uvicorn $STATEFLOW_APP --reload`. Custom watcher
+`stateflow dev` ≡ `uvicorn $BALLAST_APP --reload`. Custom watcher
 config would diverge.
 
 `notes_app.main.main()` (which today calls `uvicorn.run(...)` itself)
@@ -239,7 +239,7 @@ stateflow migrate revision -m "add foo col"    # = alembic revision --autogenera
 1. `--alembic-ini` flag (escape hatch).
 2. `[tool.stateflow] alembic_ini = "..."` in pyproject.toml.
 3. Default to the framework's bundled `alembic.ini`
-   (`importlib.resources.files("pydantic_ai_stateflow") / "alembic.ini"`),
+   (`importlib.resources.files("ballast") / "alembic.ini"`),
    which already points at the bundled `alembic/` script_location with
    the framework's migration history.
 
@@ -249,15 +249,15 @@ outbox, tenant); apps that need their own migrations point
 `alembic_ini` at their own file.
 
 **DB URL wiring (env.py + SP2 settings).** Today,
-`src/pydantic_ai_stateflow/alembic.ini` hard-codes
+`src/ballast/alembic.ini` hard-codes
 `sqlalchemy.url = postgresql+asyncpg://localhost/placeholder` and
-`src/pydantic_ai_stateflow/alembic/env.py` reads it via
+`src/ballast/alembic/env.py` reads it via
 `config.get_main_option("sqlalchemy.url")`. SP2 introduces
 `settings.dbos.database_url`; SP3 wires it into env.py at module import:
 
 ```python
-# src/pydantic_ai_stateflow/alembic/env.py (post-SP3 patch)
-from pydantic_ai_stateflow.settings import get_settings  # SP2
+# src/ballast/alembic/env.py (post-SP3 patch)
+from ballast.settings import get_settings  # SP2
 
 config = context.config
 
@@ -322,7 +322,7 @@ def ls(
 
 **Flow:**
 
-1. Resolve `STATEFLOW_APP` and `import_module(ref.module)` to trigger
+1. Resolve `BALLAST_APP` and `import_module(ref.module)` to trigger
    workflow registration side effects (the imports of `Durable.workflow`-
    decorated callables run at module load).
 2. `Durable.init(...)` + `Durable.launch()` must already have been
@@ -333,8 +333,8 @@ def ls(
 
    ```python
    from dbos import DBOSConfig
-   from pydantic_ai_stateflow.durable import Durable
-   from pydantic_ai_stateflow.settings import get_settings  # SP2
+   from ballast.durable import Durable
+   from ballast.settings import get_settings  # SP2
 
    settings = get_settings()
    Durable.init(DBOSConfig(
@@ -432,10 +432,10 @@ Add to `pyproject.toml`:
 
 ```toml
 [project.scripts]
-stateflow = "pydantic_ai_stateflow.cli.main:cli"
+stateflow = "ballast.cli.main:cli"
 ```
 
-Single entry point. After `pip install pydantic-ai-stateflow`, the
+Single entry point. After `pip install ballast-ai`, the
 `stateflow` binary is on `$PATH`. In dev (`uv run`), `uv run stateflow ...`
 works without an extra install step.
 
@@ -444,12 +444,12 @@ works without an extra install step.
 One PR per command is reasonable; here's the unified diff plan.
 
 1. **`pyproject.toml`**:
-   - Add `[project.scripts] stateflow = "pydantic_ai_stateflow.cli.main:cli"`.
+   - Add `[project.scripts] stateflow = "ballast.cli.main:cli"`.
    - No new deps (typer + rich already present transitively).
 
-2. **`src/pydantic_ai_stateflow/cli/`**: new package per layout in §A.
+2. **`src/ballast/cli/`**: new package per layout in §A.
 
-3. **`src/pydantic_ai_stateflow/alembic/env.py`**: insert the SP2
+3. **`src/ballast/alembic/env.py`**: insert the SP2
    settings wiring (§D) — guarded `try/except` so the file stays
    standalone-runnable when SP2 isn't available. Branch on URL scheme
    for sync vs async engine.
@@ -461,7 +461,7 @@ One PR per command is reasonable; here's the unified diff plan.
    `main()` for backward compatibility for one cycle, but the README
    switches to `stateflow dev` as the documented start command.
 
-6. **README + docs**: add a "CLI" section. Document `STATEFLOW_APP` /
+6. **README + docs**: add a "CLI" section. Document `BALLAST_APP` /
    `[tool.stateflow]` convention, the four subcommands, and the
    alembic.ini resolution order.
 

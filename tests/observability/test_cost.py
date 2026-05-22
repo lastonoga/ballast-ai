@@ -15,8 +15,8 @@ from decimal import Decimal
 import pytest
 
 # Import framework so the patch is installed.
-import pydantic_ai_stateflow  # noqa: F401
-from pydantic_ai_stateflow.observability.cost import (
+import ballast  # noqa: F401
+from ballast.observability.cost import (
     OpenRouterCostExtractor,
     OpenRouterUpstreamCostExtractor,
     ProviderDetailsCostExtractor,

@@ -7,7 +7,7 @@ from pathlib import Path
 
 def test_cli_help_lists_dataset_from_traces():
     proc = subprocess.run(
-        [sys.executable, "-m", "pydantic_ai_stateflow.evals.cli", "--help"],
+        [sys.executable, "-m", "ballast.evals.cli", "--help"],
         capture_output=True, text=True, check=False,
     )
     assert proc.returncode == 0
@@ -21,7 +21,7 @@ def test_cli_dataset_from_traces_writes_yaml(tmp_path: Path):
     out = tmp_path / "ds.yaml"
     proc = subprocess.run(
         [
-            sys.executable, "-m", "pydantic_ai_stateflow.evals.cli",
+            sys.executable, "-m", "ballast.evals.cli",
             "dataset-from-traces",
             "--pattern", "reflection",
             "--since", "2026-01-01",

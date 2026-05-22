@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from pydantic_ai_stateflow.patterns.hitl import HITLPrompt
+from ballast.patterns.hitl import HITLPrompt
 
 
 def test_prompt_constructed_with_minimum_fields() -> None:

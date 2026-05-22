@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.divergent_convergent import (
+from ballast.patterns.divergent_convergent import (
     DivergentBranch,
     DivergentConvergent,
 )

@@ -9,7 +9,7 @@ class TodoApprovalContext(BaseModel):
     """Typed input context for the ``todo_approval`` agent.
 
     Plays a dual role:
-      - ``StateflowAgent.metadata_model`` — validates ``Thread.metadata_``
+      - ``BallastAgent.metadata_model`` — validates ``Thread.metadata_``
         on thread creation (so the framework rejects malformed threads
         before they reach the agent).
       - Input contract for ``propose_todo`` → ``TodoApprovalFlow`` (the

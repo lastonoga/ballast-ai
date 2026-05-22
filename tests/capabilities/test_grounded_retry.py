@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.capabilities.grounded_retry import (
+from ballast.capabilities.grounded_retry import (
     GroundedRetry,
     _build_feedback,
 )

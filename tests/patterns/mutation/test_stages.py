@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns import HITLGate
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns import HITLGate
+from ballast.patterns.hitl import (
     AllowAll,
     ApprovedResponse,
     HITLPrompt,
@@ -15,13 +15,13 @@ from pydantic_ai_stateflow.patterns.hitl import (
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.patterns.mutation import (
+from ballast.patterns.mutation import (
     AcceptedResult,
     ApprovalStage,
     Proposal,
     RejectedAt,
 )
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.persistence import InMemoryHITLRepository
 
 
 class _StageRefund(BaseModel):

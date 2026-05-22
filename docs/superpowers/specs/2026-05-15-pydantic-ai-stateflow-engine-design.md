@@ -1,4 +1,4 @@
-# pydantic-ai-stateflow-engine — Design Spec
+# ballast-ai-engine — Design Spec
 
 - **Date:** 2026-05-15
 - **Status:** Sections 1 + 2 + 3 + 4 approved. Code-review pass complete: 3 critical, 18 major, 9 minor findings resolved (commits 535405c, e7a1c55, 67aa4fa, 6c4da81). Section 4A.0 contains the canonical truth where earlier sections were superseded. Design complete; ready for implementation planning.
@@ -11,7 +11,7 @@
 
 ### 1.1 Vision
 
-`pydantic-ai-stateflow-engine` — production-grade orchestration framework для агентов, превращающий LLM из "ненадёжного оракула" в типизированное, durable, аудируемое когнитивное ядро. Опирается на готовые примитивы pydantic-ai (Capabilities, Hooks, Embedder, DeferredToolRequests, pydantic-evals, DBOS plugin) и добавляет:
+`ballast-ai-engine` — production-grade orchestration framework для агентов, превращающий LLM из "ненадёжного оракула" в типизированное, durable, аудируемое когнитивное ядро. Опирается на готовые примитивы pydantic-ai (Capabilities, Hooks, Embedder, DeferredToolRequests, pydantic-evals, DBOS plugin) и добавляет:
 
 1. **GroundedSchema (L0)** — type-driven input-bound output schemas, физически предотвращающие галлюцинации UUID/refs через `Ref[Entity]`-типы
 2. **Patterns (L2)** — durable multi-step workflow-классы (MapReduce, Reflection, MutationPipeline, HITLGate, SelfRAG)
@@ -234,7 +234,7 @@ class Context(BaseModel):
     user_query: str
 
 # 3. Output template объявляет ссылки типом Ref[T]
-from pydantic_ai_stateflow import Ref
+from ballast import Ref
 
 class DecisionItem(BaseModel):
     candidate:   Ref[Candidate]      # ← typed reference
@@ -434,7 +434,7 @@ class Reflection(Pattern[InT, OutT]):
 #### 2A.1 Public API
 
 ```python
-# pydantic_ai_stateflow/grounded/__init__.py
+# ballast/grounded/__init__.py
 EntityT = TypeVar("EntityT", bound=BaseModel)
 
 class Ref(Generic[EntityT]):
@@ -2225,7 +2225,7 @@ async def approve(ctx, rationale, confidence, ...) -> str:
 #### 3J.2 Generic HelperVerdict (framework — domain-agnostic base)
 
 ```python
-# pydantic_ai_stateflow/hitl/verdict.py
+# ballast/hitl/verdict.py
 ContextT = TypeVar("ContextT", bound=BaseModel)
 
 class HelperVerdict(BaseModel, Generic[ContextT]):
@@ -2313,7 +2313,7 @@ class DecisionRow(SQLModel, table=True):
 
 | Слой | Принадлежность |
 |---|---|
-| `HelperVerdict[ContextT]` (base+generic) | **Framework** (`pydantic_ai_stateflow.hitl`) |
+| `HelperVerdict[ContextT]` (base+generic) | **Framework** (`ballast.hitl`) |
 | `make_helper_agent_with_approval_tools(context_type=...)` | **Framework** |
 | `ConversationalChannel`, `HelperAgentFactory` Protocol | **Framework** |
 | `DecisionRow.helper_verdict_payload` JSONB schema | **Framework** persistence |
@@ -2346,7 +2346,7 @@ class DecisionRow(SQLModel, table=True):
 #### 4A.0.1 Canonical `HITLResponse` через discriminated union
 
 ```python
-# pydantic_ai_stateflow/hitl/response.py
+# ballast/hitl/response.py
 
 class _BaseResponse(BaseModel):
     """Общие поля всех HITLResponse-вариантов."""
@@ -2502,7 +2502,7 @@ async def _apply_and_emit(self, proposal, *, uow: UnitOfWork, tenant_id: UUID):
         await self.outbox_repo.enqueue(...)        # same uow
 ```
 
-Concrete impl `SqlAlchemyUnitOfWork(session: AsyncSession)` живёт в `pydantic_ai_stateflow.persistence.sqlalchemy` — Patterns её не импортируют.
+Concrete impl `SqlAlchemyUnitOfWork(session: AsyncSession)` живёт в `ballast.persistence.sqlalchemy` — Patterns её не импортируют.
 
 #### 4A.0.6 `tenant_id` consolidation: `RunContext.tenant_id` primary
 
@@ -2523,7 +2523,7 @@ class ProjectRepository(Protocol):
 #### 4A.0.7 Container — explicit dependency (no Service Locator)
 
 ```python
-# pydantic_ai_stateflow/runtime/engine.py
+# ballast/runtime/engine.py
 
 class Engine:
     container: Container                           # public attribute, передаётся явно
@@ -2552,7 +2552,7 @@ async def start_wave(project_id, wave: WaveIteration = Depends(get_wave_iteratio
 #### 4A.0.8 Tool registration: explicit, not import-time
 
 ```python
-# pydantic_ai_stateflow/tools/decorator.py
+# ballast/tools/decorator.py
 
 def capability(cap: Capability):
     """Декоратор только attaches metadata to class. НЕ регистрирует.
@@ -2646,7 +2646,7 @@ class EscalateToHITLOnReject:
 #### 4A.0.11 `Pattern` — Protocol, not base class
 
 ```python
-# pydantic_ai_stateflow/patterns/protocol.py
+# ballast/patterns/protocol.py
 class Pattern(Protocol[InT, OutT]):
     name: ClassVar[str]
     async def run(self, input: InT, *, tenant_id: UUID) -> OutT: ...
@@ -2727,7 +2727,7 @@ class SelfRAG:
 #### 4A.0.17 Vocabulary unification
 
 ```python
-# pydantic_ai_stateflow/types.py
+# ballast/types.py
 
 ActorId = NewType("ActorId", str)                  # каноничный actor identity type
 
@@ -2795,7 +2795,7 @@ def project_status_after(action: ProgramAction) -> ProjectStatus:
 #### Delta 1: `PartialApprovalStage` (L2)
 
 ```python
-# pydantic_ai_stateflow/patterns/mutation/stages.py
+# ballast/patterns/mutation/stages.py
 class ProposalElementExtractor(Protocol[T]):
     def elements(self, proposal: Proposal[T]) -> list[ProposalElement]: ...
     def with_approved_subset(
@@ -2861,7 +2861,7 @@ class PlanStep(BaseModel):
 #### Delta 3: `as_critique(callable)` adapter (L1 helper)
 
 ```python
-# pydantic_ai_stateflow/adapters/critique.py
+# ballast/adapters/critique.py
 def as_critique(fn: Callable[[Any], Awaitable[Any]] | object) -> Agent[Any, Critique]:
     """Адаптирует non-LLM critic (pure Python функцию или объект с .check()) под Agent.
     
@@ -2883,7 +2883,7 @@ def as_critique(fn: Callable[[Any], Awaitable[Any]] | object) -> Agent[Any, Crit
 #### Delta 4: `Det.uuid_for(inputs)` — wrapped as @DBOS.step (safe across replay)
 
 ```python
-# pydantic_ai_stateflow/runtime/det.py
+# ballast/runtime/det.py
 class Det:
     # existing: now(), uuid4(), random_choice() — все @DBOS.step
     
@@ -2935,7 +2935,7 @@ IdempotencyValue = str | int | UUID | datetime | Decimal | bool | tuple | frozen
 #### Delta 5: `ToolNeedsHITL` exception (L2 signals)
 
 ```python
-# pydantic_ai_stateflow/patterns/signals.py
+# ballast/patterns/signals.py
 class ToolNeedsHITL(Exception):
     """Универсальный signal от tool к enclosing Pattern: жди HITL response.
     
@@ -2954,7 +2954,7 @@ class ToolNeedsHITL(Exception):
 #### Delta 6: `ProposalPartiallyApproved` event + `ProposalAuditListener`
 
 ```python
-# pydantic_ai_stateflow/events/standard.py
+# ballast/events/standard.py
 class ProposalPartiallyApproved(DomainEvent):
     proposal_id: UUID
     pattern_name: str
@@ -2965,7 +2965,7 @@ class ProposalPartiallyApproved(DomainEvent):
     actor_id: str | None
     helper_verdict: dict | None = None
 
-# pydantic_ai_stateflow/listeners/proposal_audit.py
+# ballast/listeners/proposal_audit.py
 class ProposalAuditListener(EventListener[
     ProposalAccepted | ProposalRejected | ProposalPartiallyApproved | ProposalModified
 ]):
@@ -2976,14 +2976,14 @@ class ProposalAuditListener(EventListener[
 #### Delta 7: ConversationalChannel + HelperAgent + HelperVerdict
 
 Полностью описано в Section 3J — финальные пакеты:
-- `pydantic_ai_stateflow/hitl/conversational.py` — `ConversationalChannel`, `HelperAgentFactory` Protocol
-- `pydantic_ai_stateflow/hitl/helper.py` — `HelperVerdict[ContextT]`, `make_helper_agent_with_approval_tools`
+- `ballast/hitl/conversational.py` — `ConversationalChannel`, `HelperAgentFactory` Protocol
+- `ballast/hitl/helper.py` — `HelperVerdict[ContextT]`, `make_helper_agent_with_approval_tools`
 - Domain-specific context-классы — в app code (не framework)
 
 #### Delta 8: Thread purpose enum + DecisionRow helper columns
 
 ```python
-# pydantic_ai_stateflow/state/persistence.py
+# ballast/state/persistence.py
 class ThreadPurpose(StrEnum):
     ONBOARDING = "onboarding"
     CONVERSATION = "conversation"
@@ -3043,7 +3043,7 @@ Framework предоставляет базовые таблицы и Repository
 #### Framework tables (первая Alembic миграция stateflow-engine)
 
 ```python
-# pydantic_ai_stateflow/state/persistence.py
+# ballast/state/persistence.py
 
 class TenantRow(SQLModel, table=True):
     __tablename__ = "tenants"
@@ -3088,7 +3088,7 @@ class ProposalAuditRepository(Protocol): ...
 
 #### Alembic strategy
 
-- Framework миграции в `pydantic_ai_stateflow/alembic/versions/` — выполняются первыми
+- Framework миграции в `ballast/alembic/versions/` — выполняются первыми
 - Application миграции в `<app>/alembic/versions/` — после framework
 - Custom (non-autogenerate): partial unique indexes, append-only triggers, pgvector extension
 - Bootstrap-time check: `engine.boot()` падает при pending migrations
@@ -3192,7 +3192,7 @@ logfire.instrument_fastapi(app=...)
 #### Framework testing helpers
 
 ```python
-# pydantic_ai_stateflow.testing
+# ballast.testing
 class InMemoryRepository(Repository[T]): ...           # generic in-memory любого Repository protocol
 
 class FakeChannel(HITLChannel):
@@ -3268,7 +3268,7 @@ async def dbos_test_workflow(pg_dsn: str = TEST_PG_DSN):
 | `STATEFLOW012` | `domain/` package не должен импортировать `api/`, `providers/`, `main` |
 | `STATEFLOW013` | `@DBOS.workflow` не должен содержать unbounded loops (`while True`, etc.) — используй ContinueAsNew |
 
-Реализация через `pydantic_ai_stateflow_ruff` plugin (configurable strictness).
+Реализация через `ballast_ruff` plugin (configurable strictness).
 
 ---
 

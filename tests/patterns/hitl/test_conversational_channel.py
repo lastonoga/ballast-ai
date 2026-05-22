@@ -8,21 +8,21 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.conversational import (
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.conversational import (
     ConversationalChannel,
 )
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryThreadRepository
 
 
 class _Ctx(BaseModel):
@@ -83,10 +83,10 @@ async def test_ask_starts_helper_session_then_recvs(fresh_dbos_executor: Any) ->
     )
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", fake_start,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         recv,
     ):
         result = await channel.ask(prompt, request_id=rid)
@@ -116,10 +116,10 @@ async def test_ask_returns_timeout_when_recv_returns_none(
     runner = MagicMock()
     runner.run = MagicMock()
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", AsyncMock(return_value=None),
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=None),
     ):
         channel = ConversationalChannel(
@@ -154,10 +154,10 @@ async def test_idempotency_key_stable_for_same_request(
     ).model_dump(mode="json")
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", fake_start,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=payload),
     ):
         channel = ConversationalChannel(

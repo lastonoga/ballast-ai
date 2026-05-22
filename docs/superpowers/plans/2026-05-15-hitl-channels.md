@@ -24,7 +24,7 @@ target_tests: ~285 passed + 10 skipped (after SP6)
 ## File Structure
 
 ```
-src/pydantic_ai_stateflow/patterns/hitl/
+src/ballast/patterns/hitl/
 ├── __init__.py                          # extended exports
 ├── channel.py                           # (existing — unchanged)
 ├── gate.py                              # (existing — unchanged)
@@ -69,9 +69,9 @@ Pure module: the tenant-scoped topic helper used by every channel + a FastAPI ro
 **Baseline:** 243 passed + 10 skipped → **Target:** 254 passed + 10 skipped (+11).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/topic.py`
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/api/__init__.py`
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/api/router.py`
+- Create: `src/ballast/patterns/hitl/topic.py`
+- Create: `src/ballast/patterns/hitl/api/__init__.py`
+- Create: `src/ballast/patterns/hitl/api/router.py`
 - Create: `tests/patterns/hitl/test_topic.py`
 - Create: `tests/patterns/hitl/test_router.py`
 - Modify: `pyproject.toml` — add `fastapi>=0.110` and `httpx>=0.27` to dev deps so test client works (httpx will also be needed by Task 3, so use `uv add fastapi httpx` then move httpx to runtime deps in Task 3).
@@ -85,7 +85,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 
 def test_topic_format_is_tenant_then_request():
@@ -128,10 +128,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.patterns.hitl.api.router import build_hitl_router
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll, DenyAll
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.api.router import build_hitl_router
+from ballast.patterns.hitl.policy import AllowAll, DenyAll
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryHITLRepository
 
 
 def _make_app(repo, policy) -> FastAPI:
@@ -202,7 +202,7 @@ async def test_respond_200_sends_to_topic_on_grant():
         sent["message"] = message
         sent["topic"] = topic
 
-    with patch("pydantic_ai_stateflow.patterns.hitl.api.router.DBOS.send", fake_send):
+    with patch("ballast.patterns.hitl.api.router.DBOS.send", fake_send):
         with TestClient(app) as client:
             r = client.post(f"/hitl/{req.id}/respond", json=body, headers=headers)
     assert r.status_code == 200
@@ -276,7 +276,7 @@ uv run pytest tests/patterns/hitl/test_topic.py tests/patterns/hitl/test_router.
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/topic.py`:
+`src/ballast/patterns/hitl/topic.py`:
 
 ```python
 from __future__ import annotations
@@ -295,15 +295,15 @@ def _hitl_topic(tenant_id: UUID, request_id: UUID) -> str:
     return f"hitl:{tenant_id}:{request_id}"
 ```
 
-`src/pydantic_ai_stateflow/patterns/hitl/api/__init__.py`:
+`src/ballast/patterns/hitl/api/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.api.router import build_hitl_router
+from ballast.patterns.hitl.api.router import build_hitl_router
 
 __all__ = ["build_hitl_router"]
 ```
 
-`src/pydantic_ai_stateflow/patterns/hitl/api/router.py`:
+`src/ballast/patterns/hitl/api/router.py`:
 
 ```python
 from __future__ import annotations
@@ -314,10 +314,10 @@ from dbos import DBOS
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import TypeAdapter
 
-from pydantic_ai_stateflow.patterns.hitl.policy import Policy
-from pydantic_ai_stateflow.patterns.hitl.response import HITLResponse
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import HITLRepository
+from ballast.patterns.hitl.policy import Policy
+from ballast.patterns.hitl.response import HITLResponse
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import HITLRepository
 
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 
@@ -408,8 +408,8 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/topic.py \
-        src/pydantic_ai_stateflow/patterns/hitl/api/ \
+git add src/ballast/patterns/hitl/topic.py \
+        src/ballast/patterns/hitl/api/ \
         tests/patterns/hitl/test_topic.py \
         tests/patterns/hitl/test_router.py \
         pyproject.toml uv.lock
@@ -425,8 +425,8 @@ The thinnest production channel: receives via `DBOS.recv` on the tenant-scoped t
 **Baseline:** 254 → **Target:** 258 (+4).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py`
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/channels/ui.py`
+- Create: `src/ballast/patterns/hitl/channels/__init__.py`
+- Create: `src/ballast/patterns/hitl/channels/ui.py`
 - Create: `tests/patterns/hitl/test_ui_channel.py`
 
 - [ ] **Step 1: Failing tests**
@@ -442,14 +442,14 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.ui import UIChannel
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.ui import UIChannel
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 
 def test_ui_channel_satisfies_protocol():
@@ -470,7 +470,7 @@ async def test_ui_channel_returns_received_response():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -492,7 +492,7 @@ async def test_ui_channel_returns_timeout_on_none():
     )
     recv = AsyncMock(return_value=None)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv", recv,
     ):
         channel = UIChannel()
         result = await channel.ask(prompt, request_id=rid)
@@ -512,7 +512,7 @@ async def test_ui_channel_no_timeout_passes_none():
     ).model_dump(mode="json")
     recv = AsyncMock(return_value=payload)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.ui.DBOS.recv", recv,
+        "ballast.patterns.hitl.channels.ui.DBOS.recv", recv,
     ):
         channel = UIChannel()
         await channel.ask(prompt, request_id=rid)
@@ -527,15 +527,15 @@ uv run pytest tests/patterns/hitl/test_ui_channel.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py`:
+`src/ballast/patterns/hitl/channels/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.channels.ui import UIChannel
+from ballast.patterns.hitl.channels.ui import UIChannel
 
 __all__ = ["UIChannel"]
 ```
 
-`src/pydantic_ai_stateflow/patterns/hitl/channels/ui.py`:
+`src/ballast/patterns/hitl/channels/ui.py`:
 
 ```python
 from __future__ import annotations
@@ -547,12 +547,12 @@ from uuid import UUID
 from dbos import DBOS
 from pydantic import TypeAdapter
 
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     HITLResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 
@@ -586,7 +586,7 @@ class UIChannel:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/channels/ \
+git add src/ballast/patterns/hitl/channels/ \
         tests/patterns/hitl/test_ui_channel.py
 git commit -m "feat(hitl): UIChannel — DBOS.recv on tenant-scoped topic with TimeoutResponse fallback"
 ```
@@ -601,7 +601,7 @@ Pure helpers + a `@DBOS.step` for outbound HTTP. Done before the full channel so
 
 **Files:**
 - Modify: `pyproject.toml` — promote `httpx>=0.27` from dev deps to runtime deps.
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py` (partial — just the helpers + step; full channel in Task 4)
+- Create: `src/ballast/patterns/hitl/channels/webhook.py` (partial — just the helpers + step; full channel in Task 4)
 - Create: `tests/patterns/hitl/test_webhook_primitives.py`
 
 - [ ] **Step 1: Failing tests**
@@ -618,7 +618,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookConfig,
     post_webhook,
@@ -671,7 +671,7 @@ async def test_post_webhook_sends_signature_and_body():
             return _R()
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.httpx.AsyncClient",
+        "ballast.patterns.hitl.channels.webhook.httpx.AsyncClient",
         FakeClient,
     ):
         body = json.dumps({"request_id": "abc"}).encode()
@@ -702,7 +702,7 @@ async def test_post_webhook_raises_on_4xx():
             return _R()
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.httpx.AsyncClient",
+        "ballast.patterns.hitl.channels.webhook.httpx.AsyncClient",
         FakeClient,
     ):
         with pytest.raises(Exception):
@@ -719,7 +719,7 @@ uv run pytest tests/patterns/hitl/test_webhook_primitives.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py` (partial — channel class lands in Task 4):
+`src/ballast/patterns/hitl/channels/webhook.py` (partial — channel class lands in Task 4):
 
 ```python
 from __future__ import annotations
@@ -780,7 +780,7 @@ async def post_webhook(*, url: str, body: bytes, signature: str) -> None:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py \
+git add src/ballast/patterns/hitl/channels/webhook.py \
         tests/patterns/hitl/test_webhook_primitives.py \
         pyproject.toml uv.lock
 git commit -m "feat(hitl): webhook signing + HMAC step + WebhookConfig (Task 3 of SP6)"
@@ -795,9 +795,9 @@ Wire the outbound POST into a `HITLChannel.ask` impl + extend the SP6 Task 1 rou
 **Baseline:** 265 → **Target:** 273 (+8).
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py` (add `WebhookChannel` class)
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py` (export `WebhookChannel`, `WebhookConfig`)
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/api/router.py` (extend `build_hitl_router` with `webhook_secret` kwarg + endpoint)
+- Modify: `src/ballast/patterns/hitl/channels/webhook.py` (add `WebhookChannel` class)
+- Modify: `src/ballast/patterns/hitl/channels/__init__.py` (export `WebhookChannel`, `WebhookConfig`)
+- Modify: `src/ballast/patterns/hitl/api/router.py` (extend `build_hitl_router` with `webhook_secret` kwarg + endpoint)
 - Create: `tests/patterns/hitl/test_webhook_channel.py`
 
 - [ ] **Step 1: Failing tests**
@@ -818,21 +818,21 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.patterns.hitl.api.router import build_hitl_router
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.api.router import build_hitl_router
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookChannel,
     WebhookConfig,
 )
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryHITLRepository
 
 
 def test_webhook_channel_satisfies_protocol():
@@ -864,10 +864,10 @@ async def test_webhook_channel_posts_signed_payload_then_recvs():
     cfg = WebhookConfig(url="https://hooks.example/cb", secret="sssh")
     channel = WebhookChannel(config=cfg)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.post_webhook",
+        "ballast.patterns.hitl.channels.webhook.post_webhook",
         fake_post,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.DBOS.recv", recv,
+        "ballast.patterns.hitl.channels.webhook.DBOS.recv", recv,
     ):
         result = await channel.ask(prompt, request_id=rid)
 
@@ -897,10 +897,10 @@ async def test_webhook_channel_returns_timeout_on_none():
     cfg = WebhookConfig(url="https://hooks.example/cb", secret="sssh")
     channel = WebhookChannel(config=cfg)
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.post_webhook",
+        "ballast.patterns.hitl.channels.webhook.post_webhook",
         AsyncMock(return_value=None),
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.webhook.DBOS.recv",
+        "ballast.patterns.hitl.channels.webhook.DBOS.recv",
         AsyncMock(return_value=None),
     ):
         result = await channel.ask(prompt, request_id=rid)
@@ -988,7 +988,7 @@ async def test_webhook_endpoint_accepts_valid_signature_and_sends():
         sent.update(destination=destination, message=message, topic=topic)
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.api.router.DBOS.send", fake_send,
+        "ballast.patterns.hitl.api.router.DBOS.send", fake_send,
     ):
         with TestClient(app) as client:
             r = client.post(
@@ -1024,7 +1024,7 @@ uv run pytest tests/patterns/hitl/test_webhook_channel.py -v
 
 - [ ] **Step 3: Implement**
 
-Append to `src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py`:
+Append to `src/ballast/patterns/hitl/channels/webhook.py`:
 
 ```python
 from datetime import UTC, datetime
@@ -1033,12 +1033,12 @@ from uuid import UUID
 
 from pydantic import TypeAdapter
 
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     HITLResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.topic import _hitl_topic
 
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 
@@ -1090,11 +1090,11 @@ class WebhookChannel:
         return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 ```
 
-Update `src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py`:
+Update `src/ballast/patterns/hitl/channels/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.channels.ui import UIChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.channels.ui import UIChannel
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookChannel,
     WebhookConfig,
@@ -1108,13 +1108,13 @@ __all__ = [
 ]
 ```
 
-Extend `src/pydantic_ai_stateflow/patterns/hitl/api/router.py` — add a `webhook_secret` kwarg and mount the second endpoint:
+Extend `src/ballast/patterns/hitl/api/router.py` — add a `webhook_secret` kwarg and mount the second endpoint:
 
 ```python
 import hmac
 from hashlib import sha256
 
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
 )
 # ... existing imports unchanged
@@ -1185,9 +1185,9 @@ def build_hitl_router(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/channels/webhook.py \
-        src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py \
-        src/pydantic_ai_stateflow/patterns/hitl/api/router.py \
+git add src/ballast/patterns/hitl/channels/webhook.py \
+        src/ballast/patterns/hitl/channels/__init__.py \
+        src/ballast/patterns/hitl/api/router.py \
         tests/patterns/hitl/test_webhook_channel.py
 git commit -m "feat(hitl): WebhookChannel outbound POST + inbound callback endpoint with HMAC verify"
 ```
@@ -1201,7 +1201,7 @@ Generic Pydantic model — pure type module. Module-level alias rule from projec
 **Baseline:** 273 → **Target:** 278 (+5).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/verdict.py`
+- Create: `src/ballast/patterns/hitl/verdict.py`
 - Create: `tests/patterns/hitl/test_verdict.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1214,7 +1214,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 
 class _Ctx(BaseModel):
@@ -1289,7 +1289,7 @@ def test_round_trip_via_model_dump_and_validate():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/verdict.py`:
+`src/ballast/patterns/hitl/verdict.py`:
 
 ```python
 from __future__ import annotations
@@ -1331,7 +1331,7 @@ class HelperVerdict(BaseModel, Generic[ContextT]):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/verdict.py \
+git add src/ballast/patterns/hitl/verdict.py \
         tests/patterns/hitl/test_verdict.py
 git commit -m "feat(hitl): HelperVerdict[ContextT] — generic, frozen, framework-side base"
 ```
@@ -1345,8 +1345,8 @@ Wraps a pydantic-ai `Agent` with `approve` / `reject` / optional `modify` / opti
 **Baseline:** 278 → **Target:** 284 (+6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/helper/__init__.py`
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/helper/factory.py`
+- Create: `src/ballast/patterns/hitl/helper/__init__.py`
+- Create: `src/ballast/patterns/hitl/helper/factory.py`
 - Create: `tests/patterns/hitl/test_helper_factory.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1365,18 +1365,18 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
     HelperToolBox,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 
 class _Ctx(BaseModel):
@@ -1520,10 +1520,10 @@ def test_helper_agent_factory_protocol_is_runtime_checkable():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/helper/__init__.py`:
+`src/ballast/patterns/hitl/helper/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
     HelperToolBox,
@@ -1538,7 +1538,7 @@ __all__ = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/patterns/hitl/helper/factory.py`:
+`src/ballast/patterns/hitl/helper/factory.py`:
 
 ```python
 from __future__ import annotations
@@ -1550,13 +1550,13 @@ from uuid import UUID
 
 from pydantic_ai import Agent, RunContext
 
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     HITLResponse,
     ModifiedResponse,
     RejectedResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 
 @dataclass
@@ -1746,8 +1746,8 @@ def make_helper_agent_with_approval_tools(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/helper/__init__.py \
-        src/pydantic_ai_stateflow/patterns/hitl/helper/factory.py \
+git add src/ballast/patterns/hitl/helper/__init__.py \
+        src/ballast/patterns/hitl/helper/factory.py \
         tests/patterns/hitl/test_helper_factory.py
 git commit -m "feat(hitl): HelperAgentFactory Protocol + typed approval-tools factory"
 ```
@@ -1761,8 +1761,8 @@ A `@DBOS.workflow()` that drives the helper conversation in its OWN workflow (sp
 **Baseline:** 284 → **Target:** 292 (+8).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/helper/session.py`
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/helper/__init__.py`
+- Create: `src/ballast/patterns/hitl/helper/session.py`
+- Modify: `src/ballast/patterns/hitl/helper/__init__.py`
 - Create: `tests/patterns/hitl/test_helper_session.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1783,19 +1783,19 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperDeps,
     HelperToolBox,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
     HelperSessionRunner,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryThreadRepository
 
 
 class _Ctx(BaseModel):
@@ -1863,9 +1863,9 @@ async def test_runner_sends_response_to_gate_topic_and_exits(
         sent.update(destination=destination, message=message, topic=topic)
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send", fake_send,
+        "ballast.patterns.hitl.helper.session.DBOS.send", fake_send,
     ):
         await runner.run(HelperSessionInput(
             prompt_payload=prompt.model_dump(mode="json"),
@@ -1921,9 +1921,9 @@ async def test_runner_loops_on_non_verdict_messages_then_completes(
         sends.append({"destination": destination, "topic": topic, "message": message})
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send", fake_send,
+        "ballast.patterns.hitl.helper.session.DBOS.send", fake_send,
     ):
         await runner.run(HelperSessionInput(
             prompt_payload=prompt.model_dump(mode="json"),
@@ -1974,9 +1974,9 @@ async def test_runner_bounded_by_max_turns(fresh_dbos_executor):
     def fake_send(*a, **k): sends.append(k)
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.recv", recv,
+        "ballast.patterns.hitl.helper.session.DBOS.recv", recv,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.helper.session.DBOS.send", fake_send,
+        "ballast.patterns.hitl.helper.session.DBOS.send", fake_send,
     ):
         await runner.run(HelperSessionInput(
             prompt_payload=prompt.model_dump(mode="json"),
@@ -2006,7 +2006,7 @@ def test_helper_session_input_is_frozen_basemodel():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/helper/session.py`:
+`src/ballast/patterns/hitl/helper/session.py`:
 
 ```python
 from __future__ import annotations
@@ -2020,14 +2020,14 @@ from dbos import DBOS, DBOSConfiguredInstance
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
     HelperToolBox,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence.thread.repository import ThreadRepository
 
 _session_counter = itertools.count()
 
@@ -2192,13 +2192,13 @@ def _resolve_base_agent(module: str, attr: str | None) -> Agent[HelperDeps, str]
 Update `helper/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.helper.factory import (
+from ballast.patterns.hitl.helper.factory import (
     HelperAgentFactory,
     HelperDeps,
     HelperToolBox,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
     HelperSessionRunner,
@@ -2220,8 +2220,8 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/helper/session.py \
-        src/pydantic_ai_stateflow/patterns/hitl/helper/__init__.py \
+git add src/ballast/patterns/hitl/helper/session.py \
+        src/ballast/patterns/hitl/helper/__init__.py \
         tests/patterns/hitl/test_helper_session.py
 git commit -m "feat(hitl): DefaultHelperSessionRunner — separate workflow drives helper convo"
 ```
@@ -2235,8 +2235,8 @@ git commit -m "feat(hitl): DefaultHelperSessionRunner — separate workflow driv
 **Baseline:** 292 → **Target:** 298 (+6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/patterns/hitl/channels/conversational.py`
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py`
+- Create: `src/ballast/patterns/hitl/channels/conversational.py`
+- Modify: `src/ballast/patterns/hitl/channels/__init__.py`
 - Create: `tests/patterns/hitl/test_conversational_channel.py`
 
 - [ ] **Step 1: Failing tests**
@@ -2254,21 +2254,21 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.hitl.channel import HITLChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.conversational import (
+from ballast.patterns.hitl.channel import HITLChannel
+from ballast.patterns.hitl.channels.conversational import (
     ConversationalChannel,
 )
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence import InMemoryThreadRepository
 
 
 class _Ctx(BaseModel):
@@ -2326,10 +2326,10 @@ async def test_ask_starts_helper_session_then_recvs(fresh_dbos_executor):
     )
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", fake_start,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         recv,
     ):
         result = await channel.ask(prompt, request_id=rid)
@@ -2358,10 +2358,10 @@ async def test_ask_returns_timeout_when_recv_returns_none(fresh_dbos_executor):
     runner = MagicMock()
     runner.run = MagicMock()
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", AsyncMock(return_value=None),
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=None),
     ):
         channel = ConversationalChannel(
@@ -2393,10 +2393,10 @@ async def test_idempotency_key_stable_for_same_request(fresh_dbos_executor):
     ).model_dump(mode="json")
 
     with patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational"
+        "ballast.patterns.hitl.channels.conversational"
         ".start_workflow_async", fake_start,
     ), patch(
-        "pydantic_ai_stateflow.patterns.hitl.channels.conversational.DBOS.recv",
+        "ballast.patterns.hitl.channels.conversational.DBOS.recv",
         AsyncMock(return_value=payload),
     ):
         channel = ConversationalChannel(
@@ -2416,7 +2416,7 @@ async def test_idempotency_key_stable_for_same_request(fresh_dbos_executor):
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/patterns/hitl/channels/conversational.py`:
+`src/ballast/patterns/hitl/channels/conversational.py`:
 
 ```python
 from __future__ import annotations
@@ -2429,19 +2429,19 @@ from uuid import UUID
 from dbos import DBOS, SetWorkflowID
 from pydantic import TypeAdapter
 
-from pydantic_ai_stateflow.patterns.hitl.helper.session import (
+from ballast.patterns.hitl.helper.session import (
     DefaultHelperSessionRunner,
     HelperSessionInput,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import (
     HITLResponse,
     TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.runtime.det import Det
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.persistence.thread.repository import ThreadRepository
+from ballast.runtime.det import Det
+from ballast.runtime.idempotency import IdempotencyInput
 
 _RESPONSE_ADAPTER: TypeAdapter[HITLResponse] = TypeAdapter(HITLResponse)
 
@@ -2548,11 +2548,11 @@ class ConversationalChannel:
 Update `channels/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.channels.conversational import (
+from ballast.patterns.hitl.channels.conversational import (
     ConversationalChannel,
 )
-from pydantic_ai_stateflow.patterns.hitl.channels.ui import UIChannel
-from pydantic_ai_stateflow.patterns.hitl.channels.webhook import (
+from ballast.patterns.hitl.channels.ui import UIChannel
+from ballast.patterns.hitl.channels.webhook import (
     WEBHOOK_SIGNATURE_HEADER,
     WebhookChannel,
     WebhookConfig,
@@ -2572,8 +2572,8 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/channels/conversational.py \
-        src/pydantic_ai_stateflow/patterns/hitl/channels/__init__.py \
+git add src/ballast/patterns/hitl/channels/conversational.py \
+        src/ballast/patterns/hitl/channels/__init__.py \
         tests/patterns/hitl/test_conversational_channel.py
 git commit -m "feat(hitl): ConversationalChannel — separate-workflow helper with deterministic idempotency"
 ```
@@ -2587,7 +2587,7 @@ git commit -m "feat(hitl): ConversationalChannel — separate-workflow helper wi
 **Baseline:** 298 → **Target:** 304 (+6).
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/gate.py`
+- Modify: `src/ballast/patterns/hitl/gate.py`
 - Create: `tests/patterns/hitl/test_persistence_wiring.py`
 
 - [ ] **Step 1: Failing tests**
@@ -2603,13 +2603,13 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.hitl.channel import InMemoryHITLChannel
-from pydantic_ai_stateflow.patterns.hitl.gate import HITLGate
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import ApprovedResponse
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.channel import InMemoryHITLChannel
+from ballast.patterns.hitl.gate import HITLGate
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.patterns.hitl.prompt import HITLPrompt
+from ballast.patterns.hitl.response import ApprovedResponse
+from ballast.patterns.hitl.verdict import HelperVerdict
+from ballast.persistence import InMemoryHITLRepository
 
 
 class _Ctx(BaseModel):
@@ -2729,7 +2729,7 @@ async def test_helper_thread_id_propagated_via_prompt_metadata(fresh_dbos_execut
 - [ ] **Step 3: Implement** — replace `HITLGate.run`'s `persist_response` call:
 
 ```python
-# In src/pydantic_ai_stateflow/patterns/hitl/gate.py — patch the final
+# In src/ballast/patterns/hitl/gate.py — patch the final
 # `await self.repo.persist_response(...)` call to forward helper fields:
 
 helper_verdict_payload: dict | None = None
@@ -2764,7 +2764,7 @@ await self.repo.persist_response(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/gate.py \
+git add src/ballast/patterns/hitl/gate.py \
         tests/patterns/hitl/test_persistence_wiring.py
 git commit -m "feat(hitl): HITLGate forwards helper_verdict / thread_id / context_type to Decision row"
 ```
@@ -2778,26 +2778,26 @@ Top-level exports + an end-to-end smoke that wires `HITLGate` + `ConversationalC
 **Baseline:** 304 → **Target:** ~309 (+5).
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/__init__.py`
-- Modify: `src/pydantic_ai_stateflow/__init__.py`
+- Modify: `src/ballast/patterns/hitl/__init__.py`
+- Modify: `src/ballast/__init__.py`
 - Create: `tests/patterns/hitl/test_public_api_sp6.py`
 
 - [ ] **Step 1: Update `patterns/hitl/__init__.py`**
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl.api import build_hitl_router
-from pydantic_ai_stateflow.patterns.hitl.channel import (
+from ballast.patterns.hitl.api import build_hitl_router
+from ballast.patterns.hitl.channel import (
     HITLChannel, InMemoryHITLChannel,
 )
-from pydantic_ai_stateflow.patterns.hitl.channels import (
+from ballast.patterns.hitl.channels import (
     WEBHOOK_SIGNATURE_HEADER,
     ConversationalChannel,
     UIChannel,
     WebhookChannel,
     WebhookConfig,
 )
-from pydantic_ai_stateflow.patterns.hitl.gate import HITLGate
-from pydantic_ai_stateflow.patterns.hitl.helper import (
+from ballast.patterns.hitl.gate import HITLGate
+from ballast.patterns.hitl.helper import (
     DefaultHelperSessionRunner,
     HelperAgentFactory,
     HelperDeps,
@@ -2806,16 +2806,16 @@ from pydantic_ai_stateflow.patterns.hitl.helper import (
     HelperToolBox,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.policy import (
+from ballast.patterns.hitl.policy import (
     AccessDecision, AllowAll, DenyAll, Policy, Voter,
 )
-from pydantic_ai_stateflow.patterns.hitl.prompt import HITLOption, HITLPrompt
-from pydantic_ai_stateflow.patterns.hitl.response import (
+from ballast.patterns.hitl.prompt import HITLOption, HITLPrompt
+from ballast.patterns.hitl.response import (
     ApprovedResponse, HITLResponse, ModifiedResponse,
     RejectedResponse, TimeoutResponse,
 )
-from pydantic_ai_stateflow.patterns.hitl.topic import _hitl_topic
-from pydantic_ai_stateflow.patterns.hitl.verdict import HelperVerdict
+from ballast.patterns.hitl.topic import _hitl_topic
+from ballast.patterns.hitl.verdict import HelperVerdict
 
 __all__ = [
     "AccessDecision", "AllowAll", "ApprovedResponse",
@@ -2831,10 +2831,10 @@ __all__ = [
 ]
 ```
 
-- [ ] **Step 2: Add to top-level `src/pydantic_ai_stateflow/__init__.py`**
+- [ ] **Step 2: Add to top-level `src/ballast/__init__.py`**
 
 ```python
-from pydantic_ai_stateflow.patterns.hitl import (
+from ballast.patterns.hitl import (
     ConversationalChannel,
     DefaultHelperSessionRunner,
     HelperAgentFactory,
@@ -2869,7 +2869,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow import (
+from ballast import (
     ConversationalChannel,
     HelperVerdict,
     HITLGate,
@@ -2880,8 +2880,8 @@ from pydantic_ai_stateflow import (
     build_hitl_router,
     make_helper_agent_with_approval_tools,
 )
-from pydantic_ai_stateflow.patterns.hitl.policy import AllowAll
-from pydantic_ai_stateflow.persistence import InMemoryHITLRepository
+from ballast.patterns.hitl.policy import AllowAll
+from ballast.persistence import InMemoryHITLRepository
 
 
 class _Ctx(BaseModel):
@@ -2968,8 +2968,8 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/hitl/__init__.py \
-        src/pydantic_ai_stateflow/__init__.py \
+git add src/ballast/patterns/hitl/__init__.py \
+        src/ballast/__init__.py \
         tests/patterns/hitl/test_public_api_sp6.py
 git commit -m "feat: Sub-project #6 public API (HITL channels exports + end-to-end smoke)"
 ```
@@ -2980,7 +2980,7 @@ git commit -m "feat: Sub-project #6 public API (HITL channels exports + end-to-e
 
 After all 10 tasks:
 
-- `from pydantic_ai_stateflow import UIChannel, WebhookChannel, WebhookConfig, ConversationalChannel, HelperVerdict, make_helper_agent_with_approval_tools, build_hitl_router` works.
+- `from ballast import UIChannel, WebhookChannel, WebhookConfig, ConversationalChannel, HelperVerdict, make_helper_agent_with_approval_tools, build_hitl_router` works.
 - `UIChannel`, `WebhookChannel`, `ConversationalChannel` all satisfy `isinstance(x, HITLChannel)` and return `TimeoutResponse` on `DBOS.recv` exhausting `prompt.timeout`.
 - `build_hitl_router(repo, policy)` mounts `POST /hitl/{request_id}/respond` performing endpoint-side authz (point #1 of the spec 2C.4 two-point check) and `DBOS.send` to the gate's tenant-scoped topic `hitl:{tenant_id}:{request_id}`.
 - `build_hitl_router(..., webhook_secret=...)` ADDITIONALLY mounts `POST /hitl/webhook/{request_id}` that verifies an HMAC-SHA256 signature in `X-Stateflow-Signature` via `hmac.compare_digest`, then reuses the same load+authz+send pipeline.
@@ -2997,11 +2997,11 @@ After all 10 tasks:
 ---
 
 ### Critical Files for Implementation
-- /Users/kirunya/conductor/workspaces/pydantic-ai-stateflow-engine/philadelphia-v1/src/pydantic_ai_stateflow/patterns/hitl/channel.py
-- /Users/kirunya/conductor/workspaces/pydantic-ai-stateflow-engine/philadelphia-v1/src/pydantic_ai_stateflow/patterns/hitl/gate.py
-- /Users/kirunya/conductor/workspaces/pydantic-ai-stateflow-engine/philadelphia-v1/src/pydantic_ai_stateflow/persistence/hitl/repository.py
-- /Users/kirunya/conductor/workspaces/pydantic-ai-stateflow-engine/philadelphia-v1/src/pydantic_ai_stateflow/persistence/thread/repository.py
-- /Users/kirunya/conductor/workspaces/pydantic-ai-stateflow-engine/philadelphia-v1/src/pydantic_ai_stateflow/runtime/det.py
+- /Users/kirunya/conductor/workspaces/ballast-ai-engine/philadelphia-v1/src/ballast/patterns/hitl/channel.py
+- /Users/kirunya/conductor/workspaces/ballast-ai-engine/philadelphia-v1/src/ballast/patterns/hitl/gate.py
+- /Users/kirunya/conductor/workspaces/ballast-ai-engine/philadelphia-v1/src/ballast/persistence/hitl/repository.py
+- /Users/kirunya/conductor/workspaces/ballast-ai-engine/philadelphia-v1/src/ballast/persistence/thread/repository.py
+- /Users/kirunya/conductor/workspaces/ballast-ai-engine/philadelphia-v1/src/ballast/runtime/det.py
 
 ### Task Titles (10)
 1. HITL FastAPI router primitives — `_hitl_topic`, `build_hitl_router`

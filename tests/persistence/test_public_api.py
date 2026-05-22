@@ -1,6 +1,6 @@
 def test_persistence_public_api():
     """Persistence-layer Protocols are importable from top-level package."""
-    from pydantic_ai_stateflow.persistence import (
+    from ballast.persistence import (
         HITLRepository,
         OutboxRepository,
         SqlAlchemyUnitOfWork,

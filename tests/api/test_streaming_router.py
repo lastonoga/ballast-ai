@@ -37,17 +37,17 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from starlette.responses import Response
 
-from pydantic_ai_stateflow.api.streaming import stream_response
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.api.streaming import stream_response
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import StateflowAgent
-from pydantic_ai_stateflow.runtime.engine import Engine, _reset_engine_for_tests, _set_engine
+from ballast.runtime import BallastAgent
+from ballast.runtime.engine import Engine, _reset_engine_for_tests, _set_engine
 
 
-class _TestStateflowAgent(StateflowAgent):
+class _TestBallastAgent(BallastAgent):
     """Test seam: wraps a pre-built pydantic-ai ``Agent`` + optional
-    ``deps_factory`` + ``model_settings`` into a ``StateflowAgent``
+    ``deps_factory`` + ``model_settings`` into a ``BallastAgent``
     instance."""
 
     name = "conversation"
@@ -110,13 +110,13 @@ def _build_app(
     thread (here trivially: always ``conversation``) and delegates to
     the primitive.
     """
-    from pydantic_ai_stateflow.api.error_middleware import install_error_handlers
-    from pydantic_ai_stateflow.persistence import (
+    from ballast.api.error_middleware import install_error_handlers
+    from ballast.persistence import (
         InMemoryEventLogRepository,
     )
-    from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+    from ballast.runtime.event_stream import InProcessEventStream
 
-    sf_agent = _TestStateflowAgent(
+    sf_agent = _TestBallastAgent(
         agent,
         deps_factory=deps_factory,
         model_settings=model_settings,
@@ -457,7 +457,7 @@ async def test_regenerate_truncates_old_assistant_then_emits_new() -> None:
 async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
-    from pydantic_ai_stateflow.api.streaming.router import (
+    from ballast.api.streaming.router import (
         _trim_adapter_messages_to_last_user_prompt,
     )
 
@@ -508,7 +508,7 @@ async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
 async def test_pii_guard_redacts_email_in_live_sse_stream() -> None:
     import re as _re
 
-    from pydantic_ai_stateflow.capabilities import PIIGuard, RegexDetector
+    from ballast.capabilities import PIIGuard, RegexDetector
 
     email_re = _re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
     leak = "Contact alice@example.com to follow up."

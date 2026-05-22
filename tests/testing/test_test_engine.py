@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.observability.config import (
+from ballast.observability.config import (
     _reset_observability_for_tests,
 )
-from pydantic_ai_stateflow.persistence import InMemoryThreadRepository
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
-from pydantic_ai_stateflow.testing import TestEngine
+from ballast.persistence import InMemoryThreadRepository
+from ballast.persistence.thread.repository import ThreadRepository
+from ballast.testing import TestEngine
 
 
 @pytest.fixture(autouse=True)

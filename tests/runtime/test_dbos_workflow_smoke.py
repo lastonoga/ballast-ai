@@ -37,7 +37,7 @@ from uuid import UUID
 import pytest
 from dbos import DBOS, DBOSConfig, SetWorkflowID
 
-from pydantic_ai_stateflow.runtime import Det, IdempotencyInput
+from ballast.runtime import Det, IdempotencyInput
 
 # ---------------------------------------------------------------------------
 # Workflow definition — module-level so @DBOS.workflow() fires at import time.

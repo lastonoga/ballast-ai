@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic_ai_stateflow.patterns.mapreduce import Chunker, Reducer
+from ballast.patterns.mapreduce import Chunker, Reducer
 
 
 class _StringChunker:

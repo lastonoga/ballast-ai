@@ -8,8 +8,8 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded.ref import Ref
-from pydantic_ai_stateflow.grounded.selector import (
+from ballast.grounded.ref import Ref
+from ballast.grounded.selector import (
     Selector,
     SelectorRegistry,
     extract_selector,

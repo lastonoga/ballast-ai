@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence.thread import (
     InMemoryThreadRepository,
     ThreadClosedError,
     ThreadRepository,

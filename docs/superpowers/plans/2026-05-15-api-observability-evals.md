@@ -15,7 +15,7 @@ target_tests: ~349 passed + 10 skipped (after SP7)
 **Spec sections covered:** 1.8 (streaming SSE channels narrative), 1.13 (A2A as primary inter-agent protocol), 1.14 (eval-from-trace tooling), 2D / 3J narrative for ConversationalChannel parity, 3H (FastAPI thin layer — `/healthz`, `/threads/*`, `/hitl/*`, `/a2a/*`), 4A.0.7 (Container lives in `app.state.container`, never global, accessed via `Depends(get_container)`), 4C (Evals v1 — `SchemaAdherenceScorer` + `Dataset` + CLI `dataset-from-traces`), 4D (Observability — `ObservabilityProvider`, canonical span table, soft dep on logfire), 4F (MVP — L5: `SchemaAdherenceScorer` only; L6: logfire + one dashboard only; L7: FastAPI + AG-UI + Vercel + A2A), 4H (bootstrap invariants — `ObservabilityProvider` registers FIRST).
 
 **Scope vs deferred:**
-- v1 in SP7: `ObservabilityProvider` + `@traced(...)` span decorator/context-manager + canonical span names on Reflection / MapReduce / MutationPipeline / HITLGate / HITLChannel; `Engine.fastapi_app(...)`; DI helpers `get_container` / `get_engine` / `get_tenant_id`; `/healthz`; `build_threads_router` (REST CRUD); `build_streaming_router` with two adapter modes (`AGUIEncoder`, `VercelEncoder`); `build_a2a_router` (`/.well-known/agent.json` + `POST /a2a/{agent_name}`); `EvalCase`, `Dataset`, `Scorer` Protocol, `EvalReport`, `SchemaAdherenceScorer`, in-memory `Dataset.evaluate(...)`; `python -m pydantic_ai_stateflow.evals.cli dataset-from-traces` Typer entry point; end-to-end smoke test (build app → run a Reflection → run a Dataset eval).
+- v1 in SP7: `ObservabilityProvider` + `@traced(...)` span decorator/context-manager + canonical span names on Reflection / MapReduce / MutationPipeline / HITLGate / HITLChannel; `Engine.fastapi_app(...)`; DI helpers `get_container` / `get_engine` / `get_tenant_id`; `/healthz`; `build_threads_router` (REST CRUD); `build_streaming_router` with two adapter modes (`AGUIEncoder`, `VercelEncoder`); `build_a2a_router` (`/.well-known/agent.json` + `POST /a2a/{agent_name}`); `EvalCase`, `Dataset`, `Scorer` Protocol, `EvalReport`, `SchemaAdherenceScorer`, in-memory `Dataset.evaluate(...)`; `python -m ballast.evals.cli dataset-from-traces` Typer entry point; end-to-end smoke test (build app → run a Reflection → run a Dataset eval).
 - Deferred to v1.1 / v2: `MutationAcceptanceScorer`, `IterationBudgetScorer`, `GroundedReferenceScorer`, `HelperVerdictDisagreementScorer`; the other 5 dashboards (HITL latency stays a doc-only sketch); the drift-detection pipeline; `STATEFLOW006-013` lint rules (only `STATEFLOW001-005` shipped, additions out of scope here); auto-registration of `stateflow` entry-point in `pyproject.toml [project.scripts]` (use `python -m ...` in v1); `RemoteAgent` proxy for outbound A2A (left to apps using `httpx`); WebSocket transport (SSE only); Slack / Discord A2A flavours.
 
 ---
@@ -23,7 +23,7 @@ target_tests: ~349 passed + 10 skipped (after SP7)
 ## File Structure
 
 ```
-src/pydantic_ai_stateflow/
+src/ballast/
 ├── api/
 │   ├── __init__.py                          # build_threads_router, build_streaming_router, build_a2a_router, build_health_router, deps re-export
 │   ├── deps.py                              # get_container, get_engine, get_tenant_id, build_default_tenant_resolver
@@ -45,7 +45,7 @@ src/pydantic_ai_stateflow/
 │   ├── dataset.py                           # Dataset, EvalReport, ScoreResult
 │   ├── scorer.py                            # Scorer Protocol, SchemaAdherenceScorer
 │   ├── traces.py                            # dataset_from_traces() — joins eval_runs / proposal_audit / thread / decision rows
-│   └── cli.py                               # `python -m pydantic_ai_stateflow.evals.cli dataset-from-traces ...`
+│   └── cli.py                               # `python -m ballast.evals.cli dataset-from-traces ...`
 ├── runtime/
 │   └── engine.py                            # extended: Engine.fastapi_app(...)
 ├── patterns/
@@ -87,9 +87,9 @@ Pure FastAPI scaffolding. Three Depends helpers and a one-route health router. C
 **Baseline:** 299 passed + 10 skipped → **Target:** 309 passed + 10 skipped (+10).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/api/__init__.py`
-- Create: `src/pydantic_ai_stateflow/api/deps.py`
-- Create: `src/pydantic_ai_stateflow/api/health.py`
+- Create: `src/ballast/api/__init__.py`
+- Create: `src/ballast/api/deps.py`
+- Create: `src/ballast/api/health.py`
 - Create: `tests/api/__init__.py`
 - Create: `tests/api/test_deps.py`
 - Create: `tests/api/test_health.py`
@@ -107,13 +107,13 @@ import pytest
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.deps import (
+from ballast.api.deps import (
     get_container,
     get_engine,
     get_tenant_id,
 )
-from pydantic_ai_stateflow.runtime import DefaultContainer, Engine
-from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from ballast.runtime import DefaultContainer, Engine
+from ballast.runtime.provider import ServiceProvider
 
 
 class _NoopProvider:
@@ -213,7 +213,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.health import build_health_router
+from ballast.api.health import build_health_router
 
 
 def test_healthz_returns_200_ok():
@@ -258,15 +258,15 @@ uv run pytest tests/api/test_deps.py tests/api/test_health.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/api/__init__.py`:
+`src/ballast/api/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.api.deps import (
+from ballast.api.deps import (
     get_container,
     get_engine,
     get_tenant_id,
 )
-from pydantic_ai_stateflow.api.health import build_health_router
+from ballast.api.health import build_health_router
 
 __all__ = [
     "build_health_router",
@@ -276,7 +276,7 @@ __all__ = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/api/deps.py`:
+`src/ballast/api/deps.py`:
 
 ```python
 from __future__ import annotations
@@ -288,8 +288,8 @@ from uuid import UUID
 from fastapi import HTTPException, Request
 
 if TYPE_CHECKING:
-    from pydantic_ai_stateflow.runtime import Engine
-    from pydantic_ai_stateflow.runtime.container import Container
+    from ballast.runtime import Engine
+    from ballast.runtime.container import Container
 
 TenantResolver = Callable[[Request], UUID]
 
@@ -345,7 +345,7 @@ def get_tenant_id(request: Request) -> UUID:
         ) from exc
 ```
 
-`src/pydantic_ai_stateflow/api/health.py`:
+`src/ballast/api/health.py`:
 
 ```python
 from __future__ import annotations
@@ -402,7 +402,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/api/ tests/api/__init__.py tests/api/test_deps.py tests/api/test_health.py
+git add src/ballast/api/ tests/api/__init__.py tests/api/test_deps.py tests/api/test_health.py
 git commit -m "feat(api): DI helpers (get_container/engine/tenant) + /healthz router"
 ```
 
@@ -415,9 +415,9 @@ Wires the existing `ThreadRepository` (SP2) into REST: `POST /threads`, `GET /th
 **Baseline:** 309 → **Target:** 315 (+6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/api/threads.py`
+- Create: `src/ballast/api/threads.py`
 - Create: `tests/api/test_threads_router.py`
-- Modify: `src/pydantic_ai_stateflow/api/__init__.py` — export `build_threads_router`.
+- Modify: `src/ballast/api/__init__.py` — export `build_threads_router`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -432,8 +432,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.threads import build_threads_router
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.api.threads import build_threads_router
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 
@@ -541,7 +541,7 @@ uv run pytest tests/api/test_threads_router.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/api/threads.py`:
+`src/ballast/api/threads.py`:
 
 ```python
 from __future__ import annotations
@@ -552,8 +552,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from pydantic_ai_stateflow.api.deps import get_tenant_id
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from ballast.api.deps import get_tenant_id
+from ballast.persistence.thread.repository import ThreadRepository
 
 
 class CreateThreadBody(BaseModel):
@@ -608,14 +608,14 @@ def build_threads_router(
     return router
 ```
 
-Extend `src/pydantic_ai_stateflow/api/__init__.py` exports.
+Extend `src/ballast/api/__init__.py` exports.
 
 - [ ] **Step 4: Tests pass (6 new)**
 - [ ] **Step 5: Full suite + mypy + ruff**
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/api/threads.py src/pydantic_ai_stateflow/api/__init__.py tests/api/test_threads_router.py
+git add src/ballast/api/threads.py src/ballast/api/__init__.py tests/api/test_threads_router.py
 git commit -m "feat(api): threads router — POST /threads, GET /threads/{id}, GET /threads/{id}/messages"
 ```
 
@@ -628,9 +628,9 @@ git commit -m "feat(api): threads router — POST /threads, GET /threads/{id}, G
 **Baseline:** 315 → **Target:** 322 (+7).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/api/streaming/__init__.py`
-- Create: `src/pydantic_ai_stateflow/api/streaming/ag_ui.py`
-- Create: `src/pydantic_ai_stateflow/api/streaming/router.py`
+- Create: `src/ballast/api/streaming/__init__.py`
+- Create: `src/ballast/api/streaming/ag_ui.py`
+- Create: `src/ballast/api/streaming/router.py`
 - Create: `tests/api/test_streaming_ag_ui.py`
 
 - [ ] **Step 1: Failing tests**
@@ -647,12 +647,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
-from pydantic_ai_stateflow.api.streaming.router import (
+from ballast.api.streaming.ag_ui import AGUIEncoder
+from ballast.api.streaming.router import (
     StreamEvent,
     build_streaming_router,
 )
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 
@@ -791,11 +791,11 @@ async def test_streaming_endpoint_404_cross_tenant():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/api/streaming/__init__.py`:
+`src/ballast/api/streaming/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
-from pydantic_ai_stateflow.api.streaming.router import (
+from ballast.api.streaming.ag_ui import AGUIEncoder
+from ballast.api.streaming.router import (
     StreamEncoder,
     StreamEvent,
     build_streaming_router,
@@ -804,7 +804,7 @@ from pydantic_ai_stateflow.api.streaming.router import (
 __all__ = ["AGUIEncoder", "StreamEncoder", "StreamEvent", "build_streaming_router"]
 ```
 
-`src/pydantic_ai_stateflow/api/streaming/ag_ui.py`:
+`src/ballast/api/streaming/ag_ui.py`:
 
 ```python
 from __future__ import annotations
@@ -813,7 +813,7 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pydantic_ai_stateflow.api.streaming.router import StreamEvent
+    from ballast.api.streaming.router import StreamEvent
 
 
 class AGUIEncoder:
@@ -837,7 +837,7 @@ class AGUIEncoder:
         return f"event: {event.kind}\ndata: {payload}\n\n".encode()
 ```
 
-`src/pydantic_ai_stateflow/api/streaming/router.py`:
+`src/ballast/api/streaming/router.py`:
 
 ```python
 from __future__ import annotations
@@ -850,9 +850,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from pydantic_ai_stateflow.api.deps import get_tenant_id
-from pydantic_ai_stateflow.api.streaming.ag_ui import AGUIEncoder
-from pydantic_ai_stateflow.persistence.thread.repository import ThreadRepository
+from ballast.api.deps import get_tenant_id
+from ballast.api.streaming.ag_ui import AGUIEncoder
+from ballast.persistence.thread.repository import ThreadRepository
 
 
 class StreamEvent(BaseModel):
@@ -920,7 +920,7 @@ def build_streaming_router(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/api/streaming/ tests/api/test_streaming_ag_ui.py
+git add src/ballast/api/streaming/ tests/api/test_streaming_ag_ui.py
 git commit -m "feat(api): SSE streaming endpoint + AG-UI encoder (content formatter, not transport)"
 ```
 
@@ -933,9 +933,9 @@ Alternate `VercelEncoder` for the same `StreamEvent`. Vercel SDK uses a differen
 **Baseline:** 322 → **Target:** 328 (+6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/api/streaming/vercel.py`
-- Modify: `src/pydantic_ai_stateflow/api/streaming/router.py` — accept `?protocol=ag-ui|vercel` query param.
-- Modify: `src/pydantic_ai_stateflow/api/streaming/__init__.py` — export `VercelEncoder`.
+- Create: `src/ballast/api/streaming/vercel.py`
+- Modify: `src/ballast/api/streaming/router.py` — accept `?protocol=ag-ui|vercel` query param.
+- Modify: `src/ballast/api/streaming/__init__.py` — export `VercelEncoder`.
 - Create: `tests/api/test_streaming_vercel.py`
 
 - [ ] **Step 1: Failing tests**
@@ -952,12 +952,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.streaming.router import (
+from ballast.api.streaming.router import (
     StreamEvent,
     build_streaming_router,
 )
-from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
-from pydantic_ai_stateflow.persistence.thread.repository import (
+from ballast.api.streaming.vercel import VercelEncoder
+from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
 
@@ -1061,7 +1061,7 @@ async def test_router_400_on_unknown_protocol():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/api/streaming/vercel.py`:
+`src/ballast/api/streaming/vercel.py`:
 
 ```python
 from __future__ import annotations
@@ -1070,7 +1070,7 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pydantic_ai_stateflow.api.streaming.router import StreamEvent
+    from ballast.api.streaming.router import StreamEvent
 
 # Vercel AI SDK stream protocol — record prefixes per @ai-sdk/ui
 _PREFIX = {
@@ -1103,7 +1103,7 @@ Update `router.py` — add `protocol: str = "ag-ui"` query param:
 
 ```python
 from fastapi import Query
-from pydantic_ai_stateflow.api.streaming.vercel import VercelEncoder
+from ballast.api.streaming.vercel import VercelEncoder
 
 _ENCODERS: dict[str, type] = {"ag-ui": AGUIEncoder, "vercel": VercelEncoder}
 
@@ -1125,7 +1125,7 @@ async def post_message(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/api/streaming/ tests/api/test_streaming_vercel.py
+git add src/ballast/api/streaming/ tests/api/test_streaming_vercel.py
 git commit -m "feat(api): Vercel AI SDK encoder + ?protocol= dispatcher"
 ```
 
@@ -1142,9 +1142,9 @@ We do NOT depend on `pydantic-ai`'s `agent.to_a2a()` even if exposed in the inst
 **Baseline:** 328 → **Target:** 333 (+5).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/api/a2a.py`
+- Create: `src/ballast/api/a2a.py`
 - Create: `tests/api/test_a2a_router.py`
-- Modify: `src/pydantic_ai_stateflow/api/__init__.py` — export `build_a2a_router`, `A2AAgentAdapter`, `AgentCard`.
+- Modify: `src/ballast/api/__init__.py` — export `build_a2a_router`, `A2AAgentAdapter`, `AgentCard`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -1160,7 +1160,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.api.a2a import (
+from ballast.api.a2a import (
     A2AAgentAdapter,
     AgentCard,
     build_a2a_router,
@@ -1242,7 +1242,7 @@ def test_agent_card_includes_optional_metadata():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/api/a2a.py`:
+`src/ballast/api/a2a.py`:
 
 ```python
 from __future__ import annotations
@@ -1253,7 +1253,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from pydantic_ai_stateflow.api.deps import get_tenant_id
+from ballast.api.deps import get_tenant_id
 
 
 @runtime_checkable
@@ -1323,7 +1323,7 @@ def build_a2a_router(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/api/a2a.py src/pydantic_ai_stateflow/api/__init__.py tests/api/test_a2a_router.py
+git add src/ballast/api/a2a.py src/ballast/api/__init__.py tests/api/test_a2a_router.py
 git commit -m "feat(api): A2A discovery (/.well-known/agent.json) + invoke (/a2a/{name})"
 ```
 
@@ -1336,8 +1336,8 @@ Wires everything: builds a `FastAPI`, attaches `Container` and the `Engine` itse
 **Baseline:** 333 → **Target:** 338 (+5).
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/runtime/engine.py` — add `fastapi_app(...)` method.
-- Modify: `src/pydantic_ai_stateflow/runtime/__init__.py` — no new export (method on Engine).
+- Modify: `src/ballast/runtime/engine.py` — add `fastapi_app(...)` method.
+- Modify: `src/ballast/runtime/__init__.py` — no new export (method on Engine).
 - Create: `tests/api/test_engine_fastapi_app.py`
 
 - [ ] **Step 1: Failing tests**
@@ -1353,7 +1353,7 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from pydantic_ai_stateflow.runtime import Engine
+from ballast.runtime import Engine
 
 
 class _RecordingProvider:
@@ -1427,7 +1427,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, FastAPI
 
-from pydantic_ai_stateflow.api.health import build_health_router
+from ballast.api.health import build_health_router
 
 
 class Engine:
@@ -1470,7 +1470,7 @@ class Engine:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/engine.py tests/api/test_engine_fastapi_app.py
+git add src/ballast/runtime/engine.py tests/api/test_engine_fastapi_app.py
 git commit -m "feat(runtime): Engine.fastapi_app() — Container/Engine on app.state + lifespan boot"
 ```
 
@@ -1483,8 +1483,8 @@ git commit -m "feat(runtime): Engine.fastapi_app() — Container/Engine on app.s
 **Baseline:** 338 → **Target:** 344 (+6).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/observability/__init__.py`
-- Create: `src/pydantic_ai_stateflow/observability/provider.py`
+- Create: `src/ballast/observability/__init__.py`
+- Create: `src/ballast/observability/provider.py`
 - Create: `tests/observability/__init__.py`
 - Create: `tests/observability/test_provider.py`
 
@@ -1500,8 +1500,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire
-from pydantic_ai_stateflow.runtime import Engine
+from ballast.observability import ObservabilityProvider, has_logfire
+from ballast.runtime import Engine
 
 
 class _Spy:
@@ -1555,7 +1555,7 @@ async def test_provider_instruments_pydantic_ai_and_httpx_when_enabled(monkeypat
 
 def test_provider_first_invariant_fails_if_other_provider_already_registered():
     """Spec 4H — ObservabilityProvider must be first in the list."""
-    from pydantic_ai_stateflow import EngineInvariantViolation
+    from ballast import EngineInvariantViolation
 
     engine = Engine(providers=[_Spy(), ObservabilityProvider(service_name="t")])
     with pytest.raises(EngineInvariantViolation, match="first"):
@@ -1582,10 +1582,10 @@ async def test_provider_skips_instrument_fastapi_unless_app_given(monkeypatch):
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/observability/__init__.py`:
+`src/ballast/observability/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.observability.provider import (
+from ballast.observability.provider import (
     ObservabilityProvider,
     has_logfire,
 )
@@ -1593,7 +1593,7 @@ from pydantic_ai_stateflow.observability.provider import (
 __all__ = ["ObservabilityProvider", "has_logfire"]
 ```
 
-`src/pydantic_ai_stateflow/observability/provider.py`:
+`src/ballast/observability/provider.py`:
 
 ```python
 from __future__ import annotations
@@ -1601,13 +1601,13 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai_stateflow.runtime.engine import EngineInvariantViolation
+from ballast.runtime.engine import EngineInvariantViolation
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
     from sqlalchemy.ext.asyncio import AsyncEngine
 
-    from pydantic_ai_stateflow.runtime.container import Container
+    from ballast.runtime.container import Container
 
 
 def has_logfire() -> bool:
@@ -1631,7 +1631,7 @@ class ObservabilityProvider:
     def __init__(
         self,
         *,
-        service_name: str = "pydantic-ai-stateflow",
+        service_name: str = "ballast-ai",
         environment: str = "dev",
         instrument_pydantic_ai: bool = True,
         instrument_httpx: bool = True,
@@ -1700,7 +1700,7 @@ async def boot(self) -> None:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/observability/ src/pydantic_ai_stateflow/runtime/engine.py tests/observability/
+git add src/ballast/observability/ src/ballast/runtime/engine.py tests/observability/
 git commit -m "feat(observability): ObservabilityProvider with soft logfire dep + first-in-list invariant"
 ```
 
@@ -1715,13 +1715,13 @@ Must NOT break existing pattern tests — `@traced` only adds context; behaviour
 **Baseline:** 344 → **Target:** 349 (+5).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/observability/spans.py`
-- Modify: `src/pydantic_ai_stateflow/observability/__init__.py` — export `traced`.
-- Modify: `src/pydantic_ai_stateflow/patterns/reflection.py` — wrap `run`.
-- Modify: `src/pydantic_ai_stateflow/patterns/mapreduce/pattern.py` — wrap `run`.
-- Modify: `src/pydantic_ai_stateflow/patterns/mutation/pipeline.py` — wrap `run` + per-stage span.
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/gate.py` — wrap `run`.
-- Modify: `src/pydantic_ai_stateflow/patterns/hitl/channels/{ui,webhook,conversational}.py` — wrap `ask`.
+- Create: `src/ballast/observability/spans.py`
+- Modify: `src/ballast/observability/__init__.py` — export `traced`.
+- Modify: `src/ballast/patterns/reflection.py` — wrap `run`.
+- Modify: `src/ballast/patterns/mapreduce/pattern.py` — wrap `run`.
+- Modify: `src/ballast/patterns/mutation/pipeline.py` — wrap `run` + per-stage span.
+- Modify: `src/ballast/patterns/hitl/gate.py` — wrap `run`.
+- Modify: `src/ballast/patterns/hitl/channels/{ui,webhook,conversational}.py` — wrap `ask`.
 - Create: `tests/observability/test_traced.py`
 - Create: `tests/observability/test_pattern_instrumentation.py`
 
@@ -1737,7 +1737,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pydantic_ai_stateflow.observability.spans import traced
+from ballast.observability.spans import traced
 
 
 @pytest.mark.asyncio
@@ -1812,8 +1812,8 @@ from __future__ import annotations
 
 import pytest
 
-from pydantic_ai_stateflow.capabilities.helpers import Critique
-from pydantic_ai_stateflow.patterns import Reflection
+from ballast.capabilities.helpers import Critique
+from ballast.patterns import Reflection
 
 
 @pytest.mark.asyncio
@@ -1839,7 +1839,7 @@ async def test_reflection_run_still_works_after_instrumentation():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/observability/spans.py`:
+`src/ballast/observability/spans.py`:
 
 ```python
 from __future__ import annotations
@@ -1902,7 +1902,7 @@ def traced(
 For each pattern, add the decorator (example — `Reflection`):
 
 ```python
-from pydantic_ai_stateflow.observability.spans import traced
+from ballast.observability.spans import traced
 
 @DBOS.workflow()
 @traced("pattern.reflection", attrs=lambda self, task, *, tenant_id: {
@@ -1919,7 +1919,7 @@ Apply analogous `traced(...)` on `MapReduce.run`, `MutationPipeline.run`, `HITLG
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/observability/ src/pydantic_ai_stateflow/patterns/ tests/observability/test_traced.py tests/observability/test_pattern_instrumentation.py
+git add src/ballast/observability/ src/ballast/patterns/ tests/observability/test_traced.py tests/observability/test_pattern_instrumentation.py
 git commit -m "feat(observability): @traced decorator + canonical span names on patterns/channels"
 ```
 
@@ -1932,10 +1932,10 @@ Pure types: `EvalCase`, `EvalRunOutput`, `Scorer` Protocol, `EvalReport`, `Datas
 **Baseline:** 349 → **Target:** 358 (+9).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/evals/__init__.py`
-- Create: `src/pydantic_ai_stateflow/evals/case.py`
-- Create: `src/pydantic_ai_stateflow/evals/scorer.py`
-- Create: `src/pydantic_ai_stateflow/evals/dataset.py`
+- Create: `src/ballast/evals/__init__.py`
+- Create: `src/ballast/evals/case.py`
+- Create: `src/ballast/evals/scorer.py`
+- Create: `src/ballast/evals/dataset.py`
 - Create: `tests/evals/__init__.py`
 - Create: `tests/evals/test_dataset.py`
 - Create: `tests/evals/test_schema_adherence_scorer.py`
@@ -1952,7 +1952,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.evals import (
+from ballast.evals import (
     Dataset,
     EvalCase,
     EvalReport,
@@ -2045,7 +2045,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.evals import EvalRunOutput, SchemaAdherenceScorer
+from ballast.evals import EvalRunOutput, SchemaAdherenceScorer
 
 
 class _Out(BaseModel):
@@ -2084,12 +2084,12 @@ async def test_scorer_0_for_non_basemodel_output():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/evals/__init__.py`:
+`src/ballast/evals/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.evals.case import EvalCase, EvalRunOutput
-from pydantic_ai_stateflow.evals.dataset import Dataset, EvalReport, ScoreResult
-from pydantic_ai_stateflow.evals.scorer import SchemaAdherenceScorer, Scorer
+from ballast.evals.case import EvalCase, EvalRunOutput
+from ballast.evals.dataset import Dataset, EvalReport, ScoreResult
+from ballast.evals.scorer import SchemaAdherenceScorer, Scorer
 
 __all__ = [
     "Dataset",
@@ -2102,7 +2102,7 @@ __all__ = [
 ]
 ```
 
-`src/pydantic_ai_stateflow/evals/case.py`:
+`src/ballast/evals/case.py`:
 
 ```python
 from __future__ import annotations
@@ -2133,7 +2133,7 @@ class EvalRunOutput(BaseModel):
     error: str | None = None
 ```
 
-`src/pydantic_ai_stateflow/evals/scorer.py`:
+`src/ballast/evals/scorer.py`:
 
 ```python
 from __future__ import annotations
@@ -2142,7 +2142,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.evals.case import EvalRunOutput
+from ballast.evals.case import EvalRunOutput
 
 
 @runtime_checkable
@@ -2171,7 +2171,7 @@ class SchemaAdherenceScorer:
         return 1.0
 ```
 
-`src/pydantic_ai_stateflow/evals/dataset.py`:
+`src/ballast/evals/dataset.py`:
 
 ```python
 from __future__ import annotations
@@ -2183,8 +2183,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pydantic_ai_stateflow.evals.case import EvalCase, EvalRunOutput
-from pydantic_ai_stateflow.evals.scorer import Scorer
+from ballast.evals.case import EvalCase, EvalRunOutput
+from ballast.evals.scorer import Scorer
 
 Runner = Callable[[Any], Awaitable[Any]] | Callable[[Any], Any]
 
@@ -2268,7 +2268,7 @@ class Dataset:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/evals/ tests/evals/
+git add src/ballast/evals/ tests/evals/
 git commit -m "feat(evals): EvalCase/Dataset/EvalReport + SchemaAdherenceScorer MVP"
 ```
 
@@ -2276,16 +2276,16 @@ git commit -m "feat(evals): EvalCase/Dataset/EvalReport + SchemaAdherenceScorer 
 
 ## Task 10: `dataset-from-traces` CLI + SP7 public API + smoke
 
-`stateflow evals dataset-from-traces --since --pattern --tenant --out` reads from the eval-related rows we already have (HITL `Decision` audit, proposal audit if present, thread history) and emits a YAML `Dataset` snapshot. We do NOT rely on a live DBOS state DB for this MVP — apps inject a `TraceSource` Protocol so the same CLI works against in-memory or Postgres. Typer-based entry point invoked via `python -m pydantic_ai_stateflow.evals.cli ...`.
+`stateflow evals dataset-from-traces --since --pattern --tenant --out` reads from the eval-related rows we already have (HITL `Decision` audit, proposal audit if present, thread history) and emits a YAML `Dataset` snapshot. We do NOT rely on a live DBOS state DB for this MVP — apps inject a `TraceSource` Protocol so the same CLI works against in-memory or Postgres. Typer-based entry point invoked via `python -m ballast.evals.cli ...`.
 
 Also: top-level package exports for SP7, and an end-to-end smoke test that boots `Engine.fastapi_app(...)`, posts a thread + a message, runs a `Reflection`, and feeds the run output through a `Dataset` eval.
 
 **Baseline:** 358 → **Target:** 365 (+7).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/evals/traces.py`
-- Create: `src/pydantic_ai_stateflow/evals/cli.py`
-- Modify: `src/pydantic_ai_stateflow/__init__.py` — add SP7 exports.
+- Create: `src/ballast/evals/traces.py`
+- Create: `src/ballast/evals/cli.py`
+- Modify: `src/ballast/__init__.py` — add SP7 exports.
 - Create: `tests/evals/test_dataset_from_traces.py`
 - Create: `tests/evals/test_cli.py`
 - Create: `tests/test_public_api_sp7.py`
@@ -2305,7 +2305,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.evals.traces import (
+from ballast.evals.traces import (
     InMemoryTraceSource,
     TraceRecord,
     dataset_from_traces,
@@ -2398,7 +2398,7 @@ from pathlib import Path
 
 def test_cli_help_lists_dataset_from_traces():
     proc = subprocess.run(
-        [sys.executable, "-m", "pydantic_ai_stateflow.evals.cli", "--help"],
+        [sys.executable, "-m", "ballast.evals.cli", "--help"],
         capture_output=True, text=True, check=False,
     )
     assert proc.returncode == 0
@@ -2409,7 +2409,7 @@ def test_cli_dataset_from_traces_writes_yaml(tmp_path: Path):
     out = tmp_path / "ds.yaml"
     proc = subprocess.run(
         [
-            sys.executable, "-m", "pydantic_ai_stateflow.evals.cli",
+            sys.executable, "-m", "ballast.evals.cli",
             "dataset-from-traces",
             "--pattern", "reflection",
             "--since", "2026-01-01",
@@ -2432,7 +2432,7 @@ def test_cli_dataset_from_traces_writes_yaml(tmp_path: Path):
 """SP7 exports + an end-to-end smoke that wires the whole layer."""
 from __future__ import annotations
 
-import pydantic_ai_stateflow as sf
+import ballast as sf
 
 
 def test_sp7_exports_present():
@@ -2451,7 +2451,7 @@ def test_sp7_exports_present():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/evals/traces.py`:
+`src/ballast/evals/traces.py`:
 
 ```python
 from __future__ import annotations
@@ -2462,8 +2462,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from pydantic_ai_stateflow.evals.case import EvalCase
-from pydantic_ai_stateflow.evals.dataset import Dataset
+from ballast.evals.case import EvalCase
+from ballast.evals.dataset import Dataset
 
 
 class TraceRecord(BaseModel):
@@ -2537,7 +2537,7 @@ async def dataset_from_traces(
     )
 ```
 
-`src/pydantic_ai_stateflow/evals/cli.py`:
+`src/ballast/evals/cli.py`:
 
 ```python
 from __future__ import annotations
@@ -2551,13 +2551,13 @@ from uuid import UUID
 import typer
 import yaml
 
-from pydantic_ai_stateflow.evals.traces import (
+from ballast.evals.traces import (
     InMemoryTraceSource,
     TraceRecord,
     dataset_from_traces,
 )
 
-app = typer.Typer(name="stateflow-evals", help="Evals CLI for pydantic-ai-stateflow")
+app = typer.Typer(name="stateflow-evals", help="Evals CLI for ballast-ai")
 
 
 def _demo_source() -> InMemoryTraceSource:
@@ -2615,22 +2615,22 @@ if __name__ == "__main__":  # pragma: no cover - exercised via subprocess
     sys.exit(app())
 ```
 
-Update `src/pydantic_ai_stateflow/__init__.py`:
+Update `src/ballast/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.api import (
+from ballast.api import (
     build_a2a_router, build_health_router, build_streaming_router,
     build_threads_router, get_container, get_engine, get_tenant_id,
 )
-from pydantic_ai_stateflow.api.a2a import A2AAgentAdapter, AgentCard
-from pydantic_ai_stateflow.api.streaming import (
+from ballast.api.a2a import A2AAgentAdapter, AgentCard
+from ballast.api.streaming import (
     AGUIEncoder, StreamEvent, VercelEncoder,
 )
-from pydantic_ai_stateflow.evals import (
+from ballast.evals import (
     Dataset, EvalCase, EvalReport, EvalRunOutput, SchemaAdherenceScorer,
     ScoreResult, Scorer,
 )
-from pydantic_ai_stateflow.observability import ObservabilityProvider, has_logfire
+from ballast.observability import ObservabilityProvider, has_logfire
 ```
 
 Add `pyyaml` (and `typer` if not already) to `pyproject.toml` dependencies.
@@ -2646,7 +2646,7 @@ uv run pytest && uv run mypy src && uv run ruff check
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/evals/ src/pydantic_ai_stateflow/__init__.py tests/evals/ tests/test_public_api_sp7.py pyproject.toml uv.lock
+git add src/ballast/evals/ src/ballast/__init__.py tests/evals/ tests/test_public_api_sp7.py pyproject.toml uv.lock
 git commit -m "feat(evals): dataset-from-traces CLI + SP7 public API + end-to-end smoke"
 ```
 

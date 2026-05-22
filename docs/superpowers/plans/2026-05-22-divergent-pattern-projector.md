@@ -12,8 +12,8 @@
 
 ## File Map
 
-- **Modify** `src/pydantic_ai_stateflow/patterns/divergent_convergent/primitives.py` — replace `DivergentAgent` / `Synthesizer` Protocols with structural shapes mirroring pydantic-ai's `Agent.run`.
-- **Modify** `src/pydantic_ai_stateflow/patterns/divergent_convergent/pattern.py` — add `EnvT` TypeVar, two new constructor params, rewrite `_diverge_one` and `_converge` bodies.
+- **Modify** `src/ballast/patterns/divergent_convergent/primitives.py` — replace `DivergentAgent` / `Synthesizer` Protocols with structural shapes mirroring pydantic-ai's `Agent.run`.
+- **Modify** `src/ballast/patterns/divergent_convergent/pattern.py` — add `EnvT` TypeVar, two new constructor params, rewrite `_diverge_one` and `_converge` bodies.
 - **Create** `tests/patterns/test_divergent_convergent.py` — minimal new TDD test exercising the new API with mock agents.
 - **Modify** `examples/notes-app/backend/src/notes_app/brainstorm_agents.py` — delete `diverge()`, `synthesize()`, and `_format_synth_prompt`.
 - **Modify** `examples/notes-app/backend/src/notes_app/brainstorm_flow.py` — add module-level `_format_synth_prompt`, pass `hypotheses=` + `format_synth_prompt=` to `DivergentConvergent` in the factory.
@@ -44,7 +44,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.patterns.divergent_convergent import (
+from ballast.patterns.divergent_convergent import (
     DivergentBranch,
     DivergentConvergent,
 )
@@ -159,11 +159,11 @@ git commit -m "test(patterns): failing TDD test for DivergentConvergent projecto
 ## Task 2: Update `primitives.py` Protocols
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/patterns/divergent_convergent/primitives.py`
+- Modify: `src/ballast/patterns/divergent_convergent/primitives.py`
 
 - [ ] **Step 1: Replace `DivergentAgent` and `Synthesizer` Protocols**
 
-Overwrite the entire content of `src/pydantic_ai_stateflow/patterns/divergent_convergent/primitives.py` with:
+Overwrite the entire content of `src/ballast/patterns/divergent_convergent/primitives.py` with:
 
 ```python
 from __future__ import annotations
@@ -269,7 +269,7 @@ class DivergentBranch(Generic[InT, EnvT]):
 - [ ] **Step 2: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/divergent_convergent/primitives.py
+git add src/ballast/patterns/divergent_convergent/primitives.py
 git commit -m "refactor(patterns): structural agent Protocols for DivergentConvergent"
 ```
 
@@ -278,11 +278,11 @@ git commit -m "refactor(patterns): structural agent Protocols for DivergentConve
 ## Task 3: Update `pattern.py` — add `EnvT`, projector params, rewrite step bodies
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/patterns/divergent_convergent/pattern.py`
+- Modify: `src/ballast/patterns/divergent_convergent/pattern.py`
 
 - [ ] **Step 1: Update imports and TypeVars**
 
-In `src/pydantic_ai_stateflow/patterns/divergent_convergent/pattern.py`, locate the imports block and replace the line:
+In `src/ballast/patterns/divergent_convergent/pattern.py`, locate the imports block and replace the line:
 
 ```python
 import itertools
@@ -482,7 +482,7 @@ Expected: all tests pass (473+ passed previously) plus the new test.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/patterns/divergent_convergent/pattern.py
+git add src/ballast/patterns/divergent_convergent/pattern.py
 git commit -m "refactor(patterns): DivergentConvergent owns envelope→hypotheses mapping"
 ```
 

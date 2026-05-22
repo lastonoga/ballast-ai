@@ -7,7 +7,7 @@ without touching call sites.
 """
 from __future__ import annotations
 
-from pydantic_ai_stateflow.persistence import InMemoryEventLogRepository
+from ballast.persistence import InMemoryEventLogRepository
 
 
 class NotesEventLogRepository(InMemoryEventLogRepository):

@@ -16,8 +16,8 @@ Crucially, step (5) doesn't depend on T1's request handler being alive
 durable workflow end-to-end via DBOS.send + handle.get_result.
 
 The framework reads its repo + event log + event stream from the
-process-wide ``Engine`` installed by ``sf.create_app`` — these tests
-install one manually via ``sf.runtime.engine._set_engine`` so the
+process-wide ``Engine`` installed by ``ballast.create_app`` — these tests
+install one manually via ``ballast.runtime.engine._set_engine`` so the
 durable workflow body finds the right repos when it executes.
 """
 
@@ -30,20 +30,20 @@ from uuid import UUID, uuid4
 
 import pytest
 
-import pydantic_ai_stateflow as sf
-from pydantic_ai_stateflow.durable import Durable
+import ballast
+from ballast.durable import Durable
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime.engine import (
+from ballast.runtime.engine import (
     Engine,
     _reset_engine_for_tests,
     _set_engine,
 )
-from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
+from ballast.runtime.event_stream import InProcessEventStream
 
 from notes_app.agents.notes import NotesAgent, NoteToolDeps
 from notes_app.agents.todo_approval import (
@@ -403,6 +403,6 @@ async def test_propose_todo_rejects_when_deps_missing_parent_thread() -> None:
         await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
 
 
-# Keep sf imported — referenced for the `_set_engine` lifecycle to make
+# Keep ballast imported — referenced for the `_set_engine` lifecycle to make
 # it obvious which framework piece these tests are exercising.
-_ = sf
+_ = ballast

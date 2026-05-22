@@ -3,7 +3,7 @@ import hashlib
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.capabilities.helpers import (
+from ballast.capabilities.helpers import (
     SemanticLoopDetected,
     TypedLoopGuard,
 )

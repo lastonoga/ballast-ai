@@ -8,7 +8,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from pydantic_ai_stateflow import (
+from ballast import (
     Det,
     GroundedAgent,
     IdempotencyInput,

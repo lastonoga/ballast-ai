@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence.thread import (
     InMemoryThreadRepository,
     ThreadStatus,
 )

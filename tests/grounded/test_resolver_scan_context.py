@@ -2,8 +2,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
-from pydantic_ai_stateflow.grounded._scan import scan_context, scan_output
+from ballast.grounded import Ref
+from ballast.grounded._scan import scan_context, scan_output
 
 
 class Item(BaseModel):

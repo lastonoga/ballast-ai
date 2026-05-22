@@ -1,4 +1,4 @@
-"""``StateflowAgent`` ABC + ``validate_thread_metadata``.
+"""``BallastAgent`` ABC + ``validate_thread_metadata``.
 
 The framework no longer maintains an agent class registry —
 ``Thread.agent`` is an opaque app-owned string. Apps that want
@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_stateflow.runtime import StateflowAgent, validate_thread_metadata
+from ballast.runtime import BallastAgent, validate_thread_metadata
 
 
 class _NotesMetadata(BaseModel):
@@ -24,8 +24,8 @@ class _NotesMetadata(BaseModel):
     context: dict[str, Any] = {}
 
 
-def _build_agents() -> tuple[type[StateflowAgent], type[StateflowAgent]]:
-    class _NoMetaAgent(StateflowAgent):
+def _build_agents() -> tuple[type[BallastAgent], type[BallastAgent]]:
+    class _NoMetaAgent(BallastAgent):
         name = "no-meta"
 
         def build_agent(self) -> Agent[None, str]:
@@ -37,7 +37,7 @@ def _build_agents() -> tuple[type[StateflowAgent], type[StateflowAgent]]:
             del thread, tenant_id, message
             return None
 
-    class _WithMetaAgent(StateflowAgent):
+    class _WithMetaAgent(BallastAgent):
         name = "with-meta"
         metadata_model = _NotesMetadata
 

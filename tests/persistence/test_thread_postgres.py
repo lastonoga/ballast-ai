@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from pydantic_ai_stateflow.persistence.thread import (
+from ballast.persistence.thread import (
     PostgresThreadRepository,
 )
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 # Import the framework so the shim is installed.
-import pydantic_ai_stateflow  # noqa: F401
+import ballast  # noqa: F401
 
 
 def test_shim_normalizes_null_content_when_tool_calls_present() -> None:
@@ -93,7 +93,7 @@ def test_shim_leaves_empty_responses_dropped() -> None:
 
 def test_shim_is_idempotent() -> None:
     """Calling install_assistant_content_shim twice is safe."""
-    from pydantic_ai_stateflow._compat import install_assistant_content_shim
+    from ballast._compat import install_assistant_content_shim
 
     install_assistant_content_shim()
     install_assistant_content_shim()

@@ -40,7 +40,7 @@ Promoted from the per-side RETROs into a concrete fix list:
 | # | Change | Source | Effort |
 |---|---|---|---|
 | F1 | `AGUIEncoder` emits canonical AG-UI events (`text_message_start/content/end`, `tool_call_*`, `finish`) — not bespoke `text_delta`/`done` | both | M |
-| F2 | `pydantic_ai_stateflow.adapters.pydantic_ai.make_runner(agent, *, text_field="reply")` — eliminates ~80 LOC of run-stream glue per app | backend | S |
+| F2 | `ballast.adapters.pydantic_ai.make_runner(agent, *, text_field="reply")` — eliminates ~80 LOC of run-stream glue per app | backend | S |
 | F3 | Typed `MessagePart` union + `extract_text(parts)` helper on `_PostMessageBody` | backend | S |
 | F4 | `AgentRunner` becomes a typed `Protocol` (currently `Callable[..., AsyncIterator[StreamEvent]]`) | backend | XS |
 | F5 | Snapshot-mode runner option (yield full content, framework computes deltas if needed) — drops backend diff burden | both | M |
@@ -62,7 +62,7 @@ XS=<30 min, S=<2 h, M=half-day.
 
 ### Iteration 3 plan (post-fixes)
 
-1. Apply F1–F11 to framework `src/pydantic_ai_stateflow/`, with tests.
+1. Apply F1–F11 to framework `src/ballast/`, with tests.
 2. Switch frontend from `useLocalRuntime(mock)` → `useAgUiThreadRuntime({runtimeUrl: ...})` (or `useRemoteThreadListRuntime` wrapping a remote message runtime — pick the one that ships in `@assistant-ui/react-ag-ui` first).
 3. Add CORS to backend; point frontend at `http://localhost:8000` (env var).
 4. Add the notes domain (SQLModel `Note`, agent tools `create_note` / `edit_note` / `delete_note` / `search_notes`), one tenant for now.
@@ -87,7 +87,7 @@ Two parallel commits: `caad2e4` (backend domain + tools) and `f64091f` (frontend
 |---|---|---|---|
 | F12 | backend | `make_runner` accepts only static `deps`; multi-tenant apps must hand-roll the diff/emit loop to inject per-request `NoteToolDeps`. Should accept `deps: Any \| Callable[..., Any \| Awaitable[Any]] = None` where the callable receives runner kwargs. | S |
 | F13 | backend | We added tool-call `StreamEvent` kinds in F11 but **no producer emits them yet**. `make_runner` is text-only; agent tool calls fire on the backend but the frontend never sees a `tool_call_start/args/end` SSE event, so assistant-ui's tool-call cards never render. Extend `make_runner` (or ship a sibling) to emit canonical tool-call events as pydantic-ai's stream yields tool-call parts. | M |
-| F14 | backend | No domain-repo scaffold / docs. `NoteRepository` + `InMemoryNoteRepository` were rebuilt from scratch mirroring `ThreadRepository`. Ship a `pydantic_ai_stateflow.persistence.scaffold` doc or template. | XS |
+| F14 | backend | No domain-repo scaffold / docs. `NoteRepository` + `InMemoryNoteRepository` were rebuilt from scratch mirroring `ThreadRepository`. Ship a `ballast.persistence.scaffold` doc or template. | XS |
 | F15 | backend | `Engine` has no DI hook for app-defined domain repos. The example uses a module-level singleton; production apps will want `engine.container.bind(NoteRepository, factory)`. Wire repos through the Container. | S |
 | F16 | frontend | `HttpAgent` posts to one fixed URL; our backend uses `POST /threads/{id}/messages?protocol=ag-ui`. Subclassed as `NotesAppAgent` overriding `.run(input)` to rebuild `this.url` from `input.threadId`. Ship a thread-agnostic `POST /agent?thread_id=...` runtime URL OR ship a first-class "thread-aware HttpAgent" wrapper from the framework. | S |
 | F17 | frontend | `generateTitle` adapter method requires an assistant-stream `ReadableStream`. We return an empty stream (manual rename only). Backend `POST /threads/{id}/title` agent-driven streaming would fix this — deferred from Group C. | M |

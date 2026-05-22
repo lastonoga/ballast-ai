@@ -21,7 +21,7 @@ import os
 from typing import Any
 from uuid import uuid4
 
-import pydantic_ai_stateflow as sf
+import ballast
 import pytest
 from fastapi.testclient import TestClient
 
@@ -72,13 +72,13 @@ def test_threads_crud_and_streaming_fake() -> None:
     Swaps the dispatched ``"notes"`` agent with a ``MockAgent`` for the
     duration of the test, then restores it. This exercises the
     non-durable streaming path (``MockAgent`` is a plain
-    ``StateflowAgent``, not a ``StateflowDurableAgent``).
+    ``BallastAgent``, not a ``DurableAgent``).
     """
     from notes_app.agents.notes import NotesAgent
 
     # Mock needs the same ``.name`` as NotesAgent so ``agents.override``
     # replaces the registered instance under that key.
-    mock_agent = sf.testing.MockAgent.with_output("Hello, world!")
+    mock_agent = ballast.testing.MockAgent.with_output("Hello, world!")
     mock_agent.name = NotesAgent.name  # type: ignore[misc]
 
     previous = agents.override(mock_agent)

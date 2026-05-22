@@ -2,7 +2,7 @@
 
 **Status:** Approved (design)
 **Date:** 2026-05-22
-**Scope:** `src/pydantic_ai_stateflow/patterns/divergent_convergent/` + notes-app caller
+**Scope:** `src/ballast/patterns/divergent_convergent/` + notes-app caller
 
 ## Problem
 

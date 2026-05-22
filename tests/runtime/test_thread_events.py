@@ -16,11 +16,11 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from pydantic_ai_stateflow.runtime import (
+from ballast.runtime import (
     InProcessEventStream,
     ThreadEventBroadcaster,
     ThreadEventType,

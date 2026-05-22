@@ -1,4 +1,4 @@
-from pydantic_ai_stateflow.testing import (
+from ballast.testing import (
     InMemoryHITLRepository,
     InMemoryOutboxRepository,
     InMemoryThreadRepository,

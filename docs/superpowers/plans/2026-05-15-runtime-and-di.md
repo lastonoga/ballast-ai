@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the L3 runtime layer of `pydantic-ai-stateflow`: DBOS integration, `Det` helpers upgraded to durable `@DBOS.step`, type-keyed DI `Container`, `ServiceProvider` Protocol, `Engine` orchestrator with bootstrap-time invariants, and a custom ruff plugin enforcing the determinism boundary (`STATEFLOW001-013` rules from spec 2E.1 + 4G).
+**Goal:** Build the L3 runtime layer of `ballast-ai`: DBOS integration, `Det` helpers upgraded to durable `@DBOS.step`, type-keyed DI `Container`, `ServiceProvider` Protocol, `Engine` orchestrator with bootstrap-time invariants, and a custom ruff plugin enforcing the determinism boundary (`STATEFLOW001-013` rules from spec 2E.1 + 4G).
 
 **Architecture:** DBOS owns the durable runtime — it persists workflow / step state into Postgres so crashes are recovered by replay. `Det.uuid_for` upgraded from plain async function (Sub-project #1 placeholder) to `@DBOS.step` so its result is durably recorded. `Container` is type-keyed DI (no string-key service-locator pattern per spec 4A.0.7). `ServiceProvider` is single-phase `register(container)` (per spec 4A.0.13 — reverted from initial two-phase design). `Engine` boots providers in user-declared order and runs bootstrap-time invariants (Tool coverage, Alembic pending check, etc). Custom ruff rules block forbidden patterns (Repository call outside `@DBOS.step`, agent.run outside `@DBOS.step`, etc) at lint time.
 
@@ -17,7 +17,7 @@
 ## File Structure
 
 ```
-src/pydantic_ai_stateflow/
+src/ballast/
 ├── runtime/
 │   ├── __init__.py                # public: Det, Container, ServiceProvider, Engine, ...
 │   ├── det.py                     # upgraded — Det.* methods now @DBOS.step
@@ -93,7 +93,7 @@ git commit -m "chore: add dbos-transact dependency"
 Type-keyed DI registry. No string keys (per spec 4A.0.7).
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/container.py`
+- Create: `src/ballast/runtime/container.py`
 - Create: `tests/runtime/__init__.py` (if not present)
 - Create: `tests/runtime/test_container.py`
 
@@ -106,7 +106,7 @@ from typing import Protocol
 
 import pytest
 
-from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
+from ballast.runtime.container import Container, DefaultContainer
 
 
 class Greeter(Protocol):
@@ -171,7 +171,7 @@ uv run pytest tests/runtime/test_container.py -v
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/runtime/container.py`:
+`src/ballast/runtime/container.py`:
 
 ```python
 from __future__ import annotations
@@ -243,7 +243,7 @@ class DefaultContainer:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/container.py tests/runtime
+git add src/ballast/runtime/container.py tests/runtime
 git commit -m "feat(runtime): Container Protocol + DefaultContainer (type-keyed DI)"
 ```
 
@@ -254,7 +254,7 @@ git commit -m "feat(runtime): Container Protocol + DefaultContainer (type-keyed 
 Single-phase per spec 4A.0.13.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/provider.py`
+- Create: `src/ballast/runtime/provider.py`
 - Create: `tests/runtime/test_provider.py`
 
 - [ ] **Step 1: Failing tests**
@@ -264,8 +264,8 @@ Single-phase per spec 4A.0.13.
 ```python
 import pytest
 
-from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
-from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from ballast.runtime.container import Container, DefaultContainer
+from ballast.runtime.provider import ServiceProvider
 
 
 class Greeter:
@@ -295,14 +295,14 @@ async def test_concrete_provider_satisfies_protocol():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/runtime/provider.py`:
+`src/ballast/runtime/provider.py`:
 
 ```python
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from pydantic_ai_stateflow.runtime.container import Container
+from ballast.runtime.container import Container
 
 
 @runtime_checkable
@@ -334,7 +334,7 @@ class ServiceProvider(Protocol):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/provider.py tests/runtime/test_provider.py
+git add src/ballast/runtime/provider.py tests/runtime/test_provider.py
 git commit -m "feat(runtime): ServiceProvider Protocol (single-phase per 4A.0.13)"
 ```
 
@@ -343,7 +343,7 @@ git commit -m "feat(runtime): ServiceProvider Protocol (single-phase per 4A.0.13
 ## Task 4: Engine orchestrator + bootstrap invariants framework
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/engine.py`
+- Create: `src/ballast/runtime/engine.py`
 - Create: `tests/runtime/test_engine.py`
 
 - [ ] **Step 1: Failing tests**
@@ -353,9 +353,9 @@ git commit -m "feat(runtime): ServiceProvider Protocol (single-phase per 4A.0.13
 ```python
 import pytest
 
-from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
-from pydantic_ai_stateflow.runtime.engine import Engine, EngineInvariantViolation
-from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from ballast.runtime.container import Container, DefaultContainer
+from ballast.runtime.engine import Engine, EngineInvariantViolation
+from ballast.runtime.provider import ServiceProvider
 
 
 class _Service:
@@ -435,7 +435,7 @@ async def test_boot_is_idempotent_via_same_engine_instance():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/runtime/engine.py`:
+`src/ballast/runtime/engine.py`:
 
 ```python
 from __future__ import annotations
@@ -443,8 +443,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
-from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from ballast.runtime.container import Container, DefaultContainer
+from ballast.runtime.provider import ServiceProvider
 
 T = TypeVar("T")
 
@@ -497,7 +497,7 @@ class Engine:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/engine.py tests/runtime/test_engine.py
+git add src/ballast/runtime/engine.py tests/runtime/test_engine.py
 git commit -m "feat(runtime): Engine orchestrator with bootstrap-time invariants"
 ```
 
@@ -506,7 +506,7 @@ git commit -m "feat(runtime): Engine orchestrator with bootstrap-time invariants
 ## Task 5: DBOS setup helper
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/runtime/dbos_setup.py`
+- Create: `src/ballast/runtime/dbos_setup.py`
 - Create: `tests/runtime/test_dbos_setup.py`
 
 DBOS needs a Postgres connection string. We provide a helper that constructs a DBOS config from the existing pg_dsn convention used by Sub-project #2.
@@ -518,7 +518,7 @@ DBOS needs a Postgres connection string. We provide a helper that constructs a D
 ```python
 import pytest
 
-from pydantic_ai_stateflow.runtime.dbos_setup import (
+from ballast.runtime.dbos_setup import (
     DBOSConfig,
     build_dbos_config,
 )
@@ -548,7 +548,7 @@ def test_build_dbos_config_passes_app_name():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/runtime/dbos_setup.py`:
+`src/ballast/runtime/dbos_setup.py`:
 
 ```python
 from __future__ import annotations
@@ -572,7 +572,7 @@ class DBOSConfig:
 def build_dbos_config(
     pg_dsn: str,
     *,
-    app_name: str = "pydantic-ai-stateflow",
+    app_name: str = "ballast-ai",
 ) -> DBOSConfig:
     """Translate a Sub-project #2 asyncpg DSN into a DBOS-friendly URL.
 
@@ -588,7 +588,7 @@ def build_dbos_config(
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/dbos_setup.py tests/runtime/test_dbos_setup.py
+git add src/ballast/runtime/dbos_setup.py tests/runtime/test_dbos_setup.py
 git commit -m "feat(runtime): build_dbos_config helper (translate asyncpg DSN)"
 ```
 
@@ -599,7 +599,7 @@ git commit -m "feat(runtime): build_dbos_config helper (translate asyncpg DSN)"
 Critical Fix #1 from code-review pass. Replaces plain async functions with `@DBOS.step` decorators so results are durably recorded across replay.
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/runtime/det.py`
+- Modify: `src/ballast/runtime/det.py`
 - Create: `tests/runtime/test_dbos_det_step.py`
 
 - [ ] **Step 1: Failing tests**
@@ -614,7 +614,7 @@ DBOS launch (covered by Task 11 smoke test). Instead this test inspects
 the DBOS step registry to confirm registration.
 """
 
-from pydantic_ai_stateflow.runtime import Det
+from ballast.runtime import Det
 
 
 def test_det_now_is_dbos_step():
@@ -662,7 +662,7 @@ def test_det_random_choice_is_dbos_step():
 
 - [ ] **Step 3: Implement**
 
-Modify `src/pydantic_ai_stateflow/runtime/det.py`. Apply `@DBOS.step()` to each method:
+Modify `src/ballast/runtime/det.py`. Apply `@DBOS.step()` to each method:
 
 ```python
 from __future__ import annotations
@@ -676,7 +676,7 @@ from uuid import uuid4 as _uuid4
 
 from dbos import DBOS
 
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput
+from ballast.runtime.idempotency import IdempotencyInput
 
 T = TypeVar("T")
 
@@ -739,7 +739,7 @@ If DBOS imports cause type errors in tests that don't initialise DBOS, you may n
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/det.py tests/runtime/test_dbos_det_step.py
+git add src/ballast/runtime/det.py tests/runtime/test_dbos_det_step.py
 git commit -m "feat(runtime): Det.* methods upgraded to @DBOS.step (Critical Fix #1)"
 ```
 
@@ -748,8 +748,8 @@ git commit -m "feat(runtime): Det.* methods upgraded to @DBOS.step (Critical Fix
 ## Task 7: CoreProvider — minimal core bindings
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/providers/__init__.py`
-- Create: `src/pydantic_ai_stateflow/providers/core.py`
+- Create: `src/ballast/providers/__init__.py`
+- Create: `src/ballast/providers/core.py`
 - Create: `tests/providers/__init__.py`
 - Create: `tests/providers/test_core_provider.py`
 
@@ -762,8 +762,8 @@ CoreProvider binds the minimal cross-cutting services: Det (just a class — no 
 ```python
 import pytest
 
-from pydantic_ai_stateflow.providers import CoreProvider
-from pydantic_ai_stateflow.runtime import DefaultContainer
+from ballast.providers import CoreProvider
+from ballast.runtime import DefaultContainer
 
 
 @pytest.mark.asyncio
@@ -771,7 +771,7 @@ async def test_core_provider_binds_det():
     container = DefaultContainer()
     await CoreProvider().register(container)
 
-    from pydantic_ai_stateflow.runtime import Det
+    from ballast.runtime import Det
     assert container.get(type(Det)) is Det  # Det class binding
 ```
 
@@ -779,20 +779,20 @@ async def test_core_provider_binds_det():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/providers/__init__.py`:
+`src/ballast/providers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.providers.core import CoreProvider
+from ballast.providers.core import CoreProvider
 
 __all__ = ["CoreProvider"]
 ```
 
-`src/pydantic_ai_stateflow/providers/core.py`:
+`src/ballast/providers/core.py`:
 
 ```python
 from __future__ import annotations
 
-from pydantic_ai_stateflow.runtime import Container, Det
+from ballast.runtime import Container, Det
 
 
 class CoreProvider:
@@ -814,7 +814,7 @@ class CoreProvider:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/providers/__init__.py src/pydantic_ai_stateflow/providers/core.py tests/providers/__init__.py tests/providers/test_core_provider.py
+git add src/ballast/providers/__init__.py src/ballast/providers/core.py tests/providers/__init__.py tests/providers/test_core_provider.py
 git commit -m "feat(providers): CoreProvider (binds Det)"
 ```
 
@@ -823,8 +823,8 @@ git commit -m "feat(providers): CoreProvider (binds Det)"
 ## Task 8: PersistenceProvider — binds session factory + Repos
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/providers/persistence.py`
-- Modify: `src/pydantic_ai_stateflow/providers/__init__.py`
+- Create: `src/ballast/providers/persistence.py`
+- Modify: `src/ballast/providers/__init__.py`
 - Create: `tests/providers/test_persistence_provider.py`
 
 - [ ] **Step 1: Failing test**
@@ -835,14 +835,14 @@ git commit -m "feat(providers): CoreProvider (binds Det)"
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from pydantic_ai_stateflow.persistence import (
+from ballast.persistence import (
     HITLRepository,
     OutboxRepository,
     SqlAlchemyUnitOfWork,
     ThreadRepository,
 )
-from pydantic_ai_stateflow.providers import PersistenceProvider
-from pydantic_ai_stateflow.runtime import DefaultContainer
+from ballast.providers import PersistenceProvider
+from ballast.runtime import DefaultContainer
 
 
 @pytest.mark.asyncio
@@ -880,7 +880,7 @@ async def test_persistence_provider_binds_uow_factory_callable():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/providers/persistence.py`:
+`src/ballast/providers/persistence.py`:
 
 ```python
 from __future__ import annotations
@@ -889,8 +889,8 @@ from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from pydantic_ai_stateflow.persistence import SqlAlchemyUnitOfWork
-from pydantic_ai_stateflow.runtime import Container
+from ballast.persistence import SqlAlchemyUnitOfWork
+from ballast.runtime import Container
 
 
 class PersistenceProvider:
@@ -920,11 +920,11 @@ class PersistenceProvider:
         container.bind(SqlAlchemyUnitOfWork, lambda _: _uow_factory, singleton=True)
 ```
 
-Modify `src/pydantic_ai_stateflow/providers/__init__.py`:
+Modify `src/ballast/providers/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.providers.core import CoreProvider
-from pydantic_ai_stateflow.providers.persistence import PersistenceProvider
+from ballast.providers.core import CoreProvider
+from ballast.providers.persistence import PersistenceProvider
 
 __all__ = ["CoreProvider", "PersistenceProvider"]
 ```
@@ -934,7 +934,7 @@ __all__ = ["CoreProvider", "PersistenceProvider"]
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/providers/persistence.py src/pydantic_ai_stateflow/providers/__init__.py tests/providers/test_persistence_provider.py
+git add src/ballast/providers/persistence.py src/ballast/providers/__init__.py tests/providers/test_persistence_provider.py
 git commit -m "feat(providers): PersistenceProvider (sessionmaker + UoW factory)"
 ```
 
@@ -943,7 +943,7 @@ git commit -m "feat(providers): PersistenceProvider (sessionmaker + UoW factory)
 ## Task 9: `runtime` package public API
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/runtime/__init__.py`
+- Modify: `src/ballast/runtime/__init__.py`
 - Create: `tests/runtime/test_public_api.py`
 
 - [ ] **Step 1: Failing test**
@@ -952,7 +952,7 @@ git commit -m "feat(providers): PersistenceProvider (sessionmaker + UoW factory)
 
 ```python
 def test_runtime_public_api():
-    from pydantic_ai_stateflow.runtime import (
+    from ballast.runtime import (
         Container,
         DefaultContainer,
         Det,
@@ -975,15 +975,15 @@ def test_runtime_public_api():
 
 - [ ] **Step 2: Run — fail (some exports missing)**
 
-- [ ] **Step 3: Update `src/pydantic_ai_stateflow/runtime/__init__.py`**
+- [ ] **Step 3: Update `src/ballast/runtime/__init__.py`**
 
 ```python
-from pydantic_ai_stateflow.runtime.container import Container, DefaultContainer
-from pydantic_ai_stateflow.runtime.dbos_setup import DBOSConfig, build_dbos_config
-from pydantic_ai_stateflow.runtime.det import Det
-from pydantic_ai_stateflow.runtime.engine import Engine, EngineInvariantViolation
-from pydantic_ai_stateflow.runtime.idempotency import IdempotencyInput, IdempotencyValue
-from pydantic_ai_stateflow.runtime.provider import ServiceProvider
+from ballast.runtime.container import Container, DefaultContainer
+from ballast.runtime.dbos_setup import DBOSConfig, build_dbos_config
+from ballast.runtime.det import Det
+from ballast.runtime.engine import Engine, EngineInvariantViolation
+from ballast.runtime.idempotency import IdempotencyInput, IdempotencyValue
+from ballast.runtime.provider import ServiceProvider
 
 __all__ = [
     "Container",
@@ -1004,7 +1004,7 @@ __all__ = [
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/runtime/__init__.py tests/runtime/test_public_api.py
+git add src/ballast/runtime/__init__.py tests/runtime/test_public_api.py
 git commit -m "feat(runtime): top-level runtime public API"
 ```
 
@@ -1034,7 +1034,7 @@ from uuid import UUID
 import pytest
 from dbos import DBOS
 
-from pydantic_ai_stateflow.runtime import (
+from ballast.runtime import (
     DBOSConfig,
     Det,
     IdempotencyInput,
@@ -1118,8 +1118,8 @@ git commit -m "test: DBOS workflow smoke test (Det.uuid_for replay determinism)"
 Per spec 2E.1 + 4G. Implements rules `STATEFLOW001-005` (the most critical determinism boundary rules). Remaining rules (006-013) deferred to follow-up tasks once we have more pattern code to test them against.
 
 **Files:**
-- Create: `src/pydantic_ai_stateflow/ruff/__init__.py`
-- Create: `src/pydantic_ai_stateflow/ruff/stateflow_rules.py`
+- Create: `src/ballast/ruff/__init__.py`
+- Create: `src/ballast/ruff/stateflow_rules.py`
 - Create: `tests/lint/__init__.py`
 - Create: `tests/lint/test_stateflow_rules.py`
 
@@ -1138,7 +1138,7 @@ violation was reported.
 
 import ast
 
-from pydantic_ai_stateflow.ruff.stateflow_rules import (
+from ballast.ruff.stateflow_rules import (
     check_source,
 )
 
@@ -1236,10 +1236,10 @@ async def good():
 
 - [ ] **Step 3: Implement**
 
-`src/pydantic_ai_stateflow/ruff/__init__.py`:
+`src/ballast/ruff/__init__.py`:
 
 ```python
-from pydantic_ai_stateflow.ruff.stateflow_rules import (
+from ballast.ruff.stateflow_rules import (
     Violation,
     check_path,
     check_source,
@@ -1248,7 +1248,7 @@ from pydantic_ai_stateflow.ruff.stateflow_rules import (
 __all__ = ["Violation", "check_path", "check_source"]
 ```
 
-`src/pydantic_ai_stateflow/ruff/stateflow_rules.py`:
+`src/ballast/ruff/stateflow_rules.py`:
 
 ```python
 """STATEFLOW lint rules — AST-based detection of determinism-boundary violations.
@@ -1409,7 +1409,7 @@ class _StateflowChecker(ast.NodeVisitor):
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/ruff tests/lint
+git add src/ballast/ruff tests/lint
 git commit -m "feat(ruff): STATEFLOW001-005 lint rules (determinism boundary)"
 ```
 
@@ -1418,16 +1418,16 @@ git commit -m "feat(ruff): STATEFLOW001-005 lint rules (determinism boundary)"
 ## Task 12: Top-level public API + final smoke
 
 **Files:**
-- Modify: `src/pydantic_ai_stateflow/__init__.py`
+- Modify: `src/ballast/__init__.py`
 - Create: `tests/test_runtime_public.py`
 
 - [ ] **Step 1: Update top-level exports**
 
-In `src/pydantic_ai_stateflow/__init__.py`, ADD to existing exports:
+In `src/ballast/__init__.py`, ADD to existing exports:
 
 ```python
-from pydantic_ai_stateflow.providers import CoreProvider, PersistenceProvider
-from pydantic_ai_stateflow.runtime import (
+from ballast.providers import CoreProvider, PersistenceProvider
+from ballast.runtime import (
     Container,
     DBOSConfig,
     DefaultContainer,
@@ -1461,7 +1461,7 @@ __all__ = [
 
 ```python
 def test_runtime_classes_visible_from_top_level():
-    from pydantic_ai_stateflow import (
+    from ballast import (
         Container,
         CoreProvider,
         DBOSConfig,
@@ -1484,7 +1484,7 @@ def test_runtime_classes_visible_from_top_level():
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/pydantic_ai_stateflow/__init__.py tests/test_runtime_public.py
+git add src/ballast/__init__.py tests/test_runtime_public.py
 git commit -m "feat: Sub-project #3 public API (Container, Engine, providers)"
 ```
 
@@ -1494,7 +1494,7 @@ git commit -m "feat: Sub-project #3 public API (Container, Engine, providers)"
 
 After all 12 tasks:
 
-- ✅ `from pydantic_ai_stateflow import Engine, Container, ServiceProvider, CoreProvider, PersistenceProvider, build_dbos_config` works
+- ✅ `from ballast import Engine, Container, ServiceProvider, CoreProvider, PersistenceProvider, build_dbos_config` works
 - ✅ `Det.now / uuid4 / random_choice / uuid_for` are `@DBOS.step`-decorated (Critical Fix #1 closed)
 - ✅ `Container` is type-keyed (no string keys); `DefaultContainer.bind(Protocol, factory, singleton=True/False)` works
 - ✅ `ServiceProvider` is single-phase `async def register(container)` (per 4A.0.13)

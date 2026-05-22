@@ -12,9 +12,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 from pydantic_ai import Agent
 
-from pydantic_ai_stateflow.grounded.ref import Ref
-from pydantic_ai_stateflow.grounded.selector import Selector, SelectorRegistry
-from pydantic_ai_stateflow.grounded.tools import register_grounded_tools
+from ballast.grounded.ref import Ref
+from ballast.grounded.selector import Selector, SelectorRegistry
+from ballast.grounded.tools import register_grounded_tools
 
 
 class _Note(BaseModel):

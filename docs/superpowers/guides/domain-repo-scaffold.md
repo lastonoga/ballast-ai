@@ -1,12 +1,12 @@
 # Domain repository scaffold
 
 This guide walks through adding a new domain entity (e.g. `Task`) to a
-`pydantic-ai-stateflow` app: domain object → `Repository(Protocol)` →
+`ballast-ai` app: domain object → `Repository(Protocol)` →
 in-memory and Postgres implementations → wiring through the framework
 `Container` so tools can resolve it without module-level singletons.
 
 It mirrors the shape the framework itself uses for
-`pydantic_ai_stateflow.persistence.thread.repository.ThreadRepository` — read
+`ballast.persistence.thread.repository.ThreadRepository` — read
 that file alongside this guide for the canonical reference.
 
 ## 1. Domain object (frozen Pydantic)
@@ -155,7 +155,7 @@ class PostgresTaskRepository:
 ```
 
 Alembic migration goes here — copy
-`src/pydantic_ai_stateflow/alembic/versions/0001_framework_tables.py`
+`src/ballast/alembic/versions/0001_framework_tables.py`
 as the template and add a `tasks` table with `tenant_id` indexed.
 
 ## 5. Bind via the Container
@@ -166,7 +166,7 @@ startup so it lives on `app.state.container`:
 ```python
 # myapp/main.py
 from fastapi import FastAPI
-from pydantic_ai_stateflow.runtime import Engine
+from ballast.runtime import Engine
 from myapp.tasks.repository import InMemoryTaskRepository, TaskRepository
 
 
@@ -195,7 +195,7 @@ module-level repo.
 from dataclasses import dataclass
 from uuid import UUID
 from pydantic_ai import Agent, RunContext
-from pydantic_ai_stateflow.runtime.container import Container
+from ballast.runtime.container import Container
 from myapp.tasks.repository import TaskRepository
 
 

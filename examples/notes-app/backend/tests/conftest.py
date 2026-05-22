@@ -11,8 +11,8 @@ import pytest
 import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
-from pydantic_ai_stateflow.durable import Durable
-from pydantic_ai_stateflow.runtime.engine import _reset_engine_for_tests
+from ballast.durable import Durable
+from ballast.runtime.engine import _reset_engine_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
 
@@ -34,7 +34,7 @@ def _restore_engine_between_tests() -> Iterator[None]:
     depending on collection order. Snapshotting on enter + restoring on
     exit keeps the global stable across the suite.
     """
-    from pydantic_ai_stateflow.runtime import engine as _engine_mod
+    from ballast.runtime import engine as _engine_mod
 
     snapshot = _engine_mod._engine
     try:
@@ -42,7 +42,7 @@ def _restore_engine_between_tests() -> Iterator[None]:
     finally:
         _reset_engine_for_tests()
         if snapshot is not None:
-            from pydantic_ai_stateflow.runtime.engine import _set_engine
+            from ballast.runtime.engine import _set_engine
 
             _set_engine(snapshot)
 

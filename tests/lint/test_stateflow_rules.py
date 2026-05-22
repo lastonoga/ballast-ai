@@ -1,4 +1,4 @@
-from pydantic_ai_stateflow.ruff.stateflow_rules import check_source
+from ballast.ruff.stateflow_rules import check_source
 
 
 def _violations(code: str) -> list[str]:

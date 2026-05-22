@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.evals import EvalRunOutput, SchemaAdherenceScorer
+from ballast.evals import EvalRunOutput, SchemaAdherenceScorer
 
 
 class _Out(BaseModel):

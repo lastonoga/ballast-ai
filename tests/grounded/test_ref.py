@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from pydantic_ai_stateflow.grounded import Ref
+from ballast.grounded import Ref
 
 
 class Entity(BaseModel):
