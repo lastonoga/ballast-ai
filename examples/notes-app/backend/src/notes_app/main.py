@@ -1,15 +1,10 @@
-"""FastAPI entry point for the notes-app backend.
+"""FastAPI entry point — minimal wiring via direct imports.
 
-Wires the demo via ``sf.create_app(infra=...)`` and explicitly mounts
-the app-owned routes (``/workflows/brainstorm-flow``,
-``/threads/{id}/messages``, ``/threads/{id}/cancel``). The framework
-no longer auto-generates streaming / cancel / workflow routes —
-apps own their URL shape and dispatch logic.
-
-App-specific settings live in ``notes_app.settings``; framework
-settings in ``pydantic_ai_stateflow.settings``.
+App-specific singletons (repos, flows, agents) live in their own
+modules and are imported here directly — no constructor DI for app
+state. The framework (``sf.create_app``) still owns its own infra
+bundle (thread repo, event log, event stream).
 """
-
 from __future__ import annotations
 
 import os
@@ -31,16 +26,15 @@ from pydantic_ai_stateflow.persistence.thread.repository import (
 from pydantic_ai_stateflow.runtime.event_stream import InProcessEventStream
 from pydantic_ai_stateflow.settings import get_settings
 
-from notes_app.agent import NotesAgent
-from notes_app.brainstorm_flow import (
-    BrainstormFlow,
-    BrainstormTask,
-    build_brainstorm_flow,
-)
-from notes_app.notes import InMemoryNoteRepository
+# App singletons — import them; no DI needed.
+from notes_app.agent import NotesAgent, notes_agent
+from notes_app.brainstorm_flow import BrainstormFlow, BrainstormTask, brainstorm
+from notes_app.notes.repository import notes_repo
 from notes_app.notes.routes import build_notes_router
-from notes_app.todo_approval_agent import NotesTodoApprovalAgent
-from notes_app.todo_flow import TodoApprovalFlow
+from notes_app.todo_approval_agent import (
+    NotesTodoApprovalAgent,
+    approval_agent,
+)
 
 
 load_dotenv()
@@ -53,29 +47,13 @@ def _dbos_db_url() -> str:
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
 
 
-# ── Infra bundle (singleton repos + streams) ────────────────────────────
-
-notes_repo = InMemoryNoteRepository()
 infra = sf.Infra(
     thread_repo=InMemoryThreadRepository(),
     event_log=InMemoryEventLogRepository(),
     event_stream=InProcessEventStream(),
 )
 
-# ── Flows + agents (only app-specific deps in constructors) ─────────────
-
-todo_flow = TodoApprovalFlow(notes_repo=notes_repo)
-brainstorm = build_brainstorm_flow(todo_flow=todo_flow)
-notes_agent = NotesAgent(
-    notes_repo=notes_repo,
-    todo_flow=todo_flow,
-    config_name="notes-app-notes-agent",
-)
-approval_agent = NotesTodoApprovalAgent(notes_repo=notes_repo)
-
-# Agent dispatch table — app owns this lookup. The framework no
-# longer maintains a registry; ``Thread.agent`` is an opaque string
-# that the app resolves to the right ``StateflowAgent`` instance.
+# App-owned agent dispatch — framework doesn't have a registry.
 _AGENT_BY_NAME = {
     NotesAgent.name: notes_agent,
     NotesTodoApprovalAgent.name: approval_agent,
@@ -97,15 +75,10 @@ app: FastAPI = sf.create_app(
     extra_routers=[notes_router],
 )
 
-# Tests + frontend introspection — expose singletons via ``app.state``.
+# Expose for tests + frontend introspection.
 app.state.notes_repo = notes_repo
 app.state.notes_agent = notes_agent
 app.state.todo_approval_agent = approval_agent
-app.state.todo_flow = todo_flow
-app.state.brainstorm_flow = brainstorm
-
-
-# ── App-owned routes ────────────────────────────────────────────────
 
 
 @app.post("/workflows/brainstorm-flow", response_model=dict)
@@ -117,8 +90,7 @@ async def start_brainstorm(
 
     Same ``(parent_thread, topic)`` collapses to one in-flight workflow
     (matches the historical ``brainstorm_router.py`` behaviour)."""
-    workflow_id = BrainstormFlow.workflow_id(task)
-    with SetWorkflowID(workflow_id):
+    with SetWorkflowID(BrainstormFlow.workflow_id(task)):
         handle = await Durable.start_workflow(brainstorm.run, ctx, task)
     return {"workflow_id": handle.workflow_id}
 
@@ -132,9 +104,7 @@ async def stream_messages(
     """Stream a fresh assistant turn for ``thread_id``.
 
     Resolves the per-thread agent from the app's dispatch table and
-    delegates to the framework's ``stream_response`` primitive (which
-    handles body-vs-DB sync, durable / inline dispatch, Vercel-AI
-    streaming, approval-resume detection)."""
+    delegates to the framework's ``stream_response`` primitive."""
     thread = await ctx.thread_repo.load(thread_id)
     if thread is None:
         raise ThreadNotFound(
@@ -143,10 +113,7 @@ async def stream_messages(
         )
     agent = _AGENT_BY_NAME[thread.agent]
     return await sf.stream_response(
-        request=request,
-        thread_id=thread_id,
-        agent=agent,
-        ctx=ctx,
+        request=request, thread_id=thread_id, agent=agent, ctx=ctx,
     )
 
 
@@ -163,9 +130,7 @@ async def cancel_thread(
             context={"thread_id": str(thread_id)},
         )
     agent = _AGENT_BY_NAME[thread.agent]
-    await sf.cancel_thread_workflows(
-        thread_id=thread_id, agent=agent, ctx=ctx,
-    )
+    await sf.cancel_thread_workflows(thread_id=thread_id, agent=agent, ctx=ctx)
     return {"cancelled": True}
 
 
