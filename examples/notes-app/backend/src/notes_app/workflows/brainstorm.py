@@ -14,6 +14,12 @@ No class wrapper, no ``on_decision`` callback split — the flow reads
 top-to-bottom like the imperative pipeline it is. HITL is one
 ``await`` in the middle and the verdict-handling logic sits inline.
 
+Progress is shown to the user as plain chat messages — one per phase
+("Brainstorming on …", "Chose …", "Saved …"). Each ``say()`` call
+appends an assistant message; the framework's ``message_added``
+signal handler emits the log + stream side effects automatically so
+the SSE consumer on the parent thread sees the timeline live.
+
 All the heavy lifting lives in the framework:
 - ``ballast.patterns.DivergentConvergent`` — fan-out + dedup + verify
   + synthesise (durable, DBOS-queued).
@@ -49,15 +55,10 @@ from ballast import (
     SemanticDedup,
     SemanticDedupConfig,
     TimeoutResponse,
-    ThreadEventType,
     ask_human,
     get_ballast,
 )
 from ballast.capabilities.helpers.embedder import Embedder
-from ballast.runtime.event_stream import (
-    EventNotification,
-    thread_channel,
-)
 
 from notes_app.agents.brainstorm import (
     BrainstormDivergentAgent,
@@ -65,7 +66,6 @@ from notes_app.agents.brainstorm import (
 )
 from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.brainstorm import BrainstormOutcome, BrainstormTask
-from notes_app.models.progress import BrainstormProgress
 from notes_app.models.todo import TodoIdea, TodoIdeas
 from notes_app.models.todo_approval import TodoApprovalContext
 
@@ -118,21 +118,6 @@ DEFAULT_SYNTH_MODEL = "anthropic/claude-sonnet-4.6"
 DEFAULT_SYNTH_TEMPERATURE = 0.2
 
 
-# ── Live progress events ─────────────────────────────────────────────────
-#
-# Brainstorm runs ~25s end-to-end; the user staring at the chat sees
-# nothing happening unless we narrate progress. ``BRAINSTORM_PROGRESS``
-# is a streaming thread event: one ``message_id`` reused across the
-# whole run, so the UI shows ONE animating row that mutates through
-# the phases (diverge → converge → hitl) instead of N separate
-# messages piling up.
-
-BRAINSTORM_PROGRESS = ThreadEventType("brainstorm-progress", BrainstormProgress)
-"""Wire name on the part is ``data-brainstorm-progress`` — frontend
-``makeAssistantDataUI({name: "brainstorm-progress"})`` matches by the
-suffix (assistant-ui strips the ``data-`` prefix internally)."""
-
-
 # ── Brainstorm workflow ──────────────────────────────────────────────────
 
 
@@ -140,8 +125,7 @@ def workflow_id(task: BrainstormTask) -> str:
     """Deterministic workflow id for the HTTP route.
 
     Same ``(parent_thread, topic)`` → same workflow id so duplicate
-    clicks collapse to one in-flight workflow (matches the historical
-    ``brainstorm_router.py`` behaviour)."""
+    clicks collapse to one in-flight workflow."""
     return f"brainstorm:{task.parent_thread_id}:{abs(hash(task.topic))}"
 
 
@@ -149,105 +133,75 @@ def workflow_id(task: BrainstormTask) -> str:
 async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     """Diverge → converge → ask user → save (or not).
 
-    One linear durable workflow:
+    One linear durable workflow. Each phase posts a plain assistant
+    message into the parent thread so the user sees a step-by-step
+    timeline of what the agent is doing. The ``message_added`` signal
+    handler (wired by :class:`EventsProvider`) takes care of the
+    event-log row + SSE broadcast for each ``say()`` call — no manual
+    plumbing here.
 
-      1. ``DivergentConvergent`` fans out to N LLM agents, dedups +
-         synthesises a single ``TodoIdea``.
-      2. ``ask_human`` opens a helper thread + blocks until the user
-         clicks approve / modify / reject (or the timeout fires).
-      3. Verdict handling runs INLINE inside this workflow:
-           - ``ApprovedResponse`` → save the proposed idea as a note.
-           - ``ModifiedResponse`` → save with the user's edits applied.
-           - ``RejectedResponse`` → notify the parent thread.
-           - ``TimeoutResponse`` → notify timeout.
+    Verdict handling runs INLINE after the ``await ask_human(...)``:
 
-    All side effects (the dedup pool memoisation, the helper-thread
-    creation, the note save, the parent-thread notification) sit
-    inside DBOS step boundaries, so a crash mid-flow recovers cleanly
-    on restart.
+      - ``ApprovedResponse`` → save the proposed idea as a note.
+      - ``ModifiedResponse`` → save with the user's edits applied.
+      - ``RejectedResponse`` → notify cancellation.
+      - ``TimeoutResponse`` → notify timeout.
 
-    Returns a :class:`BrainstormOutcome` carrying the chosen proposal
-    and the helper thread id so the HTTP caller can deep-link.
+    Note save + parent-thread notify sit behind DBOS step boundaries
+    (the broadcaster default handler is itself a ``@Durable.step``,
+    and ``_save_note`` below is too), so a crash mid-flow recovers
+    cleanly on restart.
     """
     parent_thread_id = task.parent_thread_id
     topic = task.topic
-    broadcaster = get_ballast().broadcaster
 
-    async with BRAINSTORM_PROGRESS.stream(
-        broadcaster, parent_thread_id,
-    ) as progress:
-        await progress.update(BrainstormProgress(
-            step="diverge", status="running",
-            detail=f'Topic: "{topic}"',
-        ))
+    await say(parent_thread_id, f'Brainstorming on "{topic}"…')
 
-        chosen: TodoIdea = await _divergent.run(topic)
+    chosen: TodoIdea = await _divergent.run(topic)
 
-        await progress.update(BrainstormProgress(
-            step="diverge", status="ok",
-        ))
-        await progress.update(BrainstormProgress(
-            step="converge", status="ok",
-            detail=f'Chosen: "{chosen.title}"',
-        ))
+    await say(
+        parent_thread_id,
+        f'Chose: "{chosen.title}". Opening approval thread…',
+    )
 
-        await progress.update(BrainstormProgress(
-            step="hitl", status="running",
-            detail="Opening approval thread…",
-        ))
+    approval_context = TodoApprovalContext(
+        proposed_title=chosen.title,
+        proposed_body=chosen.body,
+        parent_thread_id=parent_thread_id,
+    )
+    verdict = await ask_human(
+        helper_agent=NotesTodoApprovalAgent,
+        context=approval_context,
+        opening_message=approval_context.to_opening_message(),
+        notify_parent_thread_id=parent_thread_id,
+    )
 
-        approval_context = TodoApprovalContext(
-            proposed_title=chosen.title,
-            proposed_body=chosen.body,
-            parent_thread_id=parent_thread_id,
+    saved_title: str | None = None
+    saved_body: str | None = None
+
+    if isinstance(verdict, ApprovedResponse):
+        note = await _save_note(title=chosen.title, body=chosen.body)
+        saved_title, saved_body = note.title, note.body
+        await say(parent_thread_id, f'Saved your todo titled "{note.title}".')
+    elif isinstance(verdict, ModifiedResponse):
+        mod = verdict.modified_proposal
+        title = str(mod.get("title", chosen.title))
+        body = str(mod.get("body", chosen.body))
+        note = await _save_note(title=title, body=body)
+        saved_title, saved_body = note.title, note.body
+        await say(
+            parent_thread_id,
+            f'Saved your todo titled "{note.title}" (with your edits).',
         )
-        verdict = await ask_human(
-            helper_agent=NotesTodoApprovalAgent,
-            context=approval_context,
-            opening_message=approval_context.to_opening_message(),
-            notify_parent_thread_id=parent_thread_id,
+    elif isinstance(verdict, RejectedResponse):
+        reason = (verdict.feedback or "").strip()
+        tail = f" ({reason})" if reason else ""
+        await say(parent_thread_id, f"Todo creation was cancelled{tail}.")
+    else:  # TimeoutResponse
+        await say(
+            parent_thread_id,
+            "Todo approval timed out — nothing was saved.",
         )
-
-        saved_title: str | None = None
-        saved_body: str | None = None
-
-        if isinstance(verdict, ApprovedResponse):
-            note = await _save_note(
-                title=chosen.title, body=chosen.body,
-            )
-            saved_title, saved_body = note.title, note.body
-            await _notify(
-                parent_thread_id, f"Saved your todo titled {note.title!r}.",
-            )
-        elif isinstance(verdict, ModifiedResponse):
-            mod = verdict.modified_proposal
-            title = str(mod.get("title", chosen.title))
-            body = str(mod.get("body", chosen.body))
-            note = await _save_note(title=title, body=body)
-            saved_title, saved_body = note.title, note.body
-            await _notify(
-                parent_thread_id,
-                f"Saved your todo titled {note.title!r} (with your edits).",
-            )
-        elif isinstance(verdict, RejectedResponse):
-            reason = (verdict.feedback or "").strip()
-            tail = f" ({reason})" if reason else ""
-            await _notify(
-                parent_thread_id, f"Todo creation was cancelled{tail}.",
-            )
-        else:  # TimeoutResponse
-            await _notify(
-                parent_thread_id,
-                "Todo approval timed out — nothing was saved.",
-            )
-
-        await progress.update(BrainstormProgress(
-            step="hitl", status="ok",
-            detail=(
-                f'Saved: "{saved_title}"' if saved_title is not None
-                else "Not saved."
-            ),
-        ))
 
     return BrainstormOutcome(
         proposed_title=chosen.title,
@@ -257,7 +211,23 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     )
 
 
-# ── Inline side-effect steps ─────────────────────────────────────────────
+# ── Inline helpers ───────────────────────────────────────────────────────
+
+
+async def say(thread_id: UUID, text: str) -> None:
+    """Append a plain assistant message to ``thread_id``.
+
+    No step wrapper here — ``ThreadRepository.add_message`` itself
+    self-emits the ``message_added`` signal whose default subscriber
+    is a ``@Durable.step``. That's where DBOS replay memoisation
+    actually matters (the broadcast side effects). Adding another
+    step layer here would just nest steps without gaining anything.
+    """
+    await get_ballast().thread_repo.add_message(
+        thread_id,
+        role="assistant",
+        parts=[{"type": "text", "text": text, "state": "done"}],
+    )
 
 
 @Durable.step()
@@ -270,36 +240,6 @@ async def _save_note(*, title: str, body: str):  # noqa: ANN201 — domain type
     """
     from notes_app.repositories.note import notes_repo  # noqa: PLC0415
     return await notes_repo.create(title=title, body=body)
-
-
-@Durable.step()
-async def _notify(parent_id: UUID, text: str) -> None:
-    """Post a notification assistant message into the parent thread.
-
-    Same shape as the old ``TodoApprovalFlow._notify`` — appends a
-    message via the thread repo, then writes a ``message-added``
-    event + pushes a signal to the parent thread's SSE consumers so
-    any open UI tail picks it up live without a reload.
-    """
-    engine = get_ballast()
-    msg = await engine.thread_repo.add_message(
-        parent_id,
-        role="assistant",
-        parts=[{"type": "text", "text": text, "state": "done"}],
-    )
-    ev = await engine.event_log.append(
-        thread_id=parent_id,
-        kind="message-added",
-        payload={
-            "id": msg.id,
-            "role": msg.role,
-            "parts": msg.parts,
-        },
-    )
-    await engine.event_stream.publish(
-        thread_channel(parent_id),
-        EventNotification(thread_id=parent_id, seq=ev.seq),
-    )
 
 
 # ── Synthesis helpers ────────────────────────────────────────────────────
@@ -332,15 +272,7 @@ def _build_brainstorm_divergent(
     divergent_concurrency: int = 3,
     config_name: str = "notes-brainstorm-divergent",
 ) -> DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea]:
-    """Assemble the demo's ``DivergentConvergent`` instance.
-
-    One ``BrainstormDivergentAgent`` per spec and one
-    ``BrainstormSynthesizerAgent`` — these implement the framework's
-    ``DivergentAgent`` / ``Synthesizer`` structural protocols directly,
-    so they're handed to ``DivergentConvergent`` without an adapter
-    layer. Pass ``embedder`` to enable semantic dedup; leave ``None``
-    to skip dedup entirely.
-    """
+    """Assemble the demo's ``DivergentConvergent`` instance."""
     branches = tuple(
         DivergentBranch(
             label=spec.label,
@@ -382,10 +314,6 @@ def _build_brainstorm_divergent(
 
 
 # ── Module-level singleton ──────────────────────────────────────────────
-# App-specific divergent-convergent assembly. The ``brainstorm``
-# workflow function above closes over this at run-time. Imported
-# indirectly by ``notes_app.routes.workflows`` which calls
-# ``brainstorm(task)`` through ``Durable.start_workflow``.
 
 _divergent: DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea] = (
     _build_brainstorm_divergent()
@@ -393,9 +321,9 @@ _divergent: DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea] = (
 
 
 __all__ = [
-    "BRAINSTORM_PROGRESS",
     "BrainstormAgentSpec",
     "DEFAULT_DIVERGENT_SPECS",
     "brainstorm",
+    "say",
     "workflow_id",
 ]
