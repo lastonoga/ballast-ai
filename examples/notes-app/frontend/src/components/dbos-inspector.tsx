@@ -498,7 +498,7 @@ export function DbosInspector() {
   //
   // We pass TWO prefixes: the framework's ``agent-run:`` (chat-turn
   // workflows) AND the app's ``brainstorm:`` (divergent-convergent
-  // runs started via POST /workflows/brainstorm-todo). Each top-level
+  // runs started via POST /workflows/brainstorm-flow). Each top-level
   // workflow's nested execution tree (queued divergent samples, child
   // synthesizer steps, HITL helpers) becomes visible by clicking the
   // ChevronRight on any step whose ``child_workflow_id`` is set.
@@ -549,10 +549,13 @@ export function DbosInspector() {
     );
     if (topic === null) return; // user cancelled
     try {
-      const r = await fetch(`${apiUrl}/workflows/brainstorm-todo`, {
+      const r = await fetch(`${apiUrl}/workflows/brainstorm-flow`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ thread_id: remoteId, topic: topic || undefined }),
+        body: JSON.stringify({
+          topic: topic || "Идеи для todo на эту неделю",
+          parent_thread_id: remoteId,
+        }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
       // Workflow is fire-and-forget. Helper thread will appear in the
