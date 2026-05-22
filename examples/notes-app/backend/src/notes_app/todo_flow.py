@@ -31,7 +31,6 @@ from pydantic_ai_stateflow.runtime.event_stream import (
     thread_channel,
 )
 
-from notes_app.notes.repository import NoteRepository
 from notes_app.todo_approval_agent import TodoApprovalContext
 
 
@@ -54,7 +53,6 @@ class TodoApprovalFlow(DurableHITLWorkflow):
     def __init__(
         self,
         *,
-        notes_repo: NoteRepository,
         config_name: str = "notes-todo-approval-flow",
     ) -> None:
         # Stable ``config_name`` so DBOS can rebind this instance to its
@@ -63,7 +61,6 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         # name on recovery (otherwise DBOS can't address the instance).
         # Tests override the default to keep per-test instances unique.
         super().__init__(config_name=config_name)
-        self.notes_repo = notes_repo
 
     async def on_decision(
         self,
@@ -71,13 +68,18 @@ class TodoApprovalFlow(DurableHITLWorkflow):
         response: HITLResponse,
         context: BaseModel,
     ) -> None:
+        # Lazy import of the module-level singleton — tests
+        # monkeypatch ``notes_app.notes.repository.notes_repo`` so the
+        # swap is visible here on the per-test fixture.
+        from notes_app.notes.repository import notes_repo
+
         assert isinstance(context, TodoApprovalContext), (
             f"Expected TodoApprovalContext, got {type(context).__name__}"
         )
         parent_id = context.parent_thread_id
 
         if isinstance(response, ApprovedResponse):
-            note = await self.notes_repo.create(
+            note = await notes_repo.create(
                 title=context.proposed_title,
                 body=context.proposed_body,
             )
@@ -88,7 +90,7 @@ class TodoApprovalFlow(DurableHITLWorkflow):
             mod = response.modified_proposal
             title = str(mod.get("title", context.proposed_title))
             body = str(mod.get("body", context.proposed_body))
-            note = await self.notes_repo.create(title=title, body=body)
+            note = await notes_repo.create(title=title, body=body)
             await self._notify(
                 parent_id,
                 f"Saved your todo titled {note.title!r} (with your edits).",
@@ -132,3 +134,12 @@ class TodoApprovalFlow(DurableHITLWorkflow):
                 thread_channel(parent_id),
                 EventNotification(thread_id=parent_id, seq=ev.seq),
             )
+
+
+# ── Module-level singleton ──────────────────────────────────────────────
+# App-specific durable HITL workflow. Imported directly by callers that
+# need to spawn approval flows (NotesAgent.propose_todo, BrainstormFlow).
+
+todo_flow: TodoApprovalFlow = TodoApprovalFlow(
+    config_name="notes-todo-approval-flow",
+)

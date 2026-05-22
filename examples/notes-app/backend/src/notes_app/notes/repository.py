@@ -102,3 +102,11 @@ class InMemoryNoteRepository:
     async def delete(self, note_id: UUID) -> None:
         # Idempotent: silent no-op on unknown ids.
         self._notes.pop(note_id, None)
+
+
+# ── Module-level singleton ──────────────────────────────────────────────
+# App-specific repository. Imported directly by callers that need it
+# (avoids passing through constructor DI). Tests swap via
+# ``monkeypatch.setattr("notes_app.notes.repository.notes_repo", mock)``.
+
+notes_repo: NoteRepository = InMemoryNoteRepository()

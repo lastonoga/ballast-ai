@@ -60,7 +60,6 @@ from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
 )
-from notes_app.todo_flow import TodoApprovalFlow
 
 DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
@@ -118,14 +117,16 @@ def default_notes_capabilities() -> list[StateflowCapability]:
 class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
-    ``todo_flow``, ``parent_thread_id``, and ``ctx`` are only used by
-    ``propose_todo`` to spawn the durable approval workflow — the
-    simpler note tools ignore them. They may be ``None`` for tests
-    that only exercise the non-HITL tools.
+    ``parent_thread_id`` and ``ctx`` are only used by ``propose_todo``
+    to spawn the durable approval workflow — the simpler note tools
+    ignore them. They may be ``None`` for tests that only exercise the
+    non-HITL tools. The note repository is reached via direct import
+    of ``notes_app.notes.repository.notes_repo`` (module-level
+    singleton); ``repo`` is kept on the deps so tools can pass a
+    per-test override (constructed manually in unit tests).
     """
 
     repo: NoteRepository
-    todo_flow: TodoApprovalFlow | None = None
     parent_thread_id: UUID | None = None
     ctx: StateflowRunContext | None = None
 
@@ -148,8 +149,6 @@ class NotesAgent(StateflowDurableAgent):
     def __init__(
         self,
         *,
-        notes_repo: NoteRepository,
-        todo_flow: TodoApprovalFlow | None = None,
         model_name: str | None = None,
         api_key: str | None = None,
         config_name: str | None = None,
@@ -161,9 +160,10 @@ class NotesAgent(StateflowDurableAgent):
         # ``config_name=None`` lets the parent class auto-generate a
         # unique id — production overrides with a stable name so DBOS
         # workflow recovery can rebind the instance after a restart.
+        # App-specific singletons (notes_repo, todo_flow) are NOT
+        # injected here — tools import them directly from their
+        # respective modules.
         super().__init__(config_name=config_name)
-        self._notes_repo = notes_repo
-        self._todo_flow = todo_flow
         self._model_name = model_name
         self._api_key = api_key
 
@@ -210,6 +210,11 @@ class NotesAgent(StateflowDurableAgent):
         message: ModelMessage | None,
     ) -> NoteToolDeps:
         del message
+        # Direct import of the module-level singleton — apps that need
+        # a different repo (e.g. tests) monkeypatch
+        # ``notes_app.notes.repository.notes_repo`` before this runs.
+        from notes_app.notes.repository import notes_repo
+
         # Per-call infra triplet was bound onto ``self`` by
         # ``_bind_infra(ctx)`` before the workflow body started — surface
         # it back to tool code via ``deps.ctx`` so ``propose_todo`` can
@@ -224,8 +229,7 @@ class NotesAgent(StateflowDurableAgent):
                 parent_thread_id=thread.id,
             )
         return NoteToolDeps(
-            repo=self._notes_repo,
-            todo_flow=self._todo_flow,
+            repo=notes_repo,
             parent_thread_id=thread.id,
             ctx=ctx,
         )
@@ -340,11 +344,13 @@ async def propose_todo(
 
     Both ``title`` and ``body`` are required and free-form.
     """
-    if ctx.deps.todo_flow is None or ctx.deps.parent_thread_id is None \
-            or ctx.deps.ctx is None:
+    # Direct import of the module-level singleton.
+    from notes_app.todo_flow import todo_flow
+
+    if ctx.deps.parent_thread_id is None or ctx.deps.ctx is None:
         raise RuntimeError(
-            "propose_todo requires todo_flow + parent_thread_id + ctx on "
-            "NoteToolDeps — was NotesAgent constructed without them?",
+            "propose_todo requires parent_thread_id + ctx on NoteToolDeps "
+            "— was NotesAgent.build_deps run without an infra-bound ctx?",
         )
 
     context = TodoApprovalContext(
@@ -352,7 +358,7 @@ async def propose_todo(
         proposed_body=body,
         parent_thread_id=ctx.deps.parent_thread_id,
     )
-    await ctx.deps.todo_flow.open(
+    await todo_flow.open(
         ctx.deps.ctx,
         helper_agent=NotesTodoApprovalAgent,
         context=context,
@@ -390,3 +396,12 @@ async def delete_note(
     nid = note_id.id if isinstance(note_id, Ref) else note_id
     await ctx.deps.repo.delete(nid)
     return f"deleted {nid}"
+
+
+# ── Module-level singleton ──────────────────────────────────────────────
+# App-specific durable agent. Imported directly by ``main.py``'s
+# dispatch table; per-request infra is bound on the instance via
+# ``enqueue_run`` / ``enqueue_approval_resume`` from the supplied
+# ``RunContext``.
+
+notes_agent: NotesAgent = NotesAgent(config_name="notes-app-notes-agent")

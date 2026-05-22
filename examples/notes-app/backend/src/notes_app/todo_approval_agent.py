@@ -132,11 +132,15 @@ class NotesTodoApprovalAgent(StateflowAgent):
     def __init__(
         self,
         *,
-        notes_repo: NoteRepository,
         model_name: str | None = None,
         api_key: str | None = None,
+        config_name: str | None = None,  # noqa: ARG002 — symmetry with NotesAgent
     ) -> None:
-        self._notes_repo = notes_repo
+        # App-specific ``NoteRepository`` reached via direct import of
+        # ``notes_app.notes.repository.notes_repo`` (module-level
+        # singleton) — no constructor DI. ``config_name`` is accepted
+        # for parity with ``NotesAgent`` but unused: this is not a
+        # DBOSConfiguredInstance.
         self._model_name = model_name
         self._api_key = api_key
 
@@ -176,9 +180,12 @@ class NotesTodoApprovalAgent(StateflowAgent):
         message: ModelMessage | None,
     ) -> TodoApprovalDeps:
         del message
+        # Direct import of the module-level singleton.
+        from notes_app.notes.repository import notes_repo
+
         metadata = TodoApprovalContext.model_validate(thread.metadata_)
         return TodoApprovalDeps(
-            notes_repo=self._notes_repo,
+            notes_repo=notes_repo,
             request_id=UUID(thread.metadata_["request_id"]),
             workflow_id=str(thread.metadata_["workflow_id"]),
             metadata=metadata,
@@ -289,3 +296,11 @@ async def modify(
         f"Updated to title={final_title!r}, body={final_body!r}. "
         "Saving on the main thread."
     )
+
+
+# ── Module-level singleton ──────────────────────────────────────────────
+# App-specific helper agent. Imported directly by ``main.py``'s
+# dispatch table; the framework looks it up by ``Thread.agent ==
+# "todo_approval"`` whenever the helper thread receives a message.
+
+approval_agent: NotesTodoApprovalAgent = NotesTodoApprovalAgent()

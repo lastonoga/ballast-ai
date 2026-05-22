@@ -62,7 +62,6 @@ from notes_app.todo_approval_agent import (
     NotesTodoApprovalAgent,
     TodoApprovalContext,
 )
-from notes_app.todo_flow import TodoApprovalFlow
 
 
 # ── Default agent specs for the notes-app demo ───────────────────────────
@@ -277,12 +276,10 @@ class BrainstormFlow(DBOSConfiguredInstance):
     def __init__(
         self,
         *,
-        todo_flow: TodoApprovalFlow,
         divergent: DivergentConvergent[str, TodoIdeas, TodoIdea, TodoIdea],
         config_name: str = "notes-brainstorm-flow",
     ) -> None:
         super().__init__(config_name=config_name)
-        self._todo_flow = todo_flow
         self._divergent = divergent
 
     @Durable.workflow()
@@ -326,12 +323,15 @@ class BrainstormFlow(DBOSConfiguredInstance):
                 step="hitl", status="running",
                 detail="Opening approval thread…",
             ))
+            # Direct import of the module-level singleton.
+            from notes_app.todo_flow import todo_flow
+
             context = TodoApprovalContext(
                 proposed_title=chosen.title,
                 proposed_body=chosen.body,
                 parent_thread_id=parent_thread_id,
             )
-            helper_thread = await self._todo_flow.open(
+            helper_thread = await todo_flow.open(
                 ctx,
                 helper_agent=NotesTodoApprovalAgent,
                 context=context,
@@ -367,7 +367,6 @@ def _format_synth_prompt(task: str, candidates: list[TodoIdea]) -> str:
 
 def build_brainstorm_flow(
     *,
-    todo_flow: TodoApprovalFlow,
     divergent_specs: tuple[BrainstormAgentSpec, ...] = DEFAULT_DIVERGENT_SPECS,
     synth_model: str = DEFAULT_SYNTH_MODEL,
     synth_temperature: float = DEFAULT_SYNTH_TEMPERATURE,
@@ -432,10 +431,16 @@ def build_brainstorm_flow(
     )
 
     return BrainstormFlow(
-        todo_flow=todo_flow,
         divergent=divergent,
         config_name=config_name,
     )
+
+
+# ── Module-level singleton ──────────────────────────────────────────────
+# App-specific brainstorm flow. Imported directly by ``main.py``'s
+# ``POST /workflows/brainstorm-flow`` route handler.
+
+brainstorm: BrainstormFlow = build_brainstorm_flow()
 
 
 __all__ = [
