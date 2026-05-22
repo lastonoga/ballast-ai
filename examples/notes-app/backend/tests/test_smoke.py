@@ -8,11 +8,11 @@ is OK; we either:
   - inspect already-attached ``app.state`` (read-only test), or
   - swap the agent registered as ``"notes"`` in the app's dispatch
     table with a ``MockAgent`` and assert on the response (mutates
-    ``_AGENT_BY_NAME`` but restores after).
+    ``agents`` but restores after).
 
 The framework no longer keeps an agent registry; ``Thread.agent`` is
 an opaque string the app resolves to an agent instance via
-``notes_app.main._AGENT_BY_NAME``.
+``notes_app.main.agents``.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import pydantic_ai_stateflow as sf
 import pytest
 from fastapi.testclient import TestClient
 
-from notes_app.main import _AGENT_BY_NAME, app, notes_repo  # noqa: F401
+from notes_app.main import agents, app, notes_repo  # noqa: F401
 
 
 def _ag_ui_body(thread_id: str, user_text: str) -> dict[str, Any]:
@@ -76,10 +76,12 @@ def test_threads_crud_and_streaming_fake() -> None:
     """
     from notes_app.agents.notes import NotesAgent
 
+    # Mock needs the same ``.name`` as NotesAgent so ``agents.override``
+    # replaces the registered instance under that key.
     mock_agent = sf.testing.MockAgent.with_output("Hello, world!")
+    mock_agent.name = NotesAgent.name  # type: ignore[misc]
 
-    saved_agent = _AGENT_BY_NAME.get(NotesAgent.name)
-    _AGENT_BY_NAME[NotesAgent.name] = mock_agent
+    previous = agents.override(mock_agent)
     try:
         with TestClient(app) as client:
             r = client.post("/threads", json={})
@@ -104,10 +106,11 @@ def test_threads_crud_and_streaming_fake() -> None:
             assert "start" in kinds, kinds
             assert "finish" in kinds, kinds
     finally:
-        if saved_agent is None:
-            _AGENT_BY_NAME.pop(NotesAgent.name, None)
+        # Restore original agent (registry's ``override`` returned it).
+        if previous is not None:
+            agents.override(previous)
         else:
-            _AGENT_BY_NAME[NotesAgent.name] = saved_agent
+            agents.remove(mock_agent.name)
 
 
 @pytest.mark.skipif(

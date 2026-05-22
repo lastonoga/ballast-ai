@@ -155,6 +155,7 @@ from pydantic_ai_stateflow.errors import (
 from pydantic_ai_stateflow.observability.config import ObservabilityConfig
 from pydantic_ai_stateflow.runtime.app import create_app
 from pydantic_ai_stateflow.runtime.engine import Engine, get_engine
+from pydantic_ai_stateflow.runtime.registry import Named, Registry
 from pydantic_ai_stateflow.settings import (
     StateflowSettings,
     get_settings,
@@ -315,6 +316,7 @@ __all__ = [
     "ModifiedResponse",
     "MutationPipeline",
     "MutationRejected",
+    "Named",
     "CostExtractor",
     "ObservabilityConfig",
     "OpenRouterCostExtractor",
@@ -330,6 +332,7 @@ __all__ = [
     "Proposal",
     "RaiseOnReject",
     "Reducer",
+    "Registry",
     "Ref",
     "Reflection",
     "ReflectionExhausted",

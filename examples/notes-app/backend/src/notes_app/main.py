@@ -25,7 +25,8 @@ from notes_app.repositories.events import event_log
 from notes_app.repositories.note import notes_repo
 from notes_app.repositories.thread import thread_repo
 from notes_app.routes.notes import build_notes_router
-from notes_app.routes.streaming import _AGENT_BY_NAME, router as streaming_router
+from notes_app.agents import agents
+from notes_app.routes.streaming import router as streaming_router
 from notes_app.routes.workflows import router as workflows_router
 from notes_app.streams import event_stream
 from notes_app.workflows.brainstorm import brainstorm
@@ -78,4 +79,4 @@ def main() -> None:  # pragma: no cover
     uvicorn.run("notes_app.main:app", host=host, port=port, reload=True)
 
 
-__all__ = ["_AGENT_BY_NAME", "app", "main", "notes_repo"]
+__all__ = ["agents", "app", "main", "notes_repo"]

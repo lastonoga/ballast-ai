@@ -1,9 +1,10 @@
 """Streaming + cancellation endpoints for per-thread agent runs.
 
-Resolves the per-thread agent from the app's dispatch table (``_AGENT_BY_NAME``)
-and delegates to the framework's ``stream_response`` / ``cancel_thread_workflows``
-primitives. Framework infra is reached via ``sf.get_engine()`` — the
-process-wide singleton wired by ``sf.create_app`` at startup.
+Resolves the per-thread agent from the app's ``agents`` ``Registry``
+(``notes_app.agents.agents``) and delegates to the framework's
+``stream_response`` / ``cancel_thread_workflows`` primitives. Framework
+infra is reached via ``sf.get_engine()`` — the process-wide singleton
+wired by ``sf.create_app`` at startup.
 """
 
 from __future__ import annotations
@@ -14,19 +15,9 @@ import pydantic_ai_stateflow as sf
 from fastapi import APIRouter, Request
 from pydantic_ai_stateflow.errors import ThreadNotFound
 
-from notes_app.agents.notes import NotesAgent, notes_agent
-from notes_app.agents.todo_approval import NotesTodoApprovalAgent, approval_agent
+from notes_app.agents import agents
 
 router = APIRouter()
-
-
-# App-owned agent dispatch — framework doesn't have a registry.
-# Exported so tests can swap an agent for the duration of a test
-# (see ``tests/test_smoke.py::test_threads_crud_and_streaming_fake``).
-_AGENT_BY_NAME = {
-    NotesAgent.name: notes_agent,
-    NotesTodoApprovalAgent.name: approval_agent,
-}
 
 
 @router.post("/threads/{thread_id}/messages")
@@ -36,8 +27,9 @@ async def stream_messages(
 ) -> object:
     """Stream a fresh assistant turn for ``thread_id``.
 
-    Resolves the per-thread agent from the app's dispatch table and
-    delegates to the framework's ``stream_response`` primitive."""
+    Resolves the per-thread agent via the app's ``agents`` registry
+    and delegates to the framework's ``stream_response`` primitive.
+    """
     engine = sf.get_engine()
     thread = await engine.thread_repo.load(thread_id)
     if thread is None:
@@ -45,9 +37,8 @@ async def stream_messages(
             f"thread {thread_id} not found",
             context={"thread_id": str(thread_id)},
         )
-    agent = _AGENT_BY_NAME[thread.agent]
     return await sf.stream_response(
-        request=request, thread_id=thread_id, agent=agent,
+        request=request, thread_id=thread_id, agent=agents.get(thread.agent),
     )
 
 
@@ -63,6 +54,7 @@ async def cancel_thread(
             f"thread {thread_id} not found",
             context={"thread_id": str(thread_id)},
         )
-    agent = _AGENT_BY_NAME[thread.agent]
-    await sf.cancel_thread_workflows(thread_id=thread_id, agent=agent)
+    await sf.cancel_thread_workflows(
+        thread_id=thread_id, agent=agents.get(thread.agent),
+    )
     return {"cancelled": True}
