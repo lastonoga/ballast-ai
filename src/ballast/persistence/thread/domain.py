@@ -28,9 +28,14 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import JSON, Column, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+# JSONB on Postgres, JSON on every other dialect (sqlite, mysql, …).
+# Keeps the framework runnable on a local sqlite file without losing
+# Postgres's indexed-jsonb perf on prod.
+_JSON_PORTABLE = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _now_utc() -> datetime:
@@ -70,7 +75,7 @@ class Thread(SQLModel, table=True):
         default_factory=dict,
         alias="metadata",
         sa_column=Column(
-            "metadata", JSONB, nullable=False, server_default="{}",
+            "metadata", _JSON_PORTABLE, nullable=False, server_default="{}",
         ),
     )
     workflow_id: UUID | None = Field(default=None, index=True)
@@ -108,7 +113,7 @@ class Message(SQLModel, table=True):
     role: str  # "system" / "user" / "assistant" / "tool"
     parts: list[dict[str, Any]] = Field(
         default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default="[]"),
+        sa_column=Column(_JSON_PORTABLE, nullable=False, server_default="[]"),
     )
     created_at: datetime = Field(
         default_factory=_now_utc,

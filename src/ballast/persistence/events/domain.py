@@ -12,9 +12,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import JSON, Column, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+# JSONB on Postgres, JSON on every other dialect (sqlite, mysql, …).
+_JSON_PORTABLE = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _now_utc() -> datetime:
@@ -44,7 +47,7 @@ class ThreadEvent(SQLModel, table=True):
 
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+        sa_column=Column(_JSON_PORTABLE, nullable=False, server_default="{}"),
     )
     """The full event body — what gets serialized into SSE ``data:``."""
 

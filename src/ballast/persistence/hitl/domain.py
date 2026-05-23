@@ -18,9 +18,12 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import JSON, Column, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+# JSONB on Postgres, JSON on every other dialect (sqlite, mysql, …).
+_JSON_PORTABLE = JSONB().with_variant(JSON(), "sqlite")
 
 
 def _now_utc() -> datetime:
@@ -68,7 +71,7 @@ class BlockingRequirement(SQLModel, table=True):
     workflow_id: UUID = Field(index=True)
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+        sa_column=Column(_JSON_PORTABLE, nullable=False, server_default="{}"),
     )
     purpose: str  # HITLPurpose value or custom string
     status: BlockingRequirementStatus = Field(
@@ -101,11 +104,11 @@ class Decision(SQLModel, table=True):
     verdict: DecisionVerdict
     payload: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+        sa_column=Column(_JSON_PORTABLE, nullable=False, server_default="{}"),
     )
     helper_verdict_payload: dict[str, Any] | None = Field(
         default=None,
-        sa_column=Column(JSONB, nullable=True),
+        sa_column=Column(_JSON_PORTABLE, nullable=True),
     )
     helper_verdict_context_type: str | None = None
     helper_thread_id: UUID | None = Field(default=None, foreign_key="threads.id")
@@ -127,7 +130,7 @@ class AuthzDenial(SQLModel, table=True):
     actor_id: str
     voter_votes: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+        sa_column=Column(_JSON_PORTABLE, nullable=False, server_default="{}"),
     )
     attempted_at: datetime = Field(
         default_factory=_now_utc,
