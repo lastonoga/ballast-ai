@@ -6,7 +6,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from sqlalchemy import asc, func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from ballast.persistence._sql_base import SqlSessionMixin
 from sqlmodel import col
 
 from ballast.persistence.events.domain import ThreadEvent
@@ -96,22 +96,19 @@ class InMemoryEventLogRepository:
         return bucket[-1].seq if bucket else 0
 
 
-class SqlEventLogRepository:
+class SqlEventLogRepository(SqlSessionMixin):
     """SQLAlchemy-backed event log. Works on Postgres AND SQLite.
 
     Uses only dialect-portable types (``JSON`` variant on sqlite,
     ``JSONB`` on postgres — see ``domain.py``).
 
-    Owns its session lifecycle: each method opens a session via the
-    injected ``async_sessionmaker``. ``append`` derives the next ``seq``
-    via ``MAX(seq)+1`` inside a single ``session.begin()`` block. For
-    high-contention multi-writer workloads on the same thread, prefer a
-    per-thread sequence generator — for the framework's typical
-    one-workflow-per-thread shape, ``MAX(seq)+1`` is sufficient.
+    Owns its session lifecycle via :class:`SqlSessionMixin`. ``append``
+    derives the next ``seq`` via ``MAX(seq)+1`` inside a single
+    ``session.begin()`` block. For high-contention multi-writer
+    workloads on the same thread, prefer a per-thread sequence
+    generator — for the framework's typical one-workflow-per-thread
+    shape, ``MAX(seq)+1`` is sufficient.
     """
-
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._sessionmaker = session_factory
 
     async def append(
         self,
@@ -120,7 +117,7 @@ class SqlEventLogRepository:
         kind: str,
         payload: dict[str, Any],
     ) -> ThreadEvent:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             max_seq_stmt = select(func.max(col(ThreadEvent.seq))).where(
                 col(ThreadEvent.thread_id) == thread_id,
             )
@@ -144,7 +141,7 @@ class SqlEventLogRepository:
         after_seq: int = 0,
         limit: int = 1000,
     ) -> list[ThreadEvent]:
-        async with self._sessionmaker() as session:
+        async with self._session() as session:
             stmt = (
                 select(ThreadEvent)
                 .where(
@@ -158,7 +155,7 @@ class SqlEventLogRepository:
             return list(result.scalars().all())
 
     async def latest_seq(self, thread_id: UUID) -> int:
-        async with self._sessionmaker() as session:
+        async with self._session() as session:
             stmt = select(func.max(col(ThreadEvent.seq))).where(
                 col(ThreadEvent.thread_id) == thread_id,
             )

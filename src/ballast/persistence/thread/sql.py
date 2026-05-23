@@ -17,30 +17,28 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import asc, desc, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from ballast.logging import get_logger
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
+from ballast.persistence._sql_base import SqlSessionMixin
 from ballast.persistence.thread.domain import Message, Thread, ThreadStatus
 from ballast.persistence.thread.repository import ThreadClosedError
 
 _log = get_logger(__name__)
 
 
-class SqlThreadRepository:
+class SqlThreadRepository(SqlSessionMixin):
     """SQLAlchemy implementation of ``ThreadRepository`` (backend-agnostic).
 
     Verified against PostgreSQL and SQLite — uses only dialect-portable
-    constructs. Owns its session lifecycle: each method opens a fresh
-    session via the injected ``async_sessionmaker`` and commits per-call.
-    Signal emission (``message_added``) happens after commit so
-    subscribers never observe state that was rolled back.
+    constructs. Owns its session lifecycle via :class:`SqlSessionMixin`:
+    each method enters ``self._tx()`` for writes or ``self._session()``
+    for reads. Signal emission (``message_added``) happens after commit
+    so subscribers never observe state that was rolled back.
     """
-
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._sessionmaker = session_factory
 
     @traced(
         TraceName.THREAD_CREATE,
@@ -54,7 +52,7 @@ class SqlThreadRepository:
         agent: str,
         metadata: dict[str, Any] | None = None,
     ) -> Thread:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = Thread(
                 agent=agent,
                 metadata_=dict(metadata or {}),
@@ -65,7 +63,7 @@ class SqlThreadRepository:
         return thread
 
     async def load(self, id: UUID) -> Thread | None:
-        async with self._sessionmaker() as session:
+        async with self._session() as session:
             stmt = select(Thread).where(col(Thread.id) == id)
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
@@ -87,7 +85,7 @@ class SqlThreadRepository:
         id: str | None = None,
         silent: bool = False,
     ) -> Message:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -137,7 +135,7 @@ class SqlThreadRepository:
         parts: list[dict[str, Any]],
         silent: bool = False,
     ) -> Message:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -187,7 +185,7 @@ class SqlThreadRepository:
         *,
         limit: int = 1000,
     ) -> list[Message]:
-        async with self._sessionmaker() as session:
+        async with self._session() as session:
             stmt = (
                 select(Message)
                 .where(col(Message.thread_id) == thread_id)
@@ -202,7 +200,7 @@ class SqlThreadRepository:
     ) -> None:
         if not ids:
             return
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             await session.execute(
                 sa_delete(Message).where(
                     col(Message.thread_id) == thread_id,
@@ -211,7 +209,7 @@ class SqlThreadRepository:
             )
 
     async def close(self, thread_id: UUID) -> Thread:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -227,7 +225,7 @@ class SqlThreadRepository:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Thread]:
-        async with self._sessionmaker() as session:
+        async with self._session() as session:
             stmt = select(Thread)
             if not include_archived:
                 stmt = stmt.where(col(Thread.status) != ThreadStatus.ARCHIVED)
@@ -242,7 +240,7 @@ class SqlThreadRepository:
     async def update_metadata(
         self, thread_id: UUID, *, metadata: dict[str, Any],
     ) -> Thread:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -251,7 +249,7 @@ class SqlThreadRepository:
         return thread
 
     async def archive(self, thread_id: UUID) -> Thread:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -260,7 +258,7 @@ class SqlThreadRepository:
         return thread
 
     async def unarchive(self, thread_id: UUID) -> Thread:
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             thread = await self._load_in_session(session, thread_id)
             if thread is None:
                 raise KeyError(f"Thread {thread_id} not found")
@@ -271,7 +269,7 @@ class SqlThreadRepository:
     async def delete(self, thread_id: UUID) -> None:
         # Manually delete child messages first (no DB-level CASCADE).
         # Idempotent: unknown thread → no-op.
-        async with self._sessionmaker() as session, session.begin():
+        async with self._tx() as session:
             await session.execute(
                 sa_delete(Message).where(col(Message.thread_id) == thread_id),
             )
