@@ -36,12 +36,6 @@ from ballast.persistence import (
     SqlEventLogRepository,
     SqlThreadRepository,
 )
-from ballast.providers import (
-    DBOSProvider,
-    EventsProvider,
-    ObservabilityProvider,
-    ThreadsProvider,
-)
 from ballast.observability.config import ObservabilityConfig
 from ballast.settings import get_settings
 
@@ -133,22 +127,20 @@ settings = get_settings()
 
 app: FastAPI = (
     ballast.Ballast(settings)
-    .use(
-        ObservabilityProvider(
-            ObservabilityConfig(
-                service_name="app",
-                environment="dev",
-                instrument_pydantic_ai=True,
-                instrument_httpx=True,
-                instrument_fastapi=False,
-            ),
+    .with_observability(
+        ObservabilityConfig(
+            service_name="app",
+            environment="dev",
+            instrument_pydantic_ai=True,
+            instrument_httpx=True,
+            instrument_fastapi=False,
         ),
-        DBOSProvider(
-            DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
-        ),
-        ThreadsProvider(thread_repo),
-        EventsProvider(event_log, event_stream),
     )
+    .with_dbos(
+        DBOSConfig(name="notes-app", system_database_url=_dbos_db_url()),
+    )
+    .with_thread_repo(thread_repo)
+    .with_events(event_log, event_stream)
     .fastapi(
         cors="dev",
         routers=[

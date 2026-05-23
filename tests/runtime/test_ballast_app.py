@@ -1,4 +1,4 @@
-"""Smoke tests for ``Ballast(settings).use(*providers).fastapi(...)``."""
+"""Smoke tests for ``Ballast(settings).with_*(...).fastapi(...)``."""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -8,7 +8,6 @@ from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
 )
-from ballast.providers import EventsProvider, ThreadsProvider
 from ballast.runtime.engine import _reset_ballast_for_tests
 from ballast.runtime.event_stream import InProcessEventStream
 from ballast.settings import BallastSettings
@@ -22,10 +21,8 @@ def _build_ballast_app(fresh_dbos_executor: None) -> ballast.Ballast:
     event_stream = InProcessEventStream()
     return (
         ballast.Ballast(BallastSettings())
-        .use(
-            ThreadsProvider(thread_repo),
-            EventsProvider(event_log, event_stream),
-        )
+        .with_thread_repo(thread_repo)
+        .with_events(event_log, event_stream)
     )
 
 
@@ -36,7 +33,7 @@ def test_ballast_fastapi_app_boots(fresh_dbos_executor: None) -> None:
         assert r.status_code in (200, 404, 503)
 
 
-def test_ballast_providers_propagate_to_engine(fresh_dbos_executor: None) -> None:
+def test_ballast_setters_propagate_to_engine(fresh_dbos_executor: None) -> None:
     del fresh_dbos_executor
     _reset_ballast_for_tests()
     thread_repo = InMemoryThreadRepository()
@@ -44,10 +41,8 @@ def test_ballast_providers_propagate_to_engine(fresh_dbos_executor: None) -> Non
     event_stream = InProcessEventStream()
     app = (
         ballast.Ballast(BallastSettings())
-        .use(
-            ThreadsProvider(thread_repo),
-            EventsProvider(event_log, event_stream),
-        )
+        .with_thread_repo(thread_repo)
+        .with_events(event_log, event_stream)
         .fastapi()
     )
     assert app.state.engine.thread_repo is thread_repo

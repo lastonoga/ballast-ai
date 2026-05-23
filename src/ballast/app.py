@@ -80,12 +80,14 @@ class Ballast:
         self._on_shutdown: list[LifespanHook] = []
 
     def use(self, *providers: Provider) -> Self:
-        """Register one or more providers.
+        """Register one or more third-party providers.
 
-        Order matters when providers depend on each other — register
-        :class:`ObservabilityProvider` first if you want it to instrument
-        DBOS init. :class:`DBOSProvider` vs :class:`ThreadsProvider`
-        ordering is irrelevant — providers are independent.
+        Extension seam for app-defined slices (metrics, multi-tenancy,
+        custom transports). Built-in framework wiring uses the fluent
+        ``.with_*`` setters below instead — collapsing the four
+        framework-built-in providers down to ordinary methods on
+        :class:`Ballast` removes a layer of indirection without giving
+        up the ``Provider`` Protocol for outside extension.
         """
         for provider in providers:
             provider.register(self)
@@ -99,23 +101,88 @@ class Ballast:
         """Schedule a shutdown hook (reverse order on shutdown)."""
         self._on_shutdown.append(hook)
 
-    # ── Internal setters used by providers ───────────────────────────
+    # ── Fluent setters ───────────────────────────────────────────────
 
-    def _set_thread_repo(self, repo: object) -> None:
+    def with_thread_repo(self, repo: object) -> Self:
+        """Install the :class:`ThreadRepository` used by the
+        :class:`Engine`."""
         self._thread_repo = repo
+        return self
 
-    def _set_event_log(self, log: object) -> None:
-        self._event_log = log
+    def with_events(
+        self, event_log: object, event_stream: object,
+    ) -> Self:
+        """Install the event-log repository + in-process event stream and
+        connect the framework's default signal handlers.
 
-    def _set_event_stream(self, stream: object) -> None:
-        self._event_stream = stream
+        The defaults turn ``chat_message_requested`` /
+        ``message_added`` / ``helper_thread_created`` payloads into the
+        right combination of ``thread_repo.add_message`` +
+        ``event_log.append`` + ``event_stream.publish`` calls. Apps that
+        want different routing call ``Signal.disconnect`` on the
+        relevant default and connect their own.
+        """
+        from ballast.events._default_handlers import (  # noqa: PLC0415
+            connect_default_handlers,
+        )
 
-    def _set_dbos(self, config: object) -> None:
-        self._dbos_config = config
+        self._event_log = event_log
+        self._event_stream = event_stream
+        connect_default_handlers()
+        return self
+
+    def with_dbos(self, config: "object | None" = None) -> Self:
+        """Wire DBOS lifecycle onto the app.
+
+        Pass an explicit :class:`DBOSConfig` for apps that compute one
+        at startup (e.g. a tempfile SQLite URL). When omitted, builds
+        one from :class:`BallastSettings.dbos`; when neither yields a
+        ``database_url`` the call is a no-op so apps without durable
+        execution can still call it safely.
+        """
+        if config is not None:
+            self._dbos_config = config
+            self._dbos_lifecycle = True
+            return self
+        s = self.settings.dbos
+        if not getattr(s, "database_url", None):
+            return self
+        from dbos import DBOSConfig  # noqa: PLC0415
+
+        self._dbos_config = DBOSConfig(
+            name=s.app_name,
+            system_database_url=s.database_url,
+        )
         self._dbos_lifecycle = True
+        return self
 
-    def _mark_observability_installed(self) -> None:
+    def with_observability(
+        self, config: "object | None" = None,
+    ) -> Self:
+        """Install :class:`ObservabilityConfig` (Logfire + instrumentation).
+
+        Pass an explicit :class:`ObservabilityConfig` to override the
+        knobs derived from :class:`BallastSettings.observability`.
+        Idempotent — ``ObservabilityConfig.install`` is itself a no-op
+        on repeat calls with the same config.
+        """
+        from ballast.observability.config import (  # noqa: PLC0415
+            ObservabilityConfig,
+        )
+
+        resolved = config
+        if resolved is None:
+            s = self.settings.observability
+            resolved = ObservabilityConfig(
+                service_name=s.service_name,
+                environment=s.environment,
+                instrument_pydantic_ai=s.instrument_pydantic_ai,
+                instrument_httpx=s.instrument_httpx,
+                instrument_fastapi=s.instrument_fastapi,
+            )
+        resolved.install()  # type: ignore[attr-defined]
         self._observability_installed = True
+        return self
 
     # ── Transport adapter ────────────────────────────────────────────
 

@@ -21,7 +21,7 @@ from ballast.persistence.events.repository import (
 from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
 )
-from ballast.providers.events import EventsProvider
+from ballast.events._default_handlers import connect_default_handlers
 from ballast.runtime.engine import (
     Engine,
     _reset_ballast_for_tests,
@@ -56,17 +56,9 @@ def wired_engine() -> "Iterator[Engine]":
     )
     _set_ballast(engine)
 
-    # ``register`` needs a ``Ballast``-shaped object only for the
-    # ``_set_event_log`` / ``_set_event_stream`` hooks; we've installed
-    # the engine ourselves above, so call ``connect`` on the signals
-    # directly via the provider's wiring path.
-    class _Stub:
-        def _set_event_log(self, _log: object) -> None: ...
-        def _set_event_stream(self, _stream: object) -> None: ...
-
-    EventsProvider(event_log=event_log, event_stream=event_stream).register(
-        _Stub(),  # type: ignore[arg-type]
-    )
+    # We've installed the engine ourselves above; just connect the
+    # framework's default signal handlers directly.
+    connect_default_handlers()
 
     try:
         yield engine

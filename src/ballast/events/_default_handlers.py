@@ -1,7 +1,19 @@
-"""EventsProvider — wires the app's :class:`EventLogRepository` and
-:class:`EventStream` onto Ballast and connects the framework's default
-signal handlers (which turn :data:`message_added` /
-:data:`helper_thread_created` into log + publish writes).
+"""Default ``Signal`` handlers connected by :meth:`Ballast.with_events`.
+
+These three handlers wire the framework's "messages go through signals"
+contract — they take a signal payload, write the durable side-effect
+(persist a row, append an event-log entry, publish an event_stream
+notification), and return. Apps can disconnect any of them and replace
+with a custom receiver if they want different routing.
+
+  - ``_default_chat_message_requested`` — turns a ``chat_message_requested``
+    payload into a ``thread_repo.add_message`` (or ``upsert_message`` if
+    ``message_id`` is supplied). The repo itself fires ``message_added``.
+  - ``_default_message_added`` — turns ``message_added`` into a
+    ``message-added`` event-log row + ``event_stream.publish`` wake-up.
+  - ``_default_helper_thread_created`` — emits a ``thread-created``
+    event into the parent thread when a HITL helper opens a side
+    conversation.
 """
 from __future__ import annotations
 
@@ -9,40 +21,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ballast.durable import Durable
-from ballast.events import (
-    chat_message_requested,
-    helper_thread_created,
-    message_added,
-)
 from ballast.runtime.event_stream import EventNotification, thread_channel
 
 if TYPE_CHECKING:
-    from ballast.app import Ballast
-    from ballast.persistence.events.repository import EventLogRepository
     from ballast.persistence.thread.domain import Message
-    from ballast.runtime.event_stream import EventStream
-
-
-class EventsProvider:
-    """Set the event-log repository + in-process event stream on the
-    :class:`Engine`, and connect the framework's default signal handlers."""
-
-    def __init__(
-        self,
-        event_log: "EventLogRepository",
-        event_stream: "EventStream",
-    ) -> None:
-        self._event_log = event_log
-        self._event_stream = event_stream
-
-    def register(self, ballast: "Ballast") -> None:
-        ballast._set_event_log(self._event_log)
-        ballast._set_event_stream(self._event_stream)
-        # ``Signal.connect`` is idempotent, so re-registering across
-        # fixture rebuilds doesn't double-fire the defaults.
-        chat_message_requested.connect(_default_chat_message_requested)
-        message_added.connect(_default_message_added)
-        helper_thread_created.connect(_default_helper_thread_created)
 
 
 async def _default_chat_message_requested(
@@ -160,4 +142,28 @@ async def _default_helper_thread_created(
     )
 
 
-__all__ = ["EventsProvider"]
+def connect_default_handlers() -> None:
+    """Idempotently connect the three default signal handlers.
+
+    Called once from :meth:`Ballast.with_events` so the framework's
+    out-of-the-box behaviour is in place. ``Signal.connect`` is
+    idempotent, so multiple calls (e.g. across fixture rebuilds) don't
+    double-fire.
+    """
+    from ballast.events import (  # noqa: PLC0415
+        chat_message_requested,
+        helper_thread_created,
+        message_added,
+    )
+
+    chat_message_requested.connect(_default_chat_message_requested)
+    message_added.connect(_default_message_added)
+    helper_thread_created.connect(_default_helper_thread_created)
+
+
+__all__ = [
+    "_default_chat_message_requested",
+    "_default_helper_thread_created",
+    "_default_message_added",
+    "connect_default_handlers",
+]
