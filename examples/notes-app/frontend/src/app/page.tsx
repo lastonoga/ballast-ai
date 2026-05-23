@@ -3,6 +3,7 @@
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
 import { BrainstormEventsUI } from "@/components/assistant-ui/brainstorm-events";
 import { DeleteNoteApproval } from "@/components/assistant-ui/delete-note-approval";
+import { DivergentConvergentEventsUI } from "@/components/assistant-ui/divergent-convergent-events";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
 import { DbosInspector } from "@/components/dbos-inspector";
 import { DebugToggle } from "@/components/debug-toggle";
@@ -26,6 +27,11 @@ export default function Home() {
           cancelled / timed-out) so the chat shows fancy cards instead of
           dropping the data parts. */}
       <BrainstormEventsUI />
+      {/* Framework `DivergentConvergent` pattern progress — compact
+          per-event rows for branch enqueued / completed / failed,
+          dedup, converge. Many per run, so rendered as one-liners
+          (not cards) to keep the chat rhythm. */}
+      <DivergentConvergentEventsUI />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <ResizablePanelGroup orientation="horizontal">
           <ResizablePanel id="main" defaultSize={67}>

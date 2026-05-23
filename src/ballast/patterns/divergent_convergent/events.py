@@ -145,27 +145,16 @@ subset they care about.
 # ── Default chat router ────────────────────────────────────────────────
 
 
-def format_for_chat(event: DivergentEvent) -> str:
-    """Render one event as a human-readable chat line.
-
-    Returns ``""`` for events the default router should skip
-    (currently ``VerifyCompleted`` / ``ConvergeCompleted`` — too noisy
-    for chat narration). Override either by replacing
-    :func:`default_chat_router` entirely (see module docstring) or by
-    monkey-patching this function from your app's startup if you only
-    want different strings.
-    """
-    if isinstance(event, BranchEnqueued):
-        return f"  · Branch '{event.label}' enqueued (sample {event.sample_idx})…"
-    if isinstance(event, BranchCompleted):
-        return f"  · Branch '{event.label}' completed: {event.pool_size} ideas"
-    if isinstance(event, BranchFailed):
-        return f"  · Branch '{event.label}' FAILED ({event.error_type})"
-    if isinstance(event, DedupCompleted):
-        return f"  · Dedup: {event.input_count} → {event.output_count} ideas"
-    if isinstance(event, ConvergeStarted):
-        return f"  · Picking the best of {event.candidate_count} candidates…"
-    return ""
+# Events the default router emits as typed UI parts. Apps subscribing
+# to additional event types for non-UI side effects (metrics, audit)
+# are independent — those handlers run regardless of this set.
+_CHAT_RENDERED_EVENTS: tuple[type[BaseModel], ...] = (
+    BranchEnqueued,
+    BranchCompleted,
+    BranchFailed,
+    DedupCompleted,
+    ConvergeStarted,
+)
 
 
 async def default_chat_router(
@@ -177,12 +166,15 @@ async def default_chat_router(
     """Bundled :data:`divergent_convergent_progress` handler.
 
     Reads :data:`progress_thread_var` from the active context — if the
-    app didn't open a ``progress_to_thread(...)`` scope it's ``None``
-    and this handler is a no-op. If set, formats the event via
-    :func:`format_for_chat` and publishes through
-    :data:`chat_message_requested` (whose default handler in turn
-    appends an assistant message; module-level handlers all the way
-    down).
+    app didn't open a ``progress_to_thread(...)`` scope it's a no-op.
+    Otherwise publishes a typed ``data-<event-type>`` part via
+    :data:`chat_message_requested`; the frontend renders each one
+    with a bespoke component.
+
+    ``VerifyCompleted`` / ``ConvergeCompleted`` are absorbed — they
+    don't add UX value beyond what the surrounding workflow's own
+    narration already says. The typed signal still fires for those
+    so observers (analytics, audit) see them.
 
     Auto-connected at module import. Apps that want to replace its
     behaviour entirely should:
@@ -193,12 +185,17 @@ async def default_chat_router(
     """
     thread_id = progress_thread_var.get()
     if thread_id is None:
-        return  # no destination configured → no-op
-    text = format_for_chat(event)
-    if not text:
-        return  # event is absorbed by the formatter
+        return
+    if not isinstance(event, _CHAT_RENDERED_EVENTS):
+        return
     await chat_message_requested.send(
-        sender=sender, thread_id=thread_id, text=text,
+        sender=sender,
+        thread_id=thread_id,
+        parts=[{
+            "type": f"data-{event.type}",
+            "data": event.model_dump(mode="json"),
+            "state": "done",
+        }],
     )
 
 
@@ -216,5 +213,4 @@ __all__ = [
     "VerifyCompleted",
     "default_chat_router",
     "divergent_convergent_progress",
-    "format_for_chat",
 ]
