@@ -98,6 +98,11 @@ class BallastSettings(BaseSettings):
     api: APISettings = Field(default_factory=APISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
+    # Auto-run ``alembic upgrade head`` during FastAPI startup. Opt-in
+    # (default False) so framework + app tests never trigger migrations.
+    # Env: ``BALLAST_AUTO_MIGRATE=true``.
+    auto_migrate: bool = False
+
     # Legacy env-var aliases (vars without the ``BALLAST_`` prefix that
     # predate this settings module). Mapped here rather than via
     # ``AliasChoices`` because pydantic-settings does not honour

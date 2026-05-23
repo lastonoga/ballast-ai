@@ -178,6 +178,43 @@ class Ballast:
             self._on_startup.insert(0, _launch_dbos)
             self._on_shutdown.append(_destroy_dbos)
 
+        # Auto-migrate hook — opt-in via ``settings.auto_migrate`` /
+        # ``BALLAST_AUTO_MIGRATE=true``. Runs ``alembic upgrade head``
+        # BEFORE all other startup hooks (incl. DBOS) so schemas exist
+        # before anything touches the database. Skipped under pytest.
+        settings_obj = self.settings
+
+        async def _auto_migrate(_app: "FastAPI") -> None:
+            import asyncio  # noqa: PLC0415
+            import sys  # noqa: PLC0415
+
+            if not getattr(settings_obj, "auto_migrate", False):
+                return
+            if "pytest" in sys.modules:
+                return
+            from alembic.config import main as alembic_main  # noqa: PLC0415
+
+            from ballast._alembic import resolve_alembic_ini  # noqa: PLC0415
+
+            ini = resolve_alembic_ini()
+
+            # ``alembic upgrade head`` is sync, and app alembic ``env.py``
+            # files often call ``asyncio.run`` for async URLs — both would
+            # explode inside the running lifespan loop. Run in a worker
+            # thread so the migration gets its own event-loop context.
+            def _run_alembic() -> None:
+                saved_argv = sys.argv
+                try:
+                    sys.argv = ["alembic", "-c", ini, "upgrade", "head"]
+                    alembic_main()
+                finally:
+                    sys.argv = saved_argv
+
+            await asyncio.to_thread(_run_alembic)
+            _logger.info("alembic: upgraded to head")
+
+        self._on_startup.insert(0, _auto_migrate)
+
         startup = list(self._on_startup)
         shutdown = list(self._on_shutdown)
 
