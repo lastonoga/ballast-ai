@@ -47,17 +47,20 @@ async def _default_message_added(
     do not double-write on crash recovery — DBOS memoises the step's
     completion by name + args.
     """
+    from ballast.runtime._message_payload import (  # noqa: PLC0415
+        build_message_added_payload,
+    )
     from ballast.runtime.engine import get_ballast  # noqa: PLC0415
 
     engine = get_ballast()
     ev = await engine.event_log.append(
         thread_id=thread_id,
         kind="message-added",
-        payload={
-            "id": message.id,
-            "role": message.role,
-            "parts": message.parts,
-        },
+        payload=build_message_added_payload(
+            message_id=message.id,
+            role=message.role,
+            parts=message.parts,
+        ),
     )
     await engine.event_stream.publish(
         thread_channel(thread_id),

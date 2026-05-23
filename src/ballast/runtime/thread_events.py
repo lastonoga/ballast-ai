@@ -160,20 +160,22 @@ class ThreadEventBroadcaster:
             parts_for_signal = [part]
             role_for_signal = role
 
-        # Payload shape MUST match what ``_default_message_added`` writes
-        # so frontends that consume the SSE stream can't tell whether
-        # the row came from a tool/agent write or a broadcaster emit.
-        # In particular: NO extra fields — the frontend echoes the
-        # event_log payload back into the next POST's body, and
-        # pydantic-ai's ``UIMessage`` validator is ``extra='forbid'``.
+        # Payload built through the strict ``MessageAddedPayload``
+        # contract — any extra/unknown field would raise at
+        # construction, surfacing the bug here instead of as a 500 on
+        # the next POST body echo.
+        from ballast.runtime._message_payload import (  # noqa: PLC0415
+            build_message_added_payload,
+        )
+
         ev = await self._event_log.append(
             thread_id=thread_id,
             kind="message-added",
-            payload={
-                "id": msg_id,
-                "role": role_for_signal,
-                "parts": parts_for_signal,
-            },
+            payload=build_message_added_payload(
+                message_id=msg_id,
+                role=role_for_signal,
+                parts=parts_for_signal,
+            ),
         )
         if self._event_stream is not None:
             await self._event_stream.publish(
