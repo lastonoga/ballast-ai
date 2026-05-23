@@ -145,10 +145,10 @@ class ThreadEventBroadcaster:
         msg_id = message_id or str(uuid4())
 
         if persistent:
-            # ``silent=True`` — this method emits a richer ``message-added``
-            # payload than the default signal handler (it adds the
-            # ``transient`` flag), so we suppress the repo's auto-emit
-            # to avoid a duplicate event-log row.
+            # ``silent=True`` — we write the event_log row + publish
+            # ourselves below; suppressing the repo's auto-emit
+            # prevents a duplicate ``message-added`` row from
+            # ``_default_message_added``.
             msg = await self._thread_repo.upsert_message(
                 thread_id, id=msg_id, role=role, parts=[part], silent=True,
             )
@@ -160,6 +160,12 @@ class ThreadEventBroadcaster:
             parts_for_signal = [part]
             role_for_signal = role
 
+        # Payload shape MUST match what ``_default_message_added`` writes
+        # so frontends that consume the SSE stream can't tell whether
+        # the row came from a tool/agent write or a broadcaster emit.
+        # In particular: NO extra fields — the frontend echoes the
+        # event_log payload back into the next POST's body, and
+        # pydantic-ai's ``UIMessage`` validator is ``extra='forbid'``.
         ev = await self._event_log.append(
             thread_id=thread_id,
             kind="message-added",
@@ -167,7 +173,6 @@ class ThreadEventBroadcaster:
                 "id": msg_id,
                 "role": role_for_signal,
                 "parts": parts_for_signal,
-                "transient": not persistent,
             },
         )
         if self._event_stream is not None:

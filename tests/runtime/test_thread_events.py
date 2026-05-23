@@ -75,7 +75,6 @@ async def test_emit_persistent_writes_message_and_signals() -> None:
     events = await event_log.read_since(thread.id, after_seq=0)
     assert len(events) == 1
     assert events[0].kind == "message-added"
-    assert events[0].payload["transient"] is False
     assert events[0].payload["id"] == msg_id
 
 
@@ -97,7 +96,6 @@ async def test_emit_transient_skips_repo_but_signals() -> None:
     # Event log still records the signal so SSE consumers see it.
     events = await event_log.read_since(thread.id, after_seq=0)
     assert len(events) == 1
-    assert events[0].payload["transient"] is True
     assert events[0].payload["id"] == msg_id
     assert events[0].payload["parts"][0]["type"] == "data-brainstorm-progress"
 
@@ -142,7 +140,7 @@ async def test_stream_transient_skips_repo_entirely() -> None:
     assert await thread_repo.history(thread.id) == []
     events = await event_log.read_since(thread.id, after_seq=0)
     assert len(events) == 2
-    assert all(e.payload["transient"] is True for e in events)
+    assert all(e.kind == "message-added" for e in events)
 
 
 @pytest.mark.asyncio
