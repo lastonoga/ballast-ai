@@ -29,6 +29,7 @@ that callers used to write inline.
 
 from __future__ import annotations
 
+from ballast.events.context import progress_thread_var, progress_to_thread
 from ballast.events.signals import Signal, receiver
 
 # ── Built-in signals ────────────────────────────────────────────────────
@@ -76,5 +77,7 @@ __all__ = [
     "chat_message_requested",
     "helper_thread_created",
     "message_added",
+    "progress_thread_var",
+    "progress_to_thread",
     "receiver",
 ]

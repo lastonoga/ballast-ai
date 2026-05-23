@@ -5,32 +5,26 @@ Typed event vocabulary the pattern emits at every observable boundary
 completed, converge started / completed). Discriminated by ``type``
 so handlers can ``match`` cleanly.
 
-## How to subscribe
+## Subscribing
 
-Two paths:
+Three flavours, in increasing order of customisation:
 
-1. **Adapter helpers** (typical) — :mod:`ballast.events.adapters`
-   exposes ``route_to_thread_as_text`` / ``route_to_thread_as_data``
-   that connect a small handler to :data:`divergent_convergent_progress`
-   and emit one chat message per event. App opts in inside its
-   workflow body::
+1. **Default chat narration** — already auto-connected. Wrap your
+   pattern call in ``progress_to_thread(thread_id)`` and the bundled
+   :func:`default_chat_router` posts one assistant message per event
+   into that thread via :data:`chat_message_requested`::
 
-       from ballast.events.adapters import route_to_thread_as_text
-       from ballast.patterns.divergent_convergent.events import (
-           divergent_convergent_progress,
-       )
+       from ballast.events import progress_to_thread
 
-       disconnect = route_to_thread_as_text(
-           divergent_convergent_progress, thread_id=parent_id,
-       )
-       try:
+       with progress_to_thread(parent_thread_id):
            chosen = await _divergent.run(topic)
-       finally:
-           disconnect()
 
-2. **Raw signal handler** — for non-thread destinations (Slack,
-   metrics, audit log). Connect any sync/async receiver via the
-   Django-style API::
+   Skip the ``with`` block and the default handler is still connected
+   but reads ``None`` from the contextvar → no-op. So opt-out is just
+   "don't use the context manager".
+
+2. **Additional subscribers** — connect anything alongside. Standard
+   signal fan-out, both fire::
 
        from ballast.events import receiver
 
@@ -39,10 +33,22 @@ Two paths:
            if isinstance(event, BranchFailed):
                failed_counter.labels(label=event.label).inc()
 
+3. **Replace the default** — disconnect :func:`default_chat_router`
+   and connect your own with custom format / destination / filtering::
+
+       from ballast.patterns.divergent_convergent.events import (
+           default_chat_router, divergent_convergent_progress,
+       )
+       divergent_convergent_progress.disconnect(default_chat_router)
+
+       @receiver(divergent_convergent_progress)
+       async def my_router(sender, *, event, **_):
+           # custom routing — Slack, your own thread, formatting, …
+           ...
+
 Handlers are dispatched in registration order; raised exceptions
 abort the ``signal.send`` and propagate up through the pattern
-body. Use :meth:`Signal.send_robust` semantics (or guard your
-handler) if you want fail-quiet routing.
+body. The default chat router is async + safe to override.
 
 The signal carries one kwarg, ``event``, whose type is the
 :data:`DivergentEvent` union — handlers should ``isinstance``-dispatch
@@ -51,11 +57,15 @@ or ``match`` on ``event.type``.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from ballast.events import Signal
+from ballast.events import (
+    Signal,
+    chat_message_requested,
+    progress_thread_var,
+)
 
 
 class BranchEnqueued(BaseModel):
@@ -132,6 +142,69 @@ subset they care about.
 """
 
 
+# ── Default chat router ────────────────────────────────────────────────
+
+
+def format_for_chat(event: DivergentEvent) -> str:
+    """Render one event as a human-readable chat line.
+
+    Returns ``""`` for events the default router should skip
+    (currently ``VerifyCompleted`` / ``ConvergeCompleted`` — too noisy
+    for chat narration). Override either by replacing
+    :func:`default_chat_router` entirely (see module docstring) or by
+    monkey-patching this function from your app's startup if you only
+    want different strings.
+    """
+    if isinstance(event, BranchEnqueued):
+        return f"  · Branch '{event.label}' enqueued (sample {event.sample_idx})…"
+    if isinstance(event, BranchCompleted):
+        return f"  · Branch '{event.label}' completed: {event.pool_size} ideas"
+    if isinstance(event, BranchFailed):
+        return f"  · Branch '{event.label}' FAILED ({event.error_type})"
+    if isinstance(event, DedupCompleted):
+        return f"  · Dedup: {event.input_count} → {event.output_count} ideas"
+    if isinstance(event, ConvergeStarted):
+        return f"  · Picking the best of {event.candidate_count} candidates…"
+    return ""
+
+
+async def default_chat_router(
+    sender: Any,
+    *,
+    event: DivergentEvent,
+    **_: Any,
+) -> None:
+    """Bundled :data:`divergent_convergent_progress` handler.
+
+    Reads :data:`progress_thread_var` from the active context — if the
+    app didn't open a ``progress_to_thread(...)`` scope it's ``None``
+    and this handler is a no-op. If set, formats the event via
+    :func:`format_for_chat` and publishes through
+    :data:`chat_message_requested` (whose default handler in turn
+    appends an assistant message; module-level handlers all the way
+    down).
+
+    Auto-connected at module import. Apps that want to replace its
+    behaviour entirely should:
+
+        divergent_convergent_progress.disconnect(default_chat_router)
+        @receiver(divergent_convergent_progress)
+        async def my_router(sender, *, event, **_): ...
+    """
+    thread_id = progress_thread_var.get()
+    if thread_id is None:
+        return  # no destination configured → no-op
+    text = format_for_chat(event)
+    if not text:
+        return  # event is absorbed by the formatter
+    await chat_message_requested.send(
+        sender=sender, thread_id=thread_id, text=text,
+    )
+
+
+divergent_convergent_progress.connect(default_chat_router)
+
+
 __all__ = [
     "BranchCompleted",
     "BranchEnqueued",
@@ -141,5 +214,7 @@ __all__ = [
     "DedupCompleted",
     "DivergentEvent",
     "VerifyCompleted",
+    "default_chat_router",
     "divergent_convergent_progress",
+    "format_for_chat",
 ]

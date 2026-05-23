@@ -58,7 +58,7 @@ from ballast import (
     ask_human,
 )
 from ballast.capabilities.helpers.embedder import Embedder
-from ballast.events import chat_message_requested
+from ballast.events import chat_message_requested, progress_to_thread
 
 from notes_app.agents.brainstorm import (
     BrainstormDivergentAgent,
@@ -155,17 +155,14 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     parent_thread_id = task.parent_thread_id
     topic = task.topic
 
-    await say(parent_thread_id, f'Brainstorming on "{topic}"…')
-
-    # Pattern emits its own per-step narration into the same thread.
-    # ``progress_thread_id`` is a plain UUID — no closures cross the
-    # workflow boundary, and the framework's default
-    # ``chat_message_requested`` handler (wired by EventsProvider at
-    # startup) handles the actual write so delivery is independent of
-    # who's running the body.
-    chosen: TodoIdea = await _divergent.run(
-        topic, progress_thread_id=parent_thread_id,
-    )
+    # Route pattern-internal progress events into the parent thread
+    # for the duration of this call. The framework's default chat
+    # router (auto-connected in ``divergent_convergent/events.py``)
+    # reads ``progress_thread_var`` and posts one narration message
+    # per typed event. To customise: replace ``default_chat_router``
+    # via signal disconnect+reconnect (see events.py module docstring).
+    with progress_to_thread(parent_thread_id):
+        chosen: TodoIdea = await _divergent.run(topic)
 
     await say(
         parent_thread_id,

@@ -13,9 +13,6 @@ from dbos import DBOSConfiguredInstance, Queue
 from ballast.durable import Durable
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
-from uuid import UUID
-
-from ballast.events import chat_message_requested
 from ballast.patterns.divergent_convergent.events import (
     BranchCompleted,
     BranchEnqueued,
@@ -225,39 +222,27 @@ class DivergentConvergent(
         "branch_count": len(self._branches),
         "best_of_n": self._best_of_n,
     })
-    async def run(
-        self,
-        task: InT,
-        *,
-        progress_thread_id: UUID | None = None,
-    ) -> OutT:
+    async def run(self, task: InT) -> OutT:
         """Run the divergent → optional dedup → optional verify →
         synthesize pipeline.
 
         Emits typed progress events on
         :data:`divergent_convergent_progress` at every observable
-        boundary (for analytics / Slack / custom subscribers).
+        boundary. The framework's default routing handler (in
+        ``events.py``, connected at module import) catches them and
+        — if :data:`progress_thread_var` is set in the active
+        context — posts a chat narration via
+        :data:`chat_message_requested`. App opts in with::
 
-        When ``progress_thread_id`` is set, ALSO publishes a plain
-        human-readable assistant message into that thread for each
-        event via :data:`chat_message_requested` — this is the
-        on-by-default UX path for chat UIs. The framework's default
-        chat handler (wired by :class:`EventsProvider` at startup)
-        owns the actual write, so the side effect is reliable
-        regardless of who's calling ``run`` (HTTP handler, durable
-        workflow body, queue worker, …).
+            with progress_to_thread(thread_id=parent):
+                chosen = await _divergent.run(topic)
+
+        Custom subscribers (Slack, metrics, audit) connect their own
+        handlers to the typed signal — independent of the chat
+        routing.
         """
         async def _publish(event: DivergentEvent) -> None:
-            """Fire the typed progress signal + (optionally) post to thread."""
             await divergent_convergent_progress.send(sender=self, event=event)
-            if progress_thread_id is not None:
-                text = _format_divergent_event_for_chat(event)
-                if text:
-                    await chat_message_requested.send(
-                        sender=self,
-                        thread_id=progress_thread_id,
-                        text=text,
-                    )
 
         # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
@@ -369,27 +354,3 @@ class DivergentConvergent(
         prompt = self._format_synth_prompt(task, candidates)
         result = await self._synthesizer.run(prompt)
         return result.output
-
-
-def _format_divergent_event_for_chat(event: DivergentEvent) -> str:
-    """Render one progress event as a human-readable chat line.
-
-    Returned strings are posted as plain assistant text when
-    ``run(progress_thread_id=...)`` is set. Returning ``""`` from any
-    branch suppresses that event (the pattern still fires the typed
-    signal so observers see it). Indented bullets so the lines visually
-    nest under the workflow's own narration ("Brainstorming on …").
-    """
-    if isinstance(event, BranchEnqueued):
-        return f"  · Branch '{event.label}' enqueued (sample {event.sample_idx})…"
-    if isinstance(event, BranchCompleted):
-        return f"  · Branch '{event.label}' completed: {event.pool_size} ideas"
-    if isinstance(event, BranchFailed):
-        return f"  · Branch '{event.label}' FAILED ({event.error_type})"
-    if isinstance(event, DedupCompleted):
-        return f"  · Dedup: {event.input_count} → {event.output_count} ideas"
-    if isinstance(event, ConvergeStarted):
-        return f"  · Picking the best of {event.candidate_count} candidates…"
-    # VerifyCompleted + ConvergeCompleted are absorbed — too noisy
-    # for chat narration. Typed signal still fires for observers.
-    return ""
