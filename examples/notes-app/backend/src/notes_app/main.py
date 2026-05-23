@@ -7,6 +7,17 @@ state. The framework's :class:`ballast.Ballast` accepts a
 ``.use(...)``; the terminal ``.fastapi(...)`` returns the FastAPI app
 and installs the process-wide :class:`Engine` singleton (read via
 ``ballast.get_ballast()``).
+
+Persistence wiring (sqlite by default):
+
+- ``NOTES_APP_DATABASE_URL`` (default ``sqlite+aiosqlite:///./notes-app.sqlite``)
+  → notes + threads + messages + event_log persist to a local sqlite file.
+- ``NOTES_APP_DATABASE_URL=""`` or ``":memory:"`` → InMemory repos.
+- Under pytest (``PYTEST_CURRENT_TEST`` set) → InMemory repos
+  unconditionally so test imports of this module don't touch the local
+  sqlite file. Tests that need SQL persistence build their own
+  sessionmaker.
+- DBOS workflow state has its own sqlite file (see ``_dbos_db_url``).
 """
 from __future__ import annotations
 
@@ -19,6 +30,12 @@ from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from ballast.persistence import (
+    InMemoryEventLogRepository,
+    InMemoryThreadRepository,
+    PostgresEventLogRepository,
+    PostgresThreadRepository,
+)
 from ballast.providers import (
     DBOSProvider,
     EventsProvider,
@@ -30,13 +47,18 @@ from ballast.settings import get_settings
 
 from notes_app.agents.notes import notes_agent
 from notes_app.agents.todo_approval import approval_agent
-from notes_app.repositories.events import event_log
-from notes_app.repositories.note import notes_repo
-from notes_app.repositories.thread import thread_repo
+from notes_app.repositories import events as _events_module
+from notes_app.repositories import note as _note_module
+from notes_app.repositories import thread as _thread_module
+from notes_app.repositories.note import (
+    InMemoryNoteRepository,
+    SqlNoteRepository,
+)
 from notes_app.routes.notes import build_notes_router
 from notes_app.agents import agents
 from notes_app.routes.streaming import router as streaming_router
 from notes_app.routes.workflows import router as workflows_router
+from notes_app.settings import get_notes_settings
 from notes_app.streams import event_stream
 from notes_app.workflows.brainstorm import brainstorm
 from notes_app.workflows.todo_approval import todo_flow  # noqa: F401 — DBOS classes self-register on import; needed for propose_todo
@@ -50,6 +72,61 @@ def _dbos_db_url() -> str:
     if url:
         return url
     return f"sqlite:///{Path(tempfile.gettempdir()) / 'notes-app.dbos.sqlite'}"
+
+
+def _should_use_sql() -> bool:
+    """Branch on ``NOTES_APP_DATABASE_URL`` and pytest detection.
+
+    - Under pytest (``pytest`` in ``sys.modules``) → always InMemory
+      (test imports must NOT touch the local sqlite file; tests that
+      need SQL build their own sessionmaker).
+    - ``""`` or ``":memory:"`` → InMemory.
+    - Anything else → SQL via the configured URL.
+    """
+    import sys  # noqa: PLC0415
+
+    if "pytest" in sys.modules:
+        return False
+    url = get_notes_settings().database_url.strip()
+    if url == "" or url == ":memory:":
+        return False
+    return True
+
+
+# ── Repo wiring ─────────────────────────────────────────────────────────
+# Build SQL or InMemory repos based on the URL/test detection, then
+# REPLACE the module-level singletons in the three repository modules so
+# every existing caller (which imports those singletons by name) sees
+# the wired-up instance.
+if _should_use_sql():
+    from sqlalchemy.ext.asyncio import (  # noqa: PLC0415
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    _engine = create_async_engine(get_notes_settings().database_url)
+    _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
+
+    notes_repo = SqlNoteRepository(_sessionmaker)
+    thread_repo = PostgresThreadRepository(_sessionmaker)
+    event_log = PostgresEventLogRepository(_sessionmaker)
+
+    # Rebind singletons so the lazy-import sites in agents/workflows pick
+    # up the SQL impl too.
+    _note_module.notes_repo = notes_repo
+    _thread_module.thread_repo = thread_repo  # type: ignore[assignment]
+    _events_module.event_log = event_log  # type: ignore[assignment]
+else:
+    # InMemory path — for tests and ``NOTES_APP_DATABASE_URL=""``/``:memory:``.
+    # Use the singletons that the repos modules already constructed at
+    # import time so existing tests + monkeypatch sites keep working.
+    notes_repo = _note_module.notes_repo  # type: ignore[assignment]
+    thread_repo = _thread_module.thread_repo  # type: ignore[assignment]
+    event_log = _events_module.event_log  # type: ignore[assignment]
+    # Sanity: ensure the InMemory types are what we expect.
+    assert isinstance(notes_repo, InMemoryNoteRepository)
+    assert isinstance(event_log, InMemoryEventLogRepository)
+    assert isinstance(thread_repo, InMemoryThreadRepository)
 
 
 settings = get_settings()
@@ -97,4 +174,4 @@ def main() -> None:  # pragma: no cover
     uvicorn.run("notes_app.main:app", host=host, port=port, reload=True)
 
 
-__all__ = ["agents", "app", "main", "notes_repo"]
+__all__ = ["agents", "app", "event_log", "main", "notes_repo", "thread_repo"]

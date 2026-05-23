@@ -27,8 +27,42 @@ Postgres/DBOS-backed one (see `notes/repository.py` TODO).
 cd examples/notes-app/backend
 uv sync --extra dev
 cp .env.example .env  # then fill OPENROUTER_API_KEY
+uv run alembic upgrade head      # create notes-app.sqlite
 uv run uvicorn notes_app.main:app --reload
 ```
+
+## Persistence
+
+App state (notes, threads, messages, event log) lives in a local SQLite
+file (`./notes-app.sqlite`). DBOS workflow state has its own file
+(`./notes-app.dbos.sqlite`). Both auto-created on first run.
+
+To set up / upgrade the schema:
+
+    uv run alembic upgrade head
+
+Then start the backend:
+
+    uv run python -m notes_app.main
+    # or:
+    uv run uvicorn notes_app.main:app --reload --port 8000
+
+Point at a different database with `NOTES_APP_DATABASE_URL`:
+
+    NOTES_APP_DATABASE_URL=postgresql+asyncpg://... uv run alembic upgrade head
+    NOTES_APP_DATABASE_URL=postgresql+asyncpg://... uv run uvicorn notes_app.main:app
+
+Set `NOTES_APP_DATABASE_URL=""` (empty) or `NOTES_APP_DATABASE_URL=":memory:"`
+to fall back to InMemory repos (process-local, no persistence).
+
+To reset state: `rm notes-app.sqlite` (then re-run alembic upgrade head).
+
+### Tests stay in-memory
+
+`tests/conftest.py` + `main.py` together guarantee that when running
+under pytest, the module-level singletons are `InMemoryNoteRepository`,
+`InMemoryThreadRepository`, and `InMemoryEventLogRepository` — test
+runs never touch the local sqlite file.
 
 ## Architecture
 

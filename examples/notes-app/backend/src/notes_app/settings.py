@@ -7,6 +7,9 @@ App-specific config (LLM provider keys, model choices) lives here.
 Env vars:
 - ``NOTES_APP_OPENROUTER_API_KEY`` (legacy ``OPENROUTER_API_KEY``)
 - ``NOTES_APP_OPENROUTER_DEFAULT_MODEL`` (legacy ``OPENROUTER_MODEL``)
+- ``NOTES_APP_DATABASE_URL`` — SQLAlchemy URL for notes/threads/messages/
+  event_log persistence. Default ``sqlite+aiosqlite:///./notes-app.sqlite``.
+  Set to ``""`` or ``":memory:"`` to fall back to InMemory repos.
 """
 from __future__ import annotations
 
@@ -31,6 +34,14 @@ class NotesAppSettings(BaseSettings):
         validation_alias=AliasChoices(
             "NOTES_APP_OPENROUTER_DEFAULT_MODEL",
             "OPENROUTER_MODEL",
+        ),
+    )
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///./notes-app.sqlite",
+        validation_alias=AliasChoices("NOTES_APP_DATABASE_URL"),
+        description=(
+            "SQLAlchemy URL for notes/threads/messages/event_log. "
+            "Empty string or ':memory:' → InMemory repos."
         ),
     )
 
