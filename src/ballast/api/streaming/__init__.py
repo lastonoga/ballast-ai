@@ -3,10 +3,10 @@ from ballast.api.streaming.history import (
     messages_to_model_history,
 )
 from ballast.api.streaming.primitive import (
+    DepsFactory,
     cancel_thread_workflows,
     stream_response,
 )
-from ballast.api.streaming.router import DepsFactory
 
 __all__ = [
     "DepsFactory",

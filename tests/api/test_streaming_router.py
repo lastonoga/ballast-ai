@@ -457,7 +457,7 @@ async def test_regenerate_truncates_old_assistant_then_emits_new() -> None:
 async def test_approval_response_keeps_tool_call_in_adapter_messages() -> None:
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
-    from ballast.api.streaming.router import (
+    from ballast.api.streaming.primitive import (
         _trim_adapter_messages_to_last_user_prompt,
     )
 
