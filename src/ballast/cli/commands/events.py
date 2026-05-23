@@ -1,4 +1,4 @@
-"""``stateflow events tail <thread-id>`` — SSE tail."""
+"""``ballast events tail <thread-id>`` — SSE tail."""
 from __future__ import annotations
 
 import asyncio
@@ -23,8 +23,8 @@ def tail(
 
     Example:
 
-        stateflow events tail 9b1a-...
-        stateflow events tail 9b1a-... --port 8001
+        ballast events tail 9b1a-...
+        ballast events tail 9b1a-... --port 8001
     """
     asyncio.run(_tail_async(thread_id, host, port, scheme))
 

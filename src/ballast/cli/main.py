@@ -6,8 +6,8 @@ import typer
 from ballast.cli.commands import dev, events, migrate, workflows
 
 cli = typer.Typer(
-    name="stateflow",
-    help="Devtools for pydantic-ai-stateflow apps.",
+    name="ballast",
+    help="Devtools for Ballast apps.",
     no_args_is_help=True,
 )
 cli.command(name="dev")(dev.dev)

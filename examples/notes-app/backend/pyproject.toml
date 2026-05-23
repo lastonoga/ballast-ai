@@ -27,6 +27,7 @@ dev = [
 
 [tool.ballast]
 app = "notes_app.main:app"
+alembic_ini = "alembic.ini"
 
 [tool.uv.sources]
 ballast-ai = { path = "../../..", editable = true }

@@ -1,4 +1,4 @@
-"""``stateflow dev`` — uvicorn-reload wrapper."""
+"""``ballast dev`` — uvicorn-reload wrapper."""
 from __future__ import annotations
 
 import typer
@@ -13,13 +13,13 @@ def dev(
     app_ref: str | None = typer.Option(None, "--app"),
     log_level: str = typer.Option("info", "--log-level"),
 ) -> None:
-    """Run the stateflow app under uvicorn with reload.
+    """Run the ballast app under uvicorn with reload.
 
     Examples:
 
-        stateflow dev
-        stateflow dev --host 0.0.0.0 --port 8001
-        stateflow dev --app notes_app.main:app --no-reload
+        ballast dev
+        ballast dev --host 0.0.0.0 --port 8001
+        ballast dev --app notes_app.main:app --no-reload
     """
     ref = resolve_app_ref(app_ref)
     import uvicorn

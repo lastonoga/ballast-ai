@@ -1,13 +1,12 @@
-"""``stateflow migrate`` — Alembic wrapper using SP2 settings.dbos.database_url."""
+"""``ballast migrate`` — Alembic wrapper using SP2 settings.dbos.database_url."""
 from __future__ import annotations
 
-import importlib.resources
 import sys
-import tomllib
-from pathlib import Path
 
 import typer
 from alembic.config import main as alembic_main
+
+from ballast._alembic import resolve_alembic_ini
 
 app = typer.Typer(
     help="Run Alembic migrations.",
@@ -18,24 +17,7 @@ app = typer.Typer(
 
 def _resolve_alembic_ini(explicit: str | None = None) -> str:
     """Resolve alembic.ini path: --alembic-ini > pyproject.toml > bundled."""
-    if explicit:
-        return explicit
-    # pyproject.toml [tool.stateflow] alembic_ini
-    try:
-        for candidate in [Path.cwd(), *Path.cwd().parents]:
-            p = candidate / "pyproject.toml"
-            if p.is_file():
-                with p.open("rb") as f:
-                    data = tomllib.load(f)
-                ini = data.get("tool", {}).get("stateflow", {}).get("alembic_ini")
-                if isinstance(ini, str):
-                    return ini
-                break
-    except (tomllib.TOMLDecodeError, OSError):
-        pass
-    # Fall back to bundled
-    pkg_path = importlib.resources.files("ballast") / "alembic.ini"
-    return str(pkg_path)
+    return resolve_alembic_ini(explicit)
 
 
 @app.callback()

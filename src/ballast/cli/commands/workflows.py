@@ -1,4 +1,4 @@
-"""``stateflow workflows ls`` — list DBOS workflows."""
+"""``ballast workflows ls`` — list DBOS workflows."""
 from __future__ import annotations
 
 import asyncio
