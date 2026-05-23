@@ -54,6 +54,7 @@ from ballast.events import helper_thread_created
 from ballast.logging import get_logger
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
+from ballast.patterns.hitl._helper_spawn import validate_helper_agent
 from ballast.patterns.hitl.response import (
     HITLResponse,
     TimeoutResponse,
@@ -185,19 +186,7 @@ class DurableHITLWorkflow(DBOSConfiguredInstance):
         body would be non-deterministic across replays.
         ----------------------------------------------------------------
         """
-        metadata_model = helper_agent.metadata_model
-        if metadata_model is None:
-            raise ValueError(
-                f"{helper_agent.__name__}.metadata_model is None — cannot "
-                "use it as a HITL helper agent. Set a metadata_model that "
-                "validates the context shape.",
-            )
-        if not isinstance(context, metadata_model):
-            raise TypeError(
-                f"context must be an instance of "
-                f"{helper_agent.__name__}.metadata_model "
-                f"({metadata_model.__name__}), got {type(context).__name__}",
-            )
+        metadata_model = validate_helper_agent(helper_agent, context)
 
         # Pre-allocate routing ids in the CALLER fiber so the workflow
         # body uses stable values across replay (uuid4 inside the

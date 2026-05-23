@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
 from ballast.patterns.errors import HITLDenied, HITLTimedOut
+from ballast.patterns.hitl._helper_spawn import validate_helper_agent
 from ballast.patterns.hitl.channel import HITLChannel
 from ballast.patterns.hitl.policy import Policy
 from ballast.patterns.hitl.prompt import HITLPrompt
@@ -201,19 +202,7 @@ class HITLGate(DBOSConfiguredInstance):
                 "HITLGate.ask_helper requires a thread_repo — pass one to "
                 "HITLGate(...) at construction.",
             )
-        metadata_model = helper_agent.metadata_model
-        if metadata_model is None:
-            raise ValueError(
-                f"{helper_agent.__name__}.metadata_model is None — cannot use "
-                "it as a HITL helper agent. Set a metadata_model that "
-                "validates the context shape.",
-            )
-        if not isinstance(context, metadata_model):
-            raise TypeError(
-                f"context must be an instance of "
-                f"{helper_agent.__name__}.metadata_model "
-                f"({metadata_model.__name__}), got {type(context).__name__}",
-            )
+        validate_helper_agent(helper_agent, context)
 
         request_id = uuid4()
 
