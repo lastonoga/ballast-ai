@@ -171,60 +171,6 @@ async def _parse_body_messages(
     return [m for m in messages if isinstance(m, dict)]
 
 
-async def _strip_data_parts_from_request(
-    request: Request,
-) -> list[dict[str, Any]]:
-    """Strip framework-emitted ``data-*`` parts from the request body.
-
-    Patterns like ``DivergentConvergent`` and ``brainstorm`` emit
-    custom data parts (``data-branch-completed``, etc.) via
-    ``chat_message_requested`` for the assistant-ui to render as cards.
-    Those parts get persisted to ``Message.parts`` so they survive a
-    page refresh — but assistant-ui then echoes them back on the next
-    POST, and pydantic-ai's ``VercelAIAdapter`` rejects them with a
-    ``ValidationError`` because there is no ``DataUIPart`` in its
-    canonical tagged union.
-
-    Mutates ``request._body`` (and clears the cached ``_json``) so the
-    pydantic-ai parser sees a body with all ``data-*`` parts removed
-    and any message left with zero parts dropped. Returns the
-    UN-stripped messages so DB-sync callers can still align body vs DB
-    by id (stripping would shorten the body and ``_sync_db_with_body``
-    would delete the persisted progress events as a "client dropped
-    them" event).
-    """
-    import json  # noqa: PLC0415
-
-    body = await request.json()
-    original_messages = [
-        m for m in (body.get("messages") or []) if isinstance(m, dict)
-    ]
-
-    stripped_messages: list[dict[str, Any]] = []
-    for msg in original_messages:
-        parts = msg.get("parts") or []
-        kept = [
-            p for p in parts
-            if isinstance(p, dict)
-            and not str(p.get("type", "")).startswith("data-")
-        ]
-        if not kept:
-            continue
-        stripped_messages.append({**msg, "parts": kept})
-
-    body["messages"] = stripped_messages
-    new_bytes = json.dumps(body).encode("utf-8")
-    # Starlette caches body bytes in ``_body`` and the parsed JSON in
-    # ``_json``. Overwrite both so subsequent ``request.body()`` /
-    # ``request.json()`` calls (e.g. inside VercelAIAdapter) see the
-    # stripped version.
-    request._body = new_bytes  # type: ignore[attr-defined]
-    if hasattr(request, "_json"):
-        delattr(request, "_json")
-
-    return original_messages
-
-
 def _normalize_part_for_persist(part: dict[str, Any]) -> dict[str, Any]:
     """Make sure text parts persist with ``state: "done"``.
 
@@ -410,11 +356,6 @@ async def _durable_post_message(
     from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
-    # Strip framework ``data-*`` parts so pydantic-ai's tagged union
-    # doesn't choke on them. ``original_body_messages`` retains them
-    # for the DB-sync diff below.
-    original_body_messages = await _strip_data_parts_from_request(request)
-
     adapter = await VercelAIAdapter.from_request(
         request, agent=stateflow_agent.agent, sdk_version=6,
     )
@@ -469,13 +410,11 @@ async def _durable_post_message(
             last_event_id=last_event_id,
         )
 
-    # New turn path. Use the un-stripped messages so the DB diff sees
-    # the same data-* progress events the frontend echoed back —
-    # otherwise common-prefix matching would shorten and we'd delete
-    # the persisted progress rows past the user message.
+    # New turn path.
+    body_messages = await _parse_body_messages(request)
     rows = await _sync_db_with_body(
         thread_id=thread_id,
-        body_messages=original_body_messages,
+        body_messages=body_messages,
         thread_repo=thread_repo,
         history_limit=history_limit,
     )

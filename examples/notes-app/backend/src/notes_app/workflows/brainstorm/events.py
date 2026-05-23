@@ -106,12 +106,10 @@ async def default_chat_router(
     part via :data:`chat_message_requested`; the frontend renders
     each one with a bespoke component.
 
-    The wire shape per event is the standard assistant-ui custom
-    data part::
+    The wire shape per event matches pydantic-ai's ``DataUIPart``::
 
         {"type": "data-brainstorm-saved",
-         "data": {"type": "brainstorm-saved", "title": "...", "modified": false},
-         "state": "done"}
+         "data": {"type": "brainstorm-saved", "title": "...", "modified": false}}
 
     Auto-connected at module import."""
     thread_id = progress_thread_var.get()
@@ -123,7 +121,6 @@ async def default_chat_router(
         parts=[{
             "type": f"data-{event.type}",
             "data": event.model_dump(mode="json"),
-            "state": "done",
         }],
     )
 

@@ -23,7 +23,7 @@ from uuid import UUID
 from ballast.api.streaming.router import (
     _DEFAULT_HISTORY_LIMIT,
     _durable_post_message,
-    _strip_data_parts_from_request,
+    _parse_body_messages,
     _sync_db_with_body,
     _trim_adapter_messages_to_last_user_prompt,
     extract_text,
@@ -91,12 +91,10 @@ async def stream_response(
         )
 
     # ── Non-durable path ─────────────────────────────────────────────
-    # Strip framework ``data-*`` parts from the request body before
-    # pydantic-ai sees it; keep the original messages for the DB diff.
-    original_body_messages = await _strip_data_parts_from_request(request)
+    body_messages = await _parse_body_messages(request)
     rows = await _sync_db_with_body(
         thread_id=thread_id,
-        body_messages=original_body_messages,
+        body_messages=body_messages,
         thread_repo=thread_repo,
         history_limit=history_limit,
     )

@@ -61,9 +61,9 @@ effect: one UI-visible event that animates as the workflow runs.
 
 No new wire type. The existing ``message-added`` event kind on the
 event log carries the message; the part inside it is
-``{"type": "data-<name>", "data": {...}, "state": "done"}``. The
-``state`` field follows assistant-ui's convention for completed
-message parts.
+``{"type": "data-<name>", "data": {...}}`` — matching pydantic-ai's
+``DataUIPart`` schema (``type: ^data-``, ``data: Any``) so the body
+echoes back unchanged on the next POST without validation errors.
 
 The frontend SSE handler in ``runtime-provider.tsx`` already calls
 ``setMessages`` on ``message-added`` — extended to replace by id
@@ -138,7 +138,9 @@ class ThreadEventBroadcaster:
         previous part.
 
         ``part`` is the assistant-ui message-part dict — e.g.
-        ``{"type": "data-progress", "data": {...}, "state": "done"}``.
+        ``{"type": "data-progress", "data": {...}}``. The shape matches
+        pydantic-ai's ``DataUIPart`` so the body echoes back unchanged
+        on the next POST.
         """
         msg_id = message_id or str(uuid4())
 
@@ -226,7 +228,6 @@ class ThreadEventType(Generic[DataT]):
         part = {
             "type": self.part_type,
             "data": data.model_dump(mode="json"),
-            "state": "done",
         }
         return await broadcaster.emit_raw(
             thread_id,

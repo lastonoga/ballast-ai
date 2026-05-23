@@ -229,7 +229,6 @@ async def default_chat_router(
         parts=[{
             "type": f"data-{event.type}",
             "data": event.model_dump(mode="json"),
-            "state": "done",
         }],
     )
 

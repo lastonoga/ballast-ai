@@ -70,7 +70,6 @@ async def test_emit_persistent_writes_message_and_signals() -> None:
     assert msg.parts == [{
         "type": "data-brainstorm-progress",
         "data": {"step": "diverge", "status": "ok"},
-        "state": "done",
     }]
 
     events = await event_log.read_since(thread.id, after_seq=0)
