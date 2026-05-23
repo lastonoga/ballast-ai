@@ -1,4 +1,4 @@
-"""PostgreSQL-backed ThreadRepository using SQLAlchemy AsyncSession.
+"""SQLAlchemy-backed ThreadRepository (works on Postgres, SQLite, etc.).
 
 Operates directly on the ``Thread`` / ``Message`` SQLModel classes (no
 separate Row models — ``table=True`` SQLModels ARE the persistence row
@@ -29,13 +29,14 @@ from ballast.persistence.thread.repository import ThreadClosedError
 _log = get_logger(__name__)
 
 
-class PostgresThreadRepository:
-    """SQLAlchemy/PostgreSQL implementation of ``ThreadRepository``.
+class SqlThreadRepository:
+    """SQLAlchemy implementation of ``ThreadRepository`` (backend-agnostic).
 
-    Owns its session lifecycle: each method opens a fresh session via the
-    injected ``async_sessionmaker`` and commits per-call. Signal emission
-    (``message_added``) happens after commit so subscribers never observe
-    state that was rolled back.
+    Verified against PostgreSQL and SQLite — uses only dialect-portable
+    constructs. Owns its session lifecycle: each method opens a fresh
+    session via the injected ``async_sessionmaker`` and commits per-call.
+    Signal emission (``message_added``) happens after commit so
+    subscribers never observe state that was rolled back.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -44,7 +45,7 @@ class PostgresThreadRepository:
     @traced(
         TraceName.THREAD_CREATE,
         attrs=lambda _self, *, agent, **__: {
-            "agent": agent, "backend": "postgres",
+            "agent": agent, "backend": "sql",
         },
     )
     async def create(
@@ -74,7 +75,7 @@ class PostgresThreadRepository:
         attrs=lambda _self, thread_id, *, role, **__: {
             "thread_id": str(thread_id),
             "role": role,
-            "backend": "postgres",
+            "backend": "sql",
         },
     )
     async def add_message(
@@ -112,7 +113,7 @@ class PostgresThreadRepository:
             await session.flush()
             await session.refresh(msg)
             _log.debug(
-                "PostgresThreadRepository.add_message: thread=%s id=%s role=%s "
+                "SqlThreadRepository.add_message: thread=%s id=%s role=%s "
                 "parts=%d",
                 thread_id, msg.id, role, len(msg.parts),
             )
@@ -177,7 +178,7 @@ class PostgresThreadRepository:
         attrs=lambda _self, thread_id, *, limit=1000, **__: {
             "thread_id": str(thread_id),
             "limit": limit,
-            "backend": "postgres",
+            "backend": "sql",
         },
     )
     async def history(

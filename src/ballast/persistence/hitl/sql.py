@@ -16,7 +16,7 @@ from ballast.persistence.hitl.domain import (
 )
 
 
-class PostgresHITLRepository:
+class SqlHITLRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 

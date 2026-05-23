@@ -11,7 +11,7 @@ from sqlmodel import col
 from ballast.persistence.outbox.domain import OutboxEvent
 
 
-class PostgresOutboxRepository:
+class SqlOutboxRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
 

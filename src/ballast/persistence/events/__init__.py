@@ -12,12 +12,12 @@ from ballast.persistence.events.domain import ThreadEvent
 from ballast.persistence.events.repository import (
     EventLogRepository,
     InMemoryEventLogRepository,
-    PostgresEventLogRepository,
+    SqlEventLogRepository,
 )
 
 __all__ = [
     "EventLogRepository",
     "InMemoryEventLogRepository",
-    "PostgresEventLogRepository",
+    "SqlEventLogRepository",
     "ThreadEvent",
 ]

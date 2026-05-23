@@ -96,12 +96,11 @@ class InMemoryEventLogRepository:
         return bucket[-1].seq if bucket else 0
 
 
-class PostgresEventLogRepository:
+class SqlEventLogRepository:
     """SQLAlchemy-backed event log. Works on Postgres AND SQLite.
 
-    Naming follows the framework's other ``Postgres*Repository`` classes
-    for consistency, but only uses dialect-portable types (``JSON``
-    variant on sqlite, ``JSONB`` on postgres — see ``domain.py``).
+    Uses only dialect-portable types (``JSON`` variant on sqlite,
+    ``JSONB`` on postgres — see ``domain.py``).
 
     Owns its session lifecycle: each method opens a session via the
     injected ``async_sessionmaker``. ``append`` derives the next ``seq``

@@ -1,4 +1,7 @@
-"""Integration tests for PostgresThreadRepository against a real Postgres DB."""
+"""Integration tests for SqlThreadRepository against a real Postgres DB."""
+# Note: fixtures provide a Postgres session_factory; SqlThreadRepository
+# itself is backend-agnostic and is also exercised on sqlite via the
+# notes-app integration tests.
 
 from __future__ import annotations
 
@@ -8,7 +11,7 @@ import pytest
 
 from ballast.persistence.thread import (
     Message,
-    PostgresThreadRepository,
+    SqlThreadRepository,
 )
 
 if TYPE_CHECKING:
@@ -22,7 +25,7 @@ async def test_create_and_load_thread(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Create a thread, then reload it (commit-per-method owned by repo)."""
-    repo = PostgresThreadRepository(session_factory)
+    repo = SqlThreadRepository(session_factory)
     thread = await repo.create(agent="conversation", metadata={"source": "test"})
 
     loaded = await repo.load(thread.id)
@@ -37,7 +40,7 @@ async def test_add_message_and_history(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Add two messages and verify history returns them oldest-first."""
-    repo = PostgresThreadRepository(session_factory)
+    repo = SqlThreadRepository(session_factory)
     thread = await repo.create(agent="conversation", metadata={})
 
     await repo.add_message(
@@ -68,7 +71,7 @@ async def test_add_message_emits_message_added_signal(
     """``add_message`` self-emits ``message_added`` after commit."""
     from ballast.events import message_added  # noqa: PLC0415
 
-    repo = PostgresThreadRepository(session_factory)
+    repo = SqlThreadRepository(session_factory)
     thread = await repo.create(agent="conversation", metadata={})
 
     received: list[tuple[UUID, Message]] = []
@@ -98,7 +101,7 @@ async def test_add_message_silent_skips_signal(
     """``silent=True`` skips the post-commit signal but still persists."""
     from ballast.events import message_added  # noqa: PLC0415
 
-    repo = PostgresThreadRepository(session_factory)
+    repo = SqlThreadRepository(session_factory)
     thread = await repo.create(agent="conversation", metadata={})
 
     received: list[object] = []

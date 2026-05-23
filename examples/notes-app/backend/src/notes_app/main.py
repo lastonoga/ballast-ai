@@ -33,8 +33,8 @@ from fastapi import FastAPI
 from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
-    PostgresEventLogRepository,
-    PostgresThreadRepository,
+    SqlEventLogRepository,
+    SqlThreadRepository,
 )
 from ballast.providers import (
     DBOSProvider,
@@ -108,8 +108,8 @@ if _should_use_sql():
     _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
 
     notes_repo = SqlNoteRepository(_sessionmaker)
-    thread_repo = PostgresThreadRepository(_sessionmaker)
-    event_log = PostgresEventLogRepository(_sessionmaker)
+    thread_repo = SqlThreadRepository(_sessionmaker)
+    event_log = SqlEventLogRepository(_sessionmaker)
 
     # Rebind singletons so the lazy-import sites in agents/workflows pick
     # up the SQL impl too.

@@ -3,17 +3,17 @@ from ballast.persistence.thread.domain import (
     Thread,
     ThreadStatus,
 )
-from ballast.persistence.thread.postgres import PostgresThreadRepository
 from ballast.persistence.thread.repository import (
     InMemoryThreadRepository,
     ThreadClosedError,
     ThreadRepository,
 )
+from ballast.persistence.thread.sql import SqlThreadRepository
 
 __all__ = [
     "InMemoryThreadRepository",
     "Message",
-    "PostgresThreadRepository",
+    "SqlThreadRepository",
     "Thread",
     "ThreadClosedError",
     "ThreadRepository",

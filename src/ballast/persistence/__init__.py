@@ -1,22 +1,22 @@
 from ballast.persistence.events import (
     EventLogRepository,
     InMemoryEventLogRepository,
-    PostgresEventLogRepository,
+    SqlEventLogRepository,
     ThreadEvent,
 )
 from ballast.persistence.hitl import (
     HITLRepository,
     InMemoryHITLRepository,
-    PostgresHITLRepository,
+    SqlHITLRepository,
 )
 from ballast.persistence.outbox import (
     InMemoryOutboxRepository,
     OutboxRepository,
-    PostgresOutboxRepository,
+    SqlOutboxRepository,
 )
 from ballast.persistence.thread import (
     InMemoryThreadRepository,
-    PostgresThreadRepository,
+    SqlThreadRepository,
     ThreadRepository,
 )
 
@@ -28,10 +28,10 @@ __all__ = [
     "InMemoryOutboxRepository",
     "InMemoryThreadRepository",
     "OutboxRepository",
-    "PostgresEventLogRepository",
-    "PostgresHITLRepository",
-    "PostgresOutboxRepository",
-    "PostgresThreadRepository",
+    "SqlEventLogRepository",
+    "SqlHITLRepository",
+    "SqlOutboxRepository",
+    "SqlThreadRepository",
     "ThreadEvent",
     "ThreadRepository",
 ]

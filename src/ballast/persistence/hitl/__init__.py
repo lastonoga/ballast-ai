@@ -6,11 +6,11 @@ from ballast.persistence.hitl.domain import (
     DecisionVerdict,
     HITLPurpose,
 )
-from ballast.persistence.hitl.postgres import PostgresHITLRepository
 from ballast.persistence.hitl.repository import (
     HITLRepository,
     InMemoryHITLRepository,
 )
+from ballast.persistence.hitl.sql import SqlHITLRepository
 
 __all__ = [
     "AuthzDenial",
@@ -21,5 +21,5 @@ __all__ = [
     "HITLPurpose",
     "HITLRepository",
     "InMemoryHITLRepository",
-    "PostgresHITLRepository",
+    "SqlHITLRepository",
 ]

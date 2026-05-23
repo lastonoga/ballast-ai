@@ -115,7 +115,7 @@ class InMemoryNoteRepository:
 class SqlNoteRepository:
     """SQLAlchemy-backed note store — sqlite + postgres compatible.
 
-    Commit-per-method, mirroring ``PostgresThreadRepository``: each
+    Commit-per-method, mirroring ``SqlThreadRepository``: each
     mutating call opens a fresh session via the injected
     ``async_sessionmaker`` and commits on clean exit. Reads use a plain
     session (no transaction needed).
