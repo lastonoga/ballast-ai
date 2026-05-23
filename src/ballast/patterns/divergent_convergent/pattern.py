@@ -206,9 +206,23 @@ class DivergentConvergent(
         self._per_branch_failure = per_branch_failure
 
         # Module-level constraint: ``Queue`` must be visible to DBOS
-        # before ``DBOS.launch()``. The app is expected to construct
-        # this instance during build_app() — same lifecycle as the
-        # other queues in the codebase (AGENT_RUN_QUEUE etc).
+        # before ``DBOS.launch()``. DBOS only emits a quiet warning if
+        # a configured instance is registered post-launch and Queue
+        # has no built-in check at all — make the failure loud so the
+        # invariant is enforced at construction, not at the first
+        # silent workflow stall. Tests construct patterns per-fixture
+        # AFTER ``DBOS.launch()`` so the check is skipped under pytest
+        # (matches the auto-migrate hook's pytest carve-out).
+        import sys  # noqa: PLC0415
+
+        if Durable.is_launched() and "pytest" not in sys.modules:
+            raise RuntimeError(
+                f"DivergentConvergent({resolved_name!r}) constructed "
+                "after DBOS.launch(). The pattern's worker queue must "
+                "be registered before launch — construct the instance "
+                "at module / build_app() scope, alongside the other "
+                "queues (AGENT_RUN_QUEUE etc.).",
+            )
         self._divergent_queue = Queue(
             name=f"{resolved_name}-divergent",
             concurrency=divergent_concurrency,

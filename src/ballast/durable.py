@@ -164,6 +164,22 @@ class Durable:
         return decorator
 
     @staticmethod
+    def is_launched() -> bool:
+        """Return whether ``DBOS.launch()`` has been called in this process.
+
+        Used by patterns that allocate DBOS resources at construction
+        time (e.g. ``Queue``) to fail loud if instantiated post-launch
+        — DBOS's own ``DBOSConfiguredInstance`` only warns in that
+        case, and Queue has no built-in check at all.
+        """
+        from dbos._dbos import _dbos_global_registry  # noqa: PLC0415
+
+        registry = _dbos_global_registry
+        if registry is None or registry.dbos is None:
+            return False
+        return bool(registry.dbos._launched)
+
+    @staticmethod
     def dbos_class(**dbos_kwargs: Any) -> Callable[[type], type]:
         """Pass-through to ``@DBOS.dbos_class()``.
 
