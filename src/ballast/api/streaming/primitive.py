@@ -179,21 +179,73 @@ async def _parse_body_messages(
     return [m for m in messages if isinstance(m, dict)]
 
 
-def _normalize_part_for_persist(part: dict[str, Any]) -> dict[str, Any]:
-    """Make sure text parts persist with ``state: "done"``.
+async def _normalise_request_body_for_pydantic_ai(
+    request: Request,
+) -> None:
+    """Rewrite ``request._body`` so pydantic-ai's ``DataUIPart`` validator
+    accepts ``data-*`` parts that legacy DB rows still carry an extra
+    ``state`` field on.
 
-    assistant-ui's ``MessagePartText`` discriminator on the live useChat
-    stream looks at ``state`` to pick the right rendering branch. The
-    in-flight body sends text parts without ``state`` (useChat fills it
-    in client-side after the stream finishes), but by the time the body
-    hits us the user has CONFIRMED the message — it's semantically
-    done. Without this normalization the persisted user rows reload as
-    invisible (the discriminator picks the wrong branch and
-    ``MessagePartText`` throws "can only be used inside text or
-    reasoning message parts").
+    pydantic-ai's ``CamelBaseModel`` is ``extra='forbid'`` and
+    ``DataUIPart`` only allows ``{type, id, data}`` — so a ``data-*``
+    part with ``state: "done"`` (the framework's old emit shape, fixed
+    at the source in commit 6cb3326) breaks ``VercelAIAdapter
+    .from_request``. New messages are emitted clean, but threads that
+    pre-date the fix replay their bad parts on every POST.
+
+    This normaliser ONLY strips the offending ``state`` field — it
+    does NOT delete parts or messages, so the body-vs-DB diff sees
+    the same shape and length it would have anyway. Run it BEFORE
+    ``VercelAIAdapter.from_request``.
+    """
+    import json  # noqa: PLC0415
+
+    body = await request.json()
+    mutated = False
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        for part in msg.get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            if (
+                str(part.get("type", "")).startswith("data-")
+                and "state" in part
+            ):
+                part.pop("state", None)
+                mutated = True
+    if not mutated:
+        return
+
+    # Starlette caches body bytes in ``_body`` and the parsed JSON in
+    # ``_json``. Overwrite both so VercelAIAdapter.from_request sees
+    # the cleaned version.
+    request._body = json.dumps(body).encode("utf-8")  # type: ignore[attr-defined]
+    if hasattr(request, "_json"):
+        delattr(request, "_json")
+
+
+def _normalize_part_for_persist(part: dict[str, Any]) -> dict[str, Any]:
+    """Massage a body-sourced part before writing it to ``Message.parts``.
+
+    Two rules:
+
+    - ``type == "text"`` and no ``state`` → add ``state: "done"``.
+      assistant-ui's ``MessagePartText`` discriminator looks at
+      ``state``; the live useChat stream omits it client-side until
+      the stream finishes, but by the time the body hits us the user
+      has CONFIRMED the message — semantically done. Without this,
+      persisted user rows reload as invisible.
+    - ``type`` starts with ``data-`` and a ``state`` key is present →
+      strip it. The framework's old emit shape included ``state:
+      "done"`` on data parts, but pydantic-ai's ``DataUIPart`` only
+      allows ``{type, id, data}``. Re-persisting legacy rows without
+      the extra field eventually cleanses the DB.
     """
     if part.get("type") == "text" and "state" not in part:
         return {**part, "state": "done"}
+    if str(part.get("type", "")).startswith("data-") and "state" in part:
+        return {k: v for k, v in part.items() if k != "state"}
     return part
 
 
@@ -415,6 +467,7 @@ async def _durable_post_message(
     from pydantic_ai.messages import ModelMessagesTypeAdapter  # noqa: PLC0415
     from pydantic_ai.ui.vercel_ai import VercelAIAdapter  # noqa: PLC0415
 
+    await _normalise_request_body_for_pydantic_ai(request)
     adapter = await VercelAIAdapter.from_request(
         request, agent=stateflow_agent.agent, sdk_version=6,
     )
@@ -577,6 +630,7 @@ async def stream_response(
     pydantic_agent = agent.agent
     model_settings = agent.model_settings()
 
+    await _normalise_request_body_for_pydantic_ai(request)
     adapter = await VercelAIAdapter.from_request(
         request, agent=pydantic_agent, sdk_version=6,
     )
