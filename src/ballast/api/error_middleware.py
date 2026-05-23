@@ -90,13 +90,24 @@ async def stateflow_error_handler(request: Request, exc: BallastError) -> JSONRe
 
 
 class BallastErrorMiddleware(BaseHTTPMiddleware):
-    """Catches BallastError that escapes streaming / background paths."""
+    """Catches BallastError that escapes streaming / background paths.
+
+    Also logs unexpected (non-Ballast) exceptions with full traceback before
+    re-raising — otherwise FastAPI's default 500 handler swallows them
+    silently and there is no way to tell what blew up.
+    """
 
     async def dispatch(self, request, call_next):
         try:
             return await call_next(request)
         except BallastError as exc:
             return await stateflow_error_handler(request, exc)
+        except Exception:
+            _logger.exception(
+                "Unhandled exception during %s %s",
+                request.method, request.url.path,
+            )
+            raise
 
 
 def install_error_handlers(app: FastAPI) -> None:
