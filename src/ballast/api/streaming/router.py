@@ -268,38 +268,49 @@ def _build_sse_response(
     async def _gen() -> "AsyncIterator[bytes]":
         import asyncio  # noqa: PLC0415
 
-        for chunk in encoder.initial_events(thread_id=thread_id):
-            yield chunk
+        try:
+            for chunk in encoder.initial_events(thread_id=thread_id):
+                yield chunk
 
-        last_seq = last_event_id
-        poll_interval_s = 0.05
-        idle_iterations = 0
-        max_idle_iterations = int(30.0 / poll_interval_s)
+            last_seq = last_event_id
+            poll_interval_s = 0.05
+            idle_iterations = 0
+            max_idle_iterations = int(30.0 / poll_interval_s)
 
-        while True:
-            events = await event_log.read_since(thread_id, after_seq=last_seq)
-            if events:
-                idle_iterations = 0
-                for ev in events:
-                    for chunk in encoder.encode_event(ev):
-                        yield chunk
-                    last_seq = ev.seq
-                    if ev.kind in {"done", "cancelled"}:
+            while True:
+                events = await event_log.read_since(
+                    thread_id, after_seq=last_seq,
+                )
+                if events:
+                    idle_iterations = 0
+                    for ev in events:
+                        for chunk in encoder.encode_event(ev):
+                            yield chunk
+                        last_seq = ev.seq
+                        if ev.kind in {"done", "cancelled"}:
+                            for chunk in encoder.finalize():
+                                yield chunk
+                            return
+                else:
+                    idle_iterations += 1
+                    if idle_iterations >= max_idle_iterations:
+                        _log.warning(
+                            "Durable stream idle for ~30s on thread %s "
+                            "(last_seq=%d) — closing",
+                            thread_id, last_seq,
+                        )
                         for chunk in encoder.finalize():
                             yield chunk
                         return
-            else:
-                idle_iterations += 1
-                if idle_iterations >= max_idle_iterations:
-                    _log.warning(
-                        "Durable stream idle for ~30s on thread %s "
-                        "(last_seq=%d) — closing",
-                        thread_id, last_seq,
-                    )
-                    for chunk in encoder.finalize():
-                        yield chunk
-                    return
-            await asyncio.sleep(poll_interval_s)
+                await asyncio.sleep(poll_interval_s)
+        except Exception:
+            # BaseHTTPMiddleware can't see exceptions raised inside a
+            # StreamingResponse body — log here so failures don't vanish
+            # into an empty SSE stream.
+            _log.exception(
+                "Durable SSE stream failed on thread %s", thread_id,
+            )
+            raise
 
     _ = event_stream  # reserved for future live-signal optimization
     return StreamingResponse(_gen(), media_type=encoder.content_type())
@@ -430,10 +441,15 @@ async def _durable_post_message(
             prompt=prompt_text,
             history_dump=history_dump,
         )
-    except Exception as exc:  # pragma: no cover — DBOS errors wholesale
-        _log.info(
-            "enqueue_run returned %s for user_msg=%s — "
-            "assuming attach-to-existing", type(exc).__name__, user_msg.id,
+    except Exception:
+        # DBOS raises when a workflow_id already exists (idempotent
+        # re-POST → attach to the running workflow). That's expected.
+        # Everything else gets logged with traceback so real bugs (DB
+        # schema, serialization, etc.) don't vanish behind this catch.
+        _log.warning(
+            "enqueue_run raised for user_msg=%s — assuming "
+            "attach-to-existing; traceback below",
+            user_msg.id, exc_info=True,
         )
 
     return _build_sse_response(
