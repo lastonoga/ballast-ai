@@ -1,19 +1,20 @@
 """Default ``Signal`` handlers connected by :meth:`Ballast.with_events`.
 
-These three handlers wire the framework's "messages go through signals"
+These handlers wire the framework's "messages go through signals"
 contract — they take a signal payload, write the durable side-effect
-(persist a row, append an event-log entry, publish an event_stream
-notification), and return. Apps can disconnect any of them and replace
-with a custom receiver if they want different routing.
+(append an event-log entry, publish an event_stream notification), and
+return. Apps can disconnect any of them and replace with a custom
+receiver if they want different routing.
 
-  - ``_default_chat_message_requested`` — turns a ``chat_message_requested``
-    payload into a ``thread_repo.add_message`` (or ``upsert_message`` if
-    ``message_id`` is supplied). The repo itself fires ``message_added``.
   - ``_default_message_added`` — turns ``message_added`` into a
     ``message-added`` event-log row + ``event_stream.publish`` wake-up.
   - ``_default_helper_thread_created`` — emits a ``thread-created``
     event into the parent thread when a HITL helper opens a side
     conversation.
+
+Pattern progress (``data-*`` UI cards) bypasses signals entirely and
+writes via :class:`ThreadEventBroadcaster` directly — see the
+pattern's own ``default_chat_router`` for the call site.
 """
 from __future__ import annotations
 
@@ -25,50 +26,6 @@ from ballast.runtime.event_stream import EventNotification, thread_channel
 
 if TYPE_CHECKING:
     from ballast.persistence.thread.domain import Message
-
-
-async def _default_chat_message_requested(
-    sender: Any,  # noqa: ARG001
-    *,
-    thread_id: UUID,
-    text: str | None = None,
-    parts: list[dict[str, Any]] | None = None,
-    message_id: str | None = None,
-    **_: Any,
-) -> None:
-    """Default handler for :data:`ballast.events.chat_message_requested`.
-
-    ``parts`` (when supplied) takes precedence over ``text``; otherwise
-    falls back to one trivial ``{type:text, text, state:done}`` part.
-
-    Routing:
-
-    * ``message_id is None`` (default) → ``thread_repo.add_message`` —
-      always a fresh row.
-    * ``message_id is set`` → ``thread_repo.upsert_message(id=...)`` —
-      replaces parts in place. Callers reuse the same id across
-      successive emits to get one mutating chat row instead of N
-      stacked messages (e.g. a branch spinner that flips to a check).
-
-    NOT wrapped in ``@Durable.step`` — ``ThreadRepository.add_message``
-    /``upsert_message`` fire their own ``message_added`` whose default
-    handler IS a step, which is where the durability boundary actually
-    matters. Nesting steps here would just add noise to the workflow log.
-    """
-    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
-
-    final_parts = parts or [
-        {"type": "text", "text": text or "", "state": "done"},
-    ]
-    repo = get_ballast().thread_repo
-    if message_id is None:
-        await repo.add_message(
-            thread_id, role="assistant", parts=final_parts,
-        )
-    else:
-        await repo.upsert_message(
-            thread_id, id=message_id, role="assistant", parts=final_parts,
-        )
 
 
 @Durable.step()
@@ -143,7 +100,7 @@ async def _default_helper_thread_created(
 
 
 def connect_default_handlers() -> None:
-    """Idempotently connect the three default signal handlers.
+    """Idempotently connect the framework's default signal handlers.
 
     Called once from :meth:`Ballast.with_events` so the framework's
     out-of-the-box behaviour is in place. ``Signal.connect`` is
@@ -151,18 +108,15 @@ def connect_default_handlers() -> None:
     double-fire.
     """
     from ballast.events import (  # noqa: PLC0415
-        chat_message_requested,
         helper_thread_created,
         message_added,
     )
 
-    chat_message_requested.connect(_default_chat_message_requested)
     message_added.connect(_default_message_added)
     helper_thread_created.connect(_default_helper_thread_created)
 
 
 __all__ = [
-    "_default_chat_message_requested",
     "_default_helper_thread_created",
     "_default_message_added",
     "connect_default_handlers",

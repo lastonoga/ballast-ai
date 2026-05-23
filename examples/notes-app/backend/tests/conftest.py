@@ -12,11 +12,7 @@ import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
 from ballast.durable import Durable
-from ballast.events import (
-    chat_message_requested,
-    helper_thread_created,
-    message_added,
-)
+from ballast.events import helper_thread_created, message_added
 from ballast.patterns.divergent_convergent.events import (
     divergent_convergent_progress,
 )
@@ -31,16 +27,15 @@ def _isolate_signals() -> Iterator[None]:
     """Snapshot + restore framework signal receivers around each test.
 
     Without this, tests that boot the full Ballast app (which connects
-    framework defaults via ``EventsProvider``) leak receivers into the
-    next test's signal list — leading to duplicate ``message-added`` fires
-    or stale closures pointing at torn-down engines.
+    framework defaults via ``Ballast.with_events``) leak receivers into
+    the next test's signal list — leading to duplicate ``message-added``
+    fires or stale closures pointing at torn-down engines.
     """
     snapshots = {
         s: list(s._receivers)
         for s in (
             message_added,
             helper_thread_created,
-            chat_message_requested,
             divergent_convergent_progress,
             brainstorm_progress,
         )

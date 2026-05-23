@@ -61,11 +61,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from ballast.events import (
-    Signal,
-    chat_message_requested,
-    progress_thread_var,
-)
+from ballast.events import Signal, progress_thread_var
 
 
 class BranchEnqueued(BaseModel):
@@ -186,7 +182,7 @@ def _stable_message_id(event: DivergentEvent) -> str | None:
 
 
 async def default_chat_router(
-    sender: Any,
+    sender: Any,  # noqa: ARG001
     *,
     event: DivergentEvent,
     **_: Any,
@@ -195,15 +191,16 @@ async def default_chat_router(
 
     Reads :data:`progress_thread_var` from the active context — if the
     app didn't open a ``progress_to_thread(...)`` scope it's a no-op.
-    Otherwise publishes a typed ``data-<event-type>`` part via
-    :data:`chat_message_requested`; the frontend renders each one
-    with a bespoke component.
+    Otherwise writes a ``data-<event-type>`` part to the destination
+    thread via the engine's :class:`ThreadEventBroadcaster`. That call
+    persists the part, appends a ``message-added`` row to the event
+    log, and publishes an ``EventNotification`` — all in one trip.
 
     Successive events for the SAME logical row (branch, dedup,
     converge) share a stable ``message_id`` (see
-    :func:`_stable_message_id`), so the default chat handler upserts
-    in place — a "branch enqueued" spinner morphs into a "branch
-    completed" check on the same chat line instead of stacking up.
+    :func:`_stable_message_id`), so the broadcaster upserts in place —
+    a "branch enqueued" spinner morphs into a "branch completed"
+    check on the same chat line instead of stacking up.
 
     ``VerifyCompleted`` is absorbed — it doesn't add UX value beyond
     what the surrounding workflow's own narration already says. The
@@ -211,25 +208,27 @@ async def default_chat_router(
     see it.
 
     Auto-connected at module import. Apps that want to replace its
-    behaviour entirely should:
+    behaviour entirely should::
 
         divergent_convergent_progress.disconnect(default_chat_router)
         @receiver(divergent_convergent_progress)
         async def my_router(sender, *, event, **_): ...
     """
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+
     thread_id = progress_thread_var.get()
     if thread_id is None:
         return
     if not isinstance(event, _CHAT_RENDERED_EVENTS):
         return
-    await chat_message_requested.send(
-        sender=sender,
-        thread_id=thread_id,
-        message_id=_stable_message_id(event),
-        parts=[{
+    await get_ballast().broadcaster.emit_raw(
+        thread_id,
+        part={
             "type": f"data-{event.type}",
             "data": event.model_dump(mode="json"),
-        }],
+        },
+        message_id=_stable_message_id(event),
+        persistent=True,
     )
 
 

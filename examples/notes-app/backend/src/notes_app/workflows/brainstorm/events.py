@@ -37,11 +37,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from ballast.events import (
-    Signal,
-    chat_message_requested,
-    progress_thread_var,
-)
+from ballast.events import Signal, progress_thread_var
 
 
 class BrainstormChose(BaseModel):
@@ -93,7 +89,7 @@ their own freely or replace the default."""
 
 
 async def default_chat_router(
-    sender: Any,
+    sender: Any,  # noqa: ARG001
     *,
     event: BrainstormEvent,
     **_: Any,
@@ -102,9 +98,10 @@ async def default_chat_router(
 
     Reads :data:`progress_thread_var` from the active context — if
     the workflow body didn't open a ``progress_to_thread(...)`` scope
-    this is a no-op. Otherwise publishes a typed ``data-<event-type>``
-    part via :data:`chat_message_requested`; the frontend renders
-    each one with a bespoke component.
+    this is a no-op. Otherwise writes a ``data-<event-type>`` part
+    into the destination thread via the engine's
+    :class:`ThreadEventBroadcaster` (one round-trip: persist + event
+    log + publish).
 
     The wire shape per event matches pydantic-ai's ``DataUIPart``::
 
@@ -112,16 +109,18 @@ async def default_chat_router(
          "data": {"type": "brainstorm-saved", "title": "...", "modified": false}}
 
     Auto-connected at module import."""
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+
     thread_id = progress_thread_var.get()
     if thread_id is None:
         return
-    await chat_message_requested.send(
-        sender=sender,
-        thread_id=thread_id,
-        parts=[{
+    await get_ballast().broadcaster.emit_raw(
+        thread_id,
+        part={
             "type": f"data-{event.type}",
             "data": event.model_dump(mode="json"),
-        }],
+        },
+        persistent=True,
     )
 
 

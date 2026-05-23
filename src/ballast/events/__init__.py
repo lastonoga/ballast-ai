@@ -22,9 +22,18 @@ Payload contracts
     thread's UI should learn about. ``sender`` is the HITL workflow
     module / instance that opened the thread.
 
-Default handlers (in :class:`ballast.providers.events.EventsProvider`)
-turn each signal into the durable log append + event-stream publish
-that callers used to write inline.
+Default handlers (in :mod:`ballast.events._default_handlers`,
+connected by :meth:`Ballast.with_events`) turn each signal into the
+durable log append + event-stream publish that callers used to write
+inline.
+
+Pattern progress (``data-*`` UI cards rendered live as workflows run)
+no longer goes through a signal — patterns call the engine's
+:class:`ThreadEventBroadcaster` directly. That removes three hops of
+indirection (no more ``chat_message_requested`` → ``add_message`` →
+``message_added`` chain for the pattern-progress path) and keeps the
+``message_added`` signal narrowly scoped to actual chat-turn writes
+(user messages, assistant turns, HITL openings).
 """
 
 from __future__ import annotations
@@ -45,45 +54,9 @@ helper_thread_created: Signal = Signal("helper_thread_created")
 Payload: ``sender=workflow, *, parent_thread_id: UUID,
 helper_thread_id: UUID, helper_agent_name: str, helper_metadata: dict``."""
 
-chat_message_requested: Signal = Signal("chat_message_requested")
-"""Request to append (or update) an assistant chat message on a thread.
-
-Payload: ``sender=anything, *, thread_id: UUID, text: str | None = None,
-parts: list[dict] | None = None, message_id: str | None = None``.
-
-The default handler (connected by :class:`EventsProvider` at app
-startup) routes through the thread repo:
-
-* ``message_id is None`` → ``add_message`` (always a fresh row;
-  default for one-shot narration).
-* ``message_id is not None`` → ``upsert_message(id=message_id, ...)`` —
-  the row's parts are REPLACED in place. Reuse the same id across
-  successive emits to get a single mutating chat row (e.g. a
-  "branch enqueued" spinner that transitions to a "branch
-  completed" check on the same line instead of stacking up).
-
-Either way the repo self-emits :data:`message_added` afterwards, so
-the event log + SSE chain fires once per call regardless of whether
-this was an insert or an update.
-
-When ``parts`` is supplied it OVERRIDES the trivial ``[{type:text,
-text, state:done}]`` construction so callers can post typed data
-parts (``[{type: "data-foo", data: {...}, state: "done"}]``) for
-custom UI rendering.
-
-Existing as a signal (not just a function call) so:
-
-  - All "append a message" intents flow through ONE pluggable
-    primitive (apps can intercept for audit, filtering, rewriting).
-  - The handler is connected at module-load time on the framework
-    side, so it fires reliably from any execution context
-    (durable-workflow body, queue worker, HTTP handler, …) without
-    each caller having to register its own closure."""
-
 
 __all__ = [
     "Signal",
-    "chat_message_requested",
     "helper_thread_created",
     "message_added",
     "progress_thread_var",

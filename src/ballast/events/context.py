@@ -1,16 +1,17 @@
 """Context-manager API for pattern-progress routing without arg threading.
 
 Patterns emit typed events on their own signals (see e.g.
-:data:`ballast.patterns.divergent_convergent.events.divergent_convergent_progress`)
-and also publish a human-readable narration via
-:data:`ballast.events.chat_message_requested` when a destination is
-configured. Apps pick the destination by wrapping the call site in a
+:data:`ballast.patterns.divergent_convergent.events.divergent_convergent_progress`).
+The signal's bundled default handler reads :data:`progress_thread_var`
+and writes a ``data-<event-type>`` card to that thread via the engine's
+:class:`ThreadEventBroadcaster` (one round-trip: persist + event log +
+publish). Apps pick the destination by wrapping the call site in a
 context manager:
 
     with progress_to_thread(thread_id=parent_thread_id):
         chosen = await _divergent.run(topic)
 
-The pattern body reads :data:`progress_thread_var` to discover the
+The default handler reads :data:`progress_thread_var` to discover the
 active destination — no kwarg threading through every pattern method,
 no closure connected to a Signal inside the workflow body.
 
@@ -54,11 +55,11 @@ progress_thread_var: ContextVar["UUID | None"] = ContextVar(
 )
 """Active destination for pattern progress narration.
 
-When set (via :func:`progress_to_thread`), patterns post one
-``chat_message_requested`` per observable boundary into this thread.
-When ``None``, patterns still fire their typed signals so observers
-listening on those see the events, but no chat narration is
-emitted."""
+When set (via :func:`progress_to_thread`), the bundled default
+handlers post one ``data-<event-type>`` part per observable boundary
+into this thread via :class:`ThreadEventBroadcaster`. When ``None``,
+patterns still fire their typed signals so observers listening on
+those see the events, but no chat narration is emitted."""
 
 
 @contextmanager

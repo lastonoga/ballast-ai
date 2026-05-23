@@ -115,12 +115,11 @@ class Ballast:
         """Install the event-log repository + in-process event stream and
         connect the framework's default signal handlers.
 
-        The defaults turn ``chat_message_requested`` /
-        ``message_added`` / ``helper_thread_created`` payloads into the
-        right combination of ``thread_repo.add_message`` +
-        ``event_log.append`` + ``event_stream.publish`` calls. Apps that
-        want different routing call ``Signal.disconnect`` on the
-        relevant default and connect their own.
+        The defaults turn ``message_added`` / ``helper_thread_created``
+        signal payloads into ``event_log.append`` +
+        ``event_stream.publish`` calls. Apps that want different
+        routing call ``Signal.disconnect`` on the relevant default and
+        connect their own.
         """
         from ballast.events._default_handlers import (  # noqa: PLC0415
             connect_default_handlers,
