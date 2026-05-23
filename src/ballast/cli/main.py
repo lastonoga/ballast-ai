@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import typer
 
-from ballast.cli.commands import dev, events, migrate, workflows
+from ballast.cli.commands import db, dev, events, migrate, workflows
 
 cli = typer.Typer(
     name="ballast",
@@ -12,6 +12,7 @@ cli = typer.Typer(
 )
 cli.command(name="dev")(dev.dev)
 cli.add_typer(migrate.app, name="migrate")
+cli.add_typer(db.app, name="db")
 cli.add_typer(workflows.app, name="workflows")
 cli.add_typer(events.app, name="events")
 
