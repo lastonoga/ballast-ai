@@ -49,6 +49,7 @@ from ballast.capabilities import (
 )
 from ballast.grounded import Ref, Selector
 from ballast.persistence.thread.domain import Thread
+from ballast.durable import Durable
 from ballast.runtime import DurableAgent
 
 from notes_app.agents.openrouter import (
@@ -64,11 +65,14 @@ DEFAULT_TEMPERATURE = 0.7
 SYSTEM_PROMPT = (
     "You are the assistant inside a personal notes app. "
     "You have tools to create, list, search, edit, and delete notes on "
-    "the user's behalf. "
+    "the user's behalf, plus ``brainstorm_note`` for exploring ideas "
+    "across multiple voices before saving. "
     "When the user asks you to create / find / change / remove a note, "
     "USE THE TOOLS to actually do it — do not just describe what you "
-    "would do. After running the tools, briefly confirm what happened "
-    "(e.g. 'Saved your note titled \"X\"'). "
+    "would do. Pick ``brainstorm_note`` when they want ideas, drafts, "
+    "or exploration on a topic; pick ``create_note`` when they hand you "
+    "a concrete note to save. After running the tools, briefly confirm "
+    "what happened (e.g. 'Saved your note titled \"X\"'). "
     "If the user is chatting and not asking for a note action, just "
     "reply conversationally."
 )
@@ -308,6 +312,55 @@ async def propose_todo(
         "I opened a confirmation thread to review this todo. "
         "Once you approve (or modify / reject) it there, I'll save "
         "it on this thread."
+    )
+
+
+@NotesAgent.tool
+async def brainstorm_note(
+    ctx: RunContext[NoteToolDeps], topic: str,
+) -> str:
+    """Brainstorm a note about a topic across multiple LLM voices, then
+    ask the user which idea to keep.
+
+    Fire-and-forget + durable: this tool returns IMMEDIATELY with a
+    short acknowledgement. The brainstorm workflow runs in the
+    background and emits typed progress events
+    (``BrainstormChose`` / ``BrainstormSaved`` / ``BrainstormCancelled``
+    / ``BrainstormTimedOut``) plus the underlying
+    ``DivergentConvergent`` pattern's per-branch events — the chat
+    renders all of those as cards live as they happen, including the
+    approval prompt for the chosen idea.
+
+    Use this when the user wants ideas or a draft on a topic
+    (e.g. "brainstorm a todo about onboarding", "give me some ideas
+    for tomorrow's standup"). For a single concrete note with no
+    exploration, use ``create_note`` instead.
+
+    Same ``(parent_thread, topic)`` collapses to one in-flight
+    workflow — duplicate calls reattach instead of double-running.
+    """
+    from dbos import SetWorkflowID  # noqa: PLC0415
+
+    from notes_app.models.brainstorm import BrainstormTask  # noqa: PLC0415
+    from notes_app.workflows.brainstorm import (  # noqa: PLC0415
+        brainstorm, workflow_id,
+    )
+
+    if ctx.deps.parent_thread_id is None:
+        raise RuntimeError(
+            "brainstorm_note requires parent_thread_id on NoteToolDeps "
+            "— was NotesAgent.build_deps run without a thread?",
+        )
+
+    task = BrainstormTask(
+        topic=topic, parent_thread_id=ctx.deps.parent_thread_id,
+    )
+    with SetWorkflowID(workflow_id(task)):
+        await Durable.start_workflow(brainstorm, task)
+    return (
+        f"I started brainstorming ideas about {topic!r}. "
+        "I'll show you the candidate ideas as they come in and ask "
+        "which one to keep."
     )
 
 
