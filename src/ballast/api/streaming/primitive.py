@@ -263,6 +263,9 @@ async def _sync_db_with_body(
 # ── SSE response ───────────────────────────────────────────────────────
 
 
+_IDLE_TIMEOUT_S = 30.0
+
+
 def _build_sse_response(
     *,
     encoder: WireEncoder,
@@ -273,9 +276,19 @@ def _build_sse_response(
 ) -> "Response":
     """Build the SSE StreamingResponse that tails the event log.
 
-    Pulled out so both ``enqueue_run`` and ``enqueue_approval_resume``
-    can use the same generator without duplicating the polling loop.
+    Subscribes to the ``event_stream`` notification channel so the
+    generator wakes on new events instead of busy-polling. Each
+    notification triggers a ``read_since(cursor)`` from the durable
+    log — the stream is best-effort (may lose / duplicate / reorder
+    notifications), the log is the source of truth.
+
+    Terminates on:
+      - ``done`` / ``cancelled`` event emitted by the workflow
+      - ~30s with no new events (defensive close; the SSE consumer
+        is expected to reconnect with ``Last-Event-ID``)
     """
+    from ballast.runtime.event_stream import thread_channel  # noqa: PLC0415
+
     async def _gen() -> "AsyncIterator[bytes]":
         import asyncio  # noqa: PLC0415
 
@@ -283,37 +296,70 @@ def _build_sse_response(
             for chunk in encoder.initial_events(thread_id=thread_id):
                 yield chunk
 
-            last_seq = last_event_id
-            poll_interval_s = 0.05
-            idle_iterations = 0
-            max_idle_iterations = int(30.0 / poll_interval_s)
+            cursor = last_event_id
 
-            while True:
-                events = await event_log.read_since(
-                    thread_id, after_seq=last_seq,
-                )
-                if events:
-                    idle_iterations = 0
-                    for ev in events:
-                        for chunk in encoder.encode_event(ev):
-                            yield chunk
-                        last_seq = ev.seq
-                        if ev.kind in {"done", "cancelled"}:
+            # Replay anything between ``last_event_id`` and now so a
+            # subscriber that hands us a non-zero cursor doesn't miss
+            # events emitted before ``subscribe()`` was wired up.
+            for ev in await event_log.read_since(thread_id, after_seq=cursor):
+                for chunk in encoder.encode_event(ev):
+                    yield chunk
+                cursor = ev.seq
+                if ev.kind in {"done", "cancelled"}:
+                    for chunk in encoder.finalize():
+                        yield chunk
+                    return
+
+            # Subscribe + tail live. The reader task pumps wake-ups
+            # into a local queue so the main loop can ``wait_for`` with
+            # a defensive idle timeout without cancelling the
+            # underlying subscribe generator (which would close it for
+            # good).
+            async with event_stream.subscribe(
+                thread_channel(thread_id),
+            ) as notifications:
+                local: asyncio.Queue[None] = asyncio.Queue()
+
+                async def reader() -> None:
+                    try:
+                        async for _ in notifications:
+                            await local.put(None)
+                    except asyncio.CancelledError:
+                        pass
+
+                reader_task = asyncio.create_task(reader())
+                try:
+                    while True:
+                        try:
+                            await asyncio.wait_for(
+                                local.get(), timeout=_IDLE_TIMEOUT_S,
+                            )
+                        except asyncio.TimeoutError:
+                            _log.warning(
+                                "Durable stream idle for %.0fs on thread "
+                                "%s (cursor=%d) — closing",
+                                _IDLE_TIMEOUT_S, thread_id, cursor,
+                            )
                             for chunk in encoder.finalize():
                                 yield chunk
                             return
-                else:
-                    idle_iterations += 1
-                    if idle_iterations >= max_idle_iterations:
-                        _log.warning(
-                            "Durable stream idle for ~30s on thread %s "
-                            "(last_seq=%d) — closing",
-                            thread_id, last_seq,
+
+                        fresh = await event_log.read_since(
+                            thread_id, after_seq=cursor,
                         )
-                        for chunk in encoder.finalize():
-                            yield chunk
-                        return
-                await asyncio.sleep(poll_interval_s)
+                        for ev in fresh:
+                            for chunk in encoder.encode_event(ev):
+                                yield chunk
+                            cursor = ev.seq
+                            if ev.kind in {"done", "cancelled"}:
+                                for chunk in encoder.finalize():
+                                    yield chunk
+                                return
+                finally:
+                    reader_task.cancel()
+                    import contextlib  # noqa: PLC0415
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await reader_task
         except Exception:
             # BaseHTTPMiddleware can't see exceptions raised inside a
             # StreamingResponse body — log here so failures don't vanish
@@ -323,7 +369,6 @@ def _build_sse_response(
             )
             raise
 
-    _ = event_stream  # reserved for future live-signal optimization
     return StreamingResponse(_gen(), media_type=encoder.content_type())
 
 
