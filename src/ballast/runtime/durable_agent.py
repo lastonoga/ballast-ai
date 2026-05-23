@@ -248,6 +248,8 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
             PartStartEvent,
             TextPart,
             TextPartDelta,
+            ThinkingPart,
+            ThinkingPartDelta,
             ToolCallPart,
             ToolCallPartDelta,
         )
@@ -267,6 +269,24 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
                     await self._persist_and_publish(
                         thread_id=thread_id,
                         kind="text-delta",
+                        payload={
+                            "part_index": event.index,
+                            "text": part.content,
+                        },
+                    )
+            elif isinstance(part, ThinkingPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="reasoning-start",
+                    payload={"part_index": event.index},
+                )
+                if part.content:
+                    # Providers that emit full reasoning in PartStart
+                    # (no deltas) — surface as a single delta so the
+                    # SSE consumer doesn't lose it.
+                    await self._persist_and_publish(
+                        thread_id=thread_id,
+                        kind="reasoning-delta",
                         payload={
                             "part_index": event.index,
                             "text": part.content,
@@ -296,6 +316,18 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
                         "text": delta.content_delta,
                     },
                 )
+            elif (
+                isinstance(delta, ThinkingPartDelta)
+                and delta.content_delta
+            ):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="reasoning-delta",
+                    payload={
+                        "part_index": event.index,
+                        "text": delta.content_delta,
+                    },
+                )
             elif isinstance(delta, ToolCallPartDelta):
                 payload: dict[str, Any] = {"part_index": event.index}
                 if delta.args_delta is not None:
@@ -318,6 +350,12 @@ class DurableAgent(BallastAgent, DBOSConfiguredInstance):
                 await self._persist_and_publish(
                     thread_id=thread_id,
                     kind="text-end",
+                    payload={"part_index": event.index},
+                )
+            elif isinstance(part, ThinkingPart):
+                await self._persist_and_publish(
+                    thread_id=thread_id,
+                    kind="reasoning-end",
                     payload={"part_index": event.index},
                 )
             elif isinstance(part, ToolCallPart):

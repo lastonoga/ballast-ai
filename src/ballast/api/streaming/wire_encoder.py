@@ -93,6 +93,16 @@ def _text_id(part_index: int) -> str:
     return f"txt-{part_index}"
 
 
+def _reasoning_id(part_index: int) -> str:
+    """Reasoning-part id, same correlation rule as :func:`_text_id`.
+
+    ``reasoning-start`` / ``reasoning-delta`` / ``reasoning-end``
+    chunks on the wire all share this id so assistant-ui groups them
+    into one reasoning bubble.
+    """
+    return f"rsn-{part_index}"
+
+
 def _sse(data: str, *, event_id: int | None = None) -> bytes:
     """Format a single SSE chunk.
 
@@ -155,6 +165,33 @@ class VercelAIWireEncoder:
                 json.dumps({
                     "type": "text-end",
                     "id": _text_id(p.get("part_index", 0)),
+                }),
+                event_id=event.seq,
+            )
+
+        # ── reasoning streaming ──────────────────────────────────────────
+        elif kind == "reasoning-start":
+            yield _sse(
+                json.dumps({
+                    "type": "reasoning-start",
+                    "id": _reasoning_id(p.get("part_index", 0)),
+                }),
+                event_id=event.seq,
+            )
+        elif kind == "reasoning-delta":
+            yield _sse(
+                json.dumps({
+                    "type": "reasoning-delta",
+                    "id": _reasoning_id(p.get("part_index", 0)),
+                    "delta": str(p.get("text", "")),
+                }),
+                event_id=event.seq,
+            )
+        elif kind == "reasoning-end":
+            yield _sse(
+                json.dumps({
+                    "type": "reasoning-end",
+                    "id": _reasoning_id(p.get("part_index", 0)),
                 }),
                 event_id=event.seq,
             )
