@@ -8,16 +8,19 @@ Same shape as the framework's pattern-event modules (e.g.
   - One module-level :class:`Signal` (``brainstorm_progress``) that
     carries any of those events as ``event=...`` kwarg.
   - One default chat-routing handler, auto-connected at module load:
-    reads :data:`progress_thread_var`, formats the event into a
-    chat line, fires :data:`chat_message_requested`.
-  - One :func:`format_for_chat` helper for the rendering.
+    reads :data:`progress_thread_var`, emits a typed
+    ``data-<event-type>`` part via :data:`chat_message_requested`.
+    The frontend has bespoke renderers
+    (``components/assistant-ui/brainstorm-events.tsx``) for each one
+    — animated dot for "Chose", green check for "Saved", red X for
+    "Cancelled" / "Timed out".
 
 This lets the workflow stay pure (just ``brainstorm_progress.send(
 event=BrainstormChose(...))``) and gives observers a typed channel
 they can subscribe to for analytics / metrics / rich-UI rendering on
 the frontend.
 
-To customise the chat narration:
+To customise:
 
 * **opt out** — don't open ``progress_to_thread(...)`` around the
   workflow body. Default router sees ``None`` and is a no-op.
@@ -89,26 +92,6 @@ their own freely or replace the default."""
 # ── Default chat router ────────────────────────────────────────────────
 
 
-def format_for_chat(event: BrainstormEvent) -> str:
-    """Render one event as a human-readable chat line.
-
-    Override by monkey-patching this function at startup, or by
-    replacing :func:`default_chat_router` entirely (disconnect +
-    reconnect — see module docstring)."""
-    if isinstance(event, BrainstormChose):
-        return f'Chose: "{event.title}". Opening approval thread…'
-    if isinstance(event, BrainstormSaved):
-        suffix = " (with your edits)" if event.modified else ""
-        return f'Saved your todo titled "{event.title}"{suffix}.'
-    if isinstance(event, BrainstormCancelled):
-        reason = (event.reason or "").strip()
-        tail = f" ({reason})" if reason else ""
-        return f"Todo creation was cancelled{tail}."
-    if isinstance(event, BrainstormTimedOut):
-        return "Todo approval timed out — nothing was saved."
-    return ""
-
-
 async def default_chat_router(
     sender: Any,
     *,
@@ -119,18 +102,29 @@ async def default_chat_router(
 
     Reads :data:`progress_thread_var` from the active context — if
     the workflow body didn't open a ``progress_to_thread(...)`` scope
-    this is a no-op. If set, formats via :func:`format_for_chat` and
-    publishes through :data:`chat_message_requested`.
+    this is a no-op. Otherwise publishes a typed ``data-<event-type>``
+    part via :data:`chat_message_requested`; the frontend renders
+    each one with a bespoke component.
+
+    The wire shape per event is the standard assistant-ui custom
+    data part::
+
+        {"type": "data-brainstorm-saved",
+         "data": {"type": "brainstorm-saved", "title": "...", "modified": false},
+         "state": "done"}
 
     Auto-connected at module import."""
     thread_id = progress_thread_var.get()
     if thread_id is None:
         return
-    text = format_for_chat(event)
-    if not text:
-        return
     await chat_message_requested.send(
-        sender=sender, thread_id=thread_id, text=text,
+        sender=sender,
+        thread_id=thread_id,
+        parts=[{
+            "type": f"data-{event.type}",
+            "data": event.model_dump(mode="json"),
+            "state": "done",
+        }],
     )
 
 
@@ -145,5 +139,4 @@ __all__ = [
     "BrainstormTimedOut",
     "brainstorm_progress",
     "default_chat_router",
-    "format_for_chat",
 ]
