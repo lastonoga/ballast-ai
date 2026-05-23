@@ -12,10 +12,18 @@ import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
 from ballast.durable import Durable
-from ballast.events import helper_thread_created, message_added
+from ballast.events import (
+    chat_message_requested,
+    helper_thread_created,
+    message_added,
+)
+from ballast.patterns.divergent_convergent.events import (
+    divergent_convergent_progress,
+)
 from ballast.runtime.engine import _reset_ballast_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
+from notes_app.workflows.brainstorm_events import brainstorm_progress
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +37,13 @@ def _isolate_signals() -> Iterator[None]:
     """
     snapshots = {
         s: list(s._receivers)
-        for s in (message_added, helper_thread_created)
+        for s in (
+            message_added,
+            helper_thread_created,
+            chat_message_requested,
+            divergent_convergent_progress,
+            brainstorm_progress,
+        )
     }
     try:
         yield

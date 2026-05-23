@@ -60,7 +60,7 @@ from ballast import (
     ask_human,
 )
 from ballast.capabilities.helpers.embedder import Embedder
-from ballast.events import chat_message_requested, progress_to_thread
+from ballast.events import progress_to_thread
 
 from notes_app.agents.brainstorm import (
     BrainstormDivergentAgent,
@@ -70,6 +70,13 @@ from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.brainstorm import BrainstormOutcome, BrainstormTask
 from notes_app.models.todo import TodoIdea, TodoIdeas
 from notes_app.models.todo_approval import TodoApprovalContext
+from notes_app.workflows.brainstorm_events import (
+    BrainstormCancelled,
+    BrainstormChose,
+    BrainstormSaved,
+    BrainstormTimedOut,
+    brainstorm_progress,
+)
 
 
 # ── Default agent specs for the notes-app demo ───────────────────────────
@@ -157,64 +164,60 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     parent_thread_id = task.parent_thread_id
     topic = task.topic
 
-    # Route pattern-internal progress events into the parent thread
-    # for the duration of this call. The framework's default chat
-    # router (auto-connected in ``divergent_convergent/events.py``)
-    # reads ``progress_thread_var`` and posts one narration message
-    # per typed event. To customise: replace ``default_chat_router``
-    # via signal disconnect+reconnect (see events.py module docstring).
+    # Route ALL progress (pattern-internal divergent events + this
+    # workflow's own brainstorm_progress events) into the parent
+    # thread for the duration of this run. Both signals' default
+    # chat routers read ``progress_thread_var`` and post one
+    # narration message per typed event. To customise either, see
+    # the corresponding ``events.py`` module docstrings.
     with progress_to_thread(parent_thread_id):
         chosen: TodoIdea = await _divergent.run(topic)
 
-    await chat_message_requested.send(
-        sender=None, thread_id=parent_thread_id,
-        text=f'Chose: "{chosen.title}". Opening approval thread…',
-    )
+        await brainstorm_progress.send(
+            sender=None, event=BrainstormChose(title=chosen.title),
+        )
 
-    approval_context = TodoApprovalContext(
-        proposed_title=chosen.title,
-        proposed_body=chosen.body,
-        parent_thread_id=parent_thread_id,
-    )
-    verdict = await ask_human(
-        helper_agent=NotesTodoApprovalAgent,
-        context=approval_context,
-        opening_message=approval_context.to_opening_message(),
-        notify_parent_thread_id=parent_thread_id,
-    )
+        approval_context = TodoApprovalContext(
+            proposed_title=chosen.title,
+            proposed_body=chosen.body,
+            parent_thread_id=parent_thread_id,
+        )
+        verdict = await ask_human(
+            helper_agent=NotesTodoApprovalAgent,
+            context=approval_context,
+            opening_message=approval_context.to_opening_message(),
+            notify_parent_thread_id=parent_thread_id,
+        )
 
-    saved_title: str | None = None
-    saved_body: str | None = None
+        saved_title: str | None = None
+        saved_body: str | None = None
 
-    if isinstance(verdict, ApprovedResponse):
-        note = await _save_note(title=chosen.title, body=chosen.body)
-        saved_title, saved_body = note.title, note.body
-        await chat_message_requested.send(
-            sender=None, thread_id=parent_thread_id,
-            text=f'Saved your todo titled "{note.title}".',
-        )
-    elif isinstance(verdict, ModifiedResponse):
-        mod = verdict.modified_proposal
-        title = str(mod.get("title", chosen.title))
-        body = str(mod.get("body", chosen.body))
-        note = await _save_note(title=title, body=body)
-        saved_title, saved_body = note.title, note.body
-        await chat_message_requested.send(
-            sender=None, thread_id=parent_thread_id,
-            text=f'Saved your todo titled "{note.title}" (with your edits).',
-        )
-    elif isinstance(verdict, RejectedResponse):
-        reason = (verdict.feedback or "").strip()
-        tail = f" ({reason})" if reason else ""
-        await chat_message_requested.send(
-            sender=None, thread_id=parent_thread_id,
-            text=f"Todo creation was cancelled{tail}.",
-        )
-    else:  # TimeoutResponse
-        await chat_message_requested.send(
-            sender=None, thread_id=parent_thread_id,
-            text="Todo approval timed out — nothing was saved.",
-        )
+        if isinstance(verdict, ApprovedResponse):
+            note = await _save_note(title=chosen.title, body=chosen.body)
+            saved_title, saved_body = note.title, note.body
+            await brainstorm_progress.send(
+                sender=None,
+                event=BrainstormSaved(title=note.title, modified=False),
+            )
+        elif isinstance(verdict, ModifiedResponse):
+            mod = verdict.modified_proposal
+            title = str(mod.get("title", chosen.title))
+            body = str(mod.get("body", chosen.body))
+            note = await _save_note(title=title, body=body)
+            saved_title, saved_body = note.title, note.body
+            await brainstorm_progress.send(
+                sender=None,
+                event=BrainstormSaved(title=note.title, modified=True),
+            )
+        elif isinstance(verdict, RejectedResponse):
+            await brainstorm_progress.send(
+                sender=None,
+                event=BrainstormCancelled(reason=verdict.feedback or None),
+            )
+        else:  # TimeoutResponse
+            await brainstorm_progress.send(
+                sender=None, event=BrainstormTimedOut(),
+            )
 
     return BrainstormOutcome(
         proposed_title=chosen.title,
