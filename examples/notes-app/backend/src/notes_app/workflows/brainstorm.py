@@ -15,10 +15,12 @@ top-to-bottom like the imperative pipeline it is. HITL is one
 ``await`` in the middle and the verdict-handling logic sits inline.
 
 Progress is shown to the user as plain chat messages — one per phase
-("Brainstorming on …", "Chose …", "Saved …"). Each ``say()`` call
-appends an assistant message; the framework's ``message_added``
-signal handler emits the log + stream side effects automatically so
-the SSE consumer on the parent thread sees the timeline live.
+("Chose …", "Saved …"). Each step fires
+:data:`chat_message_requested` directly; the framework's default
+handler (wired at startup) appends an assistant message, which then
+self-emits :data:`message_added` to drive the event-log + SSE chain.
+The pattern's per-step narration is routed automatically via
+``progress_to_thread`` — see below.
 
 All the heavy lifting lives in the framework:
 - ``ballast.patterns.DivergentConvergent`` — fan-out + dedup + verify
@@ -133,12 +135,12 @@ def workflow_id(task: BrainstormTask) -> str:
 async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     """Diverge → converge → ask user → save (or not).
 
-    One linear durable workflow. Each phase posts a plain assistant
-    message into the parent thread so the user sees a step-by-step
-    timeline of what the agent is doing. The ``message_added`` signal
-    handler (wired by :class:`EventsProvider`) takes care of the
-    event-log row + SSE broadcast for each ``say()`` call — no manual
-    plumbing here.
+    One linear durable workflow. Each workflow-level narration step
+    publishes :data:`chat_message_requested` directly; pattern-level
+    progress flows through the contextvar wired by
+    :func:`progress_to_thread`. Both paths land on the framework's
+    default chat handler → ``thread_repo.add_message`` →
+    ``message_added`` → log + SSE.
 
     Verdict handling runs INLINE after the ``await ask_human(...)``:
 
@@ -164,9 +166,9 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     with progress_to_thread(parent_thread_id):
         chosen: TodoIdea = await _divergent.run(topic)
 
-    await say(
-        parent_thread_id,
-        f'Chose: "{chosen.title}". Opening approval thread…',
+    await chat_message_requested.send(
+        sender=None, thread_id=parent_thread_id,
+        text=f'Chose: "{chosen.title}". Opening approval thread…',
     )
 
     approval_context = TodoApprovalContext(
@@ -187,25 +189,31 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
     if isinstance(verdict, ApprovedResponse):
         note = await _save_note(title=chosen.title, body=chosen.body)
         saved_title, saved_body = note.title, note.body
-        await say(parent_thread_id, f'Saved your todo titled "{note.title}".')
+        await chat_message_requested.send(
+            sender=None, thread_id=parent_thread_id,
+            text=f'Saved your todo titled "{note.title}".',
+        )
     elif isinstance(verdict, ModifiedResponse):
         mod = verdict.modified_proposal
         title = str(mod.get("title", chosen.title))
         body = str(mod.get("body", chosen.body))
         note = await _save_note(title=title, body=body)
         saved_title, saved_body = note.title, note.body
-        await say(
-            parent_thread_id,
-            f'Saved your todo titled "{note.title}" (with your edits).',
+        await chat_message_requested.send(
+            sender=None, thread_id=parent_thread_id,
+            text=f'Saved your todo titled "{note.title}" (with your edits).',
         )
     elif isinstance(verdict, RejectedResponse):
         reason = (verdict.feedback or "").strip()
         tail = f" ({reason})" if reason else ""
-        await say(parent_thread_id, f"Todo creation was cancelled{tail}.")
+        await chat_message_requested.send(
+            sender=None, thread_id=parent_thread_id,
+            text=f"Todo creation was cancelled{tail}.",
+        )
     else:  # TimeoutResponse
-        await say(
-            parent_thread_id,
-            "Todo approval timed out — nothing was saved.",
+        await chat_message_requested.send(
+            sender=None, thread_id=parent_thread_id,
+            text="Todo approval timed out — nothing was saved.",
         )
 
     return BrainstormOutcome(
@@ -217,20 +225,6 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
 
 
 # ── Inline helpers ───────────────────────────────────────────────────────
-
-
-async def say(thread_id: UUID, text: str) -> None:
-    """Append a plain assistant message to ``thread_id``.
-
-    Goes through the :data:`chat_message_requested` signal (default
-    handler wired by the framework's ``EventsProvider`` at startup)
-    so this and the pattern's per-step narration follow the same
-    code path — no fork between "direct write" and "signal-routed
-    write" depending on caller.
-    """
-    await chat_message_requested.send(
-        sender=None, thread_id=thread_id, text=text,
-    )
 
 
 @Durable.step()
@@ -327,6 +321,5 @@ __all__ = [
     "BrainstormAgentSpec",
     "DEFAULT_DIVERGENT_SPECS",
     "brainstorm",
-    "say",
     "workflow_id",
 ]
