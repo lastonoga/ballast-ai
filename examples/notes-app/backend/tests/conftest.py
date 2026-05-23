@@ -23,7 +23,7 @@ from ballast.patterns.divergent_convergent.events import (
 from ballast.runtime.engine import _reset_ballast_for_tests
 
 from notes_app.repositories.note import InMemoryNoteRepository
-from notes_app.workflows.brainstorm_events import brainstorm_progress
+from notes_app.workflows.brainstorm import brainstorm_progress
 
 
 @pytest.fixture(autouse=True)
@@ -53,9 +53,16 @@ def _isolate_signals() -> Iterator[None]:
 
 
 @pytest.fixture
-def repo() -> InMemoryNoteRepository:
-    """Fresh in-memory note repo per test (no cross-test leakage)."""
-    return InMemoryNoteRepository()
+def repo(monkeypatch: pytest.MonkeyPatch) -> InMemoryNoteRepository:
+    """Fresh in-memory note repo per test (no cross-test leakage).
+
+    Also installs the fresh repo as the module-level ``notes_repo``
+    singleton so the tools — which now read the singleton directly —
+    see this test's repo instead of the import-time global.
+    """
+    fresh = InMemoryNoteRepository()
+    monkeypatch.setattr("notes_app.repositories.note.notes_repo", fresh)
+    return fresh
 
 
 @pytest.fixture(autouse=True)

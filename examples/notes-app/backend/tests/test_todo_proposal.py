@@ -138,8 +138,9 @@ async def _trigger_approval(
     """
     approval_agent = _TestTodoApprovalAgent()
     fn = _bound_tool(approval_agent.agent, helper_tool)
+    del notes_repo  # unused: helper tools route the verdict to the workflow,
+    # the workflow itself reaches the repo via the module singleton.
     deps = TodoApprovalDeps(
-        notes_repo=notes_repo,
         request_id=UUID(t2_metadata["request_id"]),
         workflow_id=str(t2_metadata["workflow_id"]),
         metadata=TodoApprovalContext.model_validate(t2_metadata),
@@ -168,10 +169,7 @@ async def _spawn_proposal(
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
     t1 = await thread_repo.create(agent="notes", metadata={})
-    deps = NoteToolDeps(
-        repo=InMemoryNoteRepository(),  # unused by propose_todo
-        parent_thread_id=t1.id,
-    )
+    deps = NoteToolDeps(parent_thread_id=t1.id)
     result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
     del todo_flow  # only used via the monkeypatch'd module singleton
 
@@ -398,7 +396,8 @@ async def test_propose_todo_rejects_when_deps_missing_parent_thread() -> None:
     notes_agent = _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}")
     propose_todo = _bound_tool(notes_agent.agent, "propose_todo")
 
-    deps = NoteToolDeps(repo=notes_repo)  # no parent_thread_id
+    deps = NoteToolDeps()  # no parent_thread_id
+    del notes_repo  # unused: tool reads notes_repo via module-singleton import
     with pytest.raises(RuntimeError, match="propose_todo requires"):
         await propose_todo(_FakeCtx(deps=deps), title="x", body="y")
 

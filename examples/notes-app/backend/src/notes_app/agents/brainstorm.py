@@ -49,26 +49,15 @@ from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
-from pydantic_ai.providers.openrouter import OpenRouterProvider
-from ballast.errors import MissingDependencyError
+from pydantic_ai.models.openrouter import OpenRouterModelSettings
 from ballast.persistence.thread.domain import Thread
 from ballast.runtime import BallastAgent
 
-from notes_app.agents.openrouter_profile import profile_for
+from notes_app.agents.openrouter import (
+    build_openrouter_model,
+    default_model_settings,
+)
 from notes_app.models.todo import TodoIdea, TodoIdeas
-from notes_app.settings import get_notes_settings
-
-
-def _resolve_api_key() -> str:
-    settings = get_notes_settings()
-    if settings.openrouter_api_key:
-        return settings.openrouter_api_key.get_secret_value()
-    raise MissingDependencyError(
-        "OpenRouter API key required to build brainstorm agents",
-        hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
-        context={"setting": "notes_app.openrouter_api_key"},
-    )
 
 
 class BrainstormDivergentAgent(BallastAgent):
@@ -96,13 +85,8 @@ class BrainstormDivergentAgent(BallastAgent):
         self._temperature = temperature
 
     def build_agent(self) -> Agent[None, Any]:
-        model = OpenRouterModel(
-            self._model_name,
-            provider=OpenRouterProvider(api_key=_resolve_api_key()),
-            profile=profile_for(self._model_name),
-        )
         return Agent(
-            model=model,
+            model=build_openrouter_model(self._model_name),
             output_type=TodoIdeas,
             system_prompt=self._system_prompt,
         )
@@ -119,11 +103,7 @@ class BrainstormDivergentAgent(BallastAgent):
         return None
 
     def model_settings(self) -> OpenRouterModelSettings:
-        return OpenRouterModelSettings(
-            temperature=self._temperature,
-            openrouter_reasoning={"effort": "none"},
-            openrouter_usage={"include": True},
-        )
+        return default_model_settings(temperature=self._temperature)
 
 
 class BrainstormSynthesizerAgent(BallastAgent):
@@ -149,13 +129,8 @@ class BrainstormSynthesizerAgent(BallastAgent):
         self._temperature = temperature
 
     def build_agent(self) -> Agent[None, Any]:
-        model = OpenRouterModel(
-            self._model_name,
-            provider=OpenRouterProvider(api_key=_resolve_api_key()),
-            profile=profile_for(self._model_name),
-        )
         return Agent(
-            model=model,
+            model=build_openrouter_model(self._model_name),
             output_type=TodoIdea,
             system_prompt=self._system_prompt,
         )
@@ -170,11 +145,7 @@ class BrainstormSynthesizerAgent(BallastAgent):
         return None
 
     def model_settings(self) -> OpenRouterModelSettings:
-        return OpenRouterModelSettings(
-            temperature=self._temperature,
-            openrouter_reasoning={"effort": "none"},
-            openrouter_usage={"include": True},
-        )
+        return default_model_settings(temperature=self._temperature)
 
 
 __all__ = ["BrainstormDivergentAgent", "BrainstormSynthesizerAgent"]

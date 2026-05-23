@@ -40,26 +40,25 @@ from uuid import UUID
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
-from pydantic_ai.providers.openrouter import OpenRouterProvider
+from pydantic_ai.models.openrouter import OpenRouterModelSettings
 from ballast.capabilities import (
     BudgetGuard,
     PIIGuard,
     RegexDetector,
     BallastCapability,
 )
-from ballast.errors import MissingDependencyError
 from ballast.grounded import Ref, Selector
 from ballast.persistence.thread.domain import Thread
 from ballast.runtime import DurableAgent
 
+from notes_app.agents.openrouter import (
+    build_openrouter_model,
+    default_model_settings,
+)
 from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.note import Note
 from notes_app.models.todo_approval import TodoApprovalContext
-from notes_app.repositories.note import NoteRepository
-from notes_app.settings import get_notes_settings
 
-DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.7
 
 SYSTEM_PROMPT = (
@@ -116,19 +115,16 @@ class NoteToolDeps:
     """Per-request dependencies for the note tools.
 
     ``parent_thread_id`` is only used by ``propose_todo`` to spawn the
-    durable approval workflow — the simpler note tools ignore it. It
-    may be ``None`` for tests that only exercise the non-HITL tools.
-    The note repository is reached via direct import of
-    ``notes_app.repositories.note.notes_repo`` (module-level
-    singleton); ``repo`` is kept on the deps so tools can pass a
-    per-test override (constructed manually in unit tests).
+    durable approval workflow — the simpler note tools ignore it. May
+    be ``None`` for tests that only exercise the non-HITL tools.
 
-    Framework infra (thread repo / event log / event stream) is reached
-    by ``propose_todo`` via ``ballast.get_ballast()`` — no per-call context
-    is threaded through ``NoteToolDeps`` anymore.
+    Note repository, framework thread repo / event log / event stream
+    — all reached via direct module-singleton imports (``notes_repo``)
+    or ``ballast.get_ballast()``. Tests swap by monkeypatching the
+    singleton module, NOT by passing alternative instances through
+    these deps.
     """
 
-    repo: NoteRepository
     parent_thread_id: UUID | None = None
 
 
@@ -148,31 +144,13 @@ class NotesAgent(DurableAgent):
     metadata_model = None  # no per-thread settings yet
 
     def build_agent(self) -> Agent[NoteToolDeps, Any]:
-        settings = get_notes_settings()
-        resolved_model = settings.openrouter_default_model or DEFAULT_MODEL
-        resolved_key = (
-            settings.openrouter_api_key.get_secret_value()
-            if settings.openrouter_api_key else None
-        )
-        if not resolved_key:
-            raise MissingDependencyError(
-                "OpenRouter API key required to build NotesAgent",
-                hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
-                context={"setting": "notes_app.openrouter_api_key"},
-            )
-
-        model = OpenRouterModel(
-            resolved_model,
-            provider=OpenRouterProvider(api_key=resolved_key),
-        )
-
         # ``output_type=[str, DeferredToolRequests]`` opts into pydantic-ai's
         # deferred-tools branch: when the model calls a tool marked
         # ``requires_approval=True`` (e.g. ``delete_note``) the agent
         # pauses and yields a ``DeferredToolRequests`` instead of
         # looping forever over an unresolved tool call.
         return Agent(
-            model=model,
+            model=build_openrouter_model(),
             output_type=[str, DeferredToolRequests],
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
@@ -186,15 +164,7 @@ class NotesAgent(DurableAgent):
         message: ModelMessage | None,
     ) -> NoteToolDeps:
         del message
-        # Direct import of the module-level singleton — apps that need
-        # a different repo (e.g. tests) monkeypatch
-        # ``notes_app.repositories.note.notes_repo`` before this runs.
-        from notes_app.repositories.note import notes_repo
-
-        return NoteToolDeps(
-            repo=notes_repo,
-            parent_thread_id=thread.id,
-        )
+        return NoteToolDeps(parent_thread_id=thread.id)
 
     def model_settings(self) -> OpenRouterModelSettings:
         """Hardcoded OpenRouter settings for the notes-app demo.
@@ -204,11 +174,7 @@ class NotesAgent(DurableAgent):
         ``AssistantMessageNormalizer`` — apps don't need to route
         around it here.
         """
-        return OpenRouterModelSettings(
-            temperature=DEFAULT_TEMPERATURE,
-            openrouter_reasoning={"effort": "none"},
-            openrouter_usage={"include": True},
-        )
+        return default_model_settings(temperature=DEFAULT_TEMPERATURE)
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
@@ -232,7 +198,9 @@ async def create_note(
     crash recovery returns the memoized note instead of creating a
     duplicate.
     """
-    return await ctx.deps.repo.create(title=title, body=body)
+    del ctx
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
+    return await notes_repo.create(title=title, body=body)
 
 
 @NotesAgent.tool
@@ -244,7 +212,9 @@ async def list_notes(
     Use this when the user asks "show me my notes" or wants an
     overview. Returns at most ``limit`` notes (default 20).
     """
-    return await ctx.deps.repo.list_(limit=limit)
+    del ctx
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
+    return await notes_repo.list_(limit=limit)
 
 
 @NotesAgent.tool
@@ -256,16 +226,22 @@ async def search_notes(
     Returns matching notes newest-first, at most ``limit``. Use this
     when the user references a note by topic or keyword rather than id.
     """
-    return await ctx.deps.repo.search(query, limit=limit)
+    del ctx
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
+    return await notes_repo.search(query, limit=limit)
+
+
+def _list_all_notes(_ctx: object) -> Any:
+    """Selector source for ``Ref[Note]`` grounding — reads the module
+    singleton so the Selector lambda doesn't need a deps shape."""
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
+    return notes_repo.list_(limit=1000)
 
 
 @NotesAgent.tool
 async def edit_note(
     ctx: RunContext[NoteToolDeps],
-    note_id: Annotated[
-        Ref[Note],
-        Selector(lambda c: c.deps.repo.list_(limit=1000)),
-    ],
+    note_id: Annotated[Ref[Note], Selector(_list_all_notes)],
     title: str | None = None,
     body: str | None = None,
 ) -> Note:
@@ -275,8 +251,10 @@ async def edit_note(
     the set of notes that currently exist for this user — you cannot
     fabricate one. Returns the updated note.
     """
+    del ctx
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
     nid = note_id.id if isinstance(note_id, Ref) else note_id
-    return await ctx.deps.repo.update(nid, title=title, body=body)
+    return await notes_repo.update(nid, title=title, body=body)
 
 
 @NotesAgent.tool
@@ -336,10 +314,7 @@ async def propose_todo(
 @NotesAgent.tool(requires_approval=True)
 async def delete_note(
     ctx: RunContext[NoteToolDeps],
-    note_id: Annotated[
-        Ref[Note],
-        Selector(lambda c: c.deps.repo.list_(limit=1000)),
-    ],
+    note_id: Annotated[Ref[Note], Selector(_list_all_notes)],
 ) -> str:
     """Delete the note with the given id.
 
@@ -354,8 +329,10 @@ async def delete_note(
     the set of notes that currently exist for this user. Idempotent —
     safe to call twice. Returns a short confirmation.
     """
+    del ctx
+    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
     nid = note_id.id if isinstance(note_id, Ref) else note_id
-    await ctx.deps.repo.delete(nid)
+    await notes_repo.delete(nid)
     return f"deleted {nid}"
 
 

@@ -31,9 +31,7 @@ from uuid import UUID
 from ballast.durable import Durable
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
-from pydantic_ai.providers.openrouter import OpenRouterProvider
-from ballast.errors import MissingDependencyError
+from pydantic_ai.models.openrouter import OpenRouterModelSettings
 from ballast.patterns.hitl import (
     ApprovedResponse,
     ModifiedResponse,
@@ -43,11 +41,12 @@ from ballast.patterns.hitl.topic import _hitl_topic
 from ballast.persistence.thread.domain import Thread
 from ballast.runtime import BallastAgent
 
+from notes_app.agents.openrouter import (
+    build_openrouter_model,
+    default_model_settings,
+)
 from notes_app.models.todo_approval import TodoApprovalContext
-from notes_app.repositories.note import NoteRepository
-from notes_app.settings import get_notes_settings
 
-DEFAULT_MODEL = "qwen/qwen3.6-plus"
 DEFAULT_TEMPERATURE = 0.3
 
 SYSTEM_PROMPT = (
@@ -71,7 +70,6 @@ class TodoApprovalDeps:
     ``Durable.send_async(destination_id=workflow_id, ...)``.
     """
 
-    notes_repo: NoteRepository
     request_id: UUID
     workflow_id: str
     metadata: TodoApprovalContext
@@ -80,36 +78,19 @@ class TodoApprovalDeps:
 class NotesTodoApprovalAgent(BallastAgent):
     """Confirmation-helper ``BallastAgent`` for the notes-app todo flow.
 
-    Constructor takes only the ``NoteRepository`` (currently unused by
-    tools — they just route the decision to the durable workflow). The
-    proposed title/body live on ``deps.metadata`` (typed
+    The proposed title/body live on ``deps.metadata`` (typed
     ``TodoApprovalContext``); the framework injects them into the system
-    prompt via the ``@system_prompt`` decorator below.
+    prompt via the ``@system_prompt`` decorator below. Tools route
+    decisions to the durable workflow via ``DBOS.send_async`` — no
+    direct repo access needed (the workflow itself reaches the repo).
     """
 
     name = "todo_approval"
     metadata_model = TodoApprovalContext
 
     def build_agent(self) -> Agent[TodoApprovalDeps, Any]:
-        settings = get_notes_settings()
-        resolved_model = settings.openrouter_default_model or DEFAULT_MODEL
-        resolved_key = (
-            settings.openrouter_api_key.get_secret_value()
-            if settings.openrouter_api_key else None
-        )
-        if not resolved_key:
-            raise MissingDependencyError(
-                "OpenRouter API key required to build NotesTodoApprovalAgent",
-                hint="Set NOTES_APP_OPENROUTER_API_KEY (or legacy OPENROUTER_API_KEY) env var",
-                context={"setting": "notes_app.openrouter_api_key"},
-            )
-
-        model = OpenRouterModel(
-            resolved_model,
-            provider=OpenRouterProvider(api_key=resolved_key),
-        )
         return Agent(
-            model=model,
+            model=build_openrouter_model(),
             output_type=str,
             deps_type=TodoApprovalDeps,
             system_prompt=SYSTEM_PROMPT,
@@ -122,23 +103,14 @@ class NotesTodoApprovalAgent(BallastAgent):
         message: ModelMessage | None,
     ) -> TodoApprovalDeps:
         del message
-        # Direct import of the module-level singleton.
-        from notes_app.repositories.note import notes_repo
-
-        metadata = TodoApprovalContext.model_validate(thread.metadata_)
         return TodoApprovalDeps(
-            notes_repo=notes_repo,
             request_id=UUID(thread.metadata_["request_id"]),
             workflow_id=str(thread.metadata_["workflow_id"]),
-            metadata=metadata,
+            metadata=TodoApprovalContext.model_validate(thread.metadata_),
         )
 
     def model_settings(self) -> OpenRouterModelSettings:
-        return OpenRouterModelSettings(
-            temperature=DEFAULT_TEMPERATURE,
-            openrouter_reasoning={"effort": "none"},
-            openrouter_usage={"include": True},
-        )
+        return default_model_settings(temperature=DEFAULT_TEMPERATURE)
 
 
 # ── System prompt: inject the typed context ─────────────────────────────────

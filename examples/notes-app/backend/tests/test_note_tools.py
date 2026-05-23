@@ -31,15 +31,18 @@ class _TestNotesAgent(NotesAgent):
         )
 
 
-def _make_deps(repo: InMemoryNoteRepository) -> NoteToolDeps:
-    return NoteToolDeps(repo=repo)
+def _make_deps() -> NoteToolDeps:
+    """Deps no longer carry the repo — tools read the module singleton.
+
+    The ``repo`` test fixture monkeypatches the singleton at the
+    ``notes_app.repositories.note.notes_repo`` import path, so tools
+    invoked here see the per-test instance.
+    """
+    return NoteToolDeps()
 
 
-def _agent_with_tools(repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
-    # Repo plumbing now lives on the per-call ``NoteToolDeps.repo`` —
-    # nothing constructor-injected on the agent for the repo. The tests
-    # pass ``repo`` through ``_make_deps`` directly.
-    del repo
+def _agent_with_tools(_repo: InMemoryNoteRepository) -> Agent[NoteToolDeps, Any]:
+    del _repo  # kept positional so the call-site reads "agent for this repo"
     return _TestNotesAgent(config_name=f"_TestNotesAgent-{uuid4()}").agent
 
 
@@ -51,7 +54,7 @@ def _bound_tool(agent: Any, name: str) -> Any:
 async def test_create_note_persists_via_repo(
     repo: InMemoryNoteRepository,
 ) -> None:
-    deps = _make_deps(repo)
+    deps = _make_deps()
     ctx = _FakeCtx(deps=deps)
 
     agent = _agent_with_tools(repo)
@@ -109,7 +112,7 @@ async def test_grounded_prepare_narrows_delete_note_to_real_ids(
     agent = _agent_with_tools(repo)
 
     n = await repo.create(title="g", body="b")
-    deps = _make_deps(repo)
+    deps = _make_deps()
     ctx = _FakeCtx(deps=deps)
 
     delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001
@@ -125,7 +128,7 @@ async def test_grounded_prepare_hides_delete_note_when_empty(
     """Empty repo -> tool hidden so the model can't fabricate an id."""
     agent = _agent_with_tools(repo)
 
-    deps = _make_deps(repo)
+    deps = _make_deps()
     ctx = _FakeCtx(deps=deps)
 
     delete = agent._function_toolset.tools["delete_note"]  # noqa: SLF001
