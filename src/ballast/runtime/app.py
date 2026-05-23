@@ -146,7 +146,19 @@ def create_app(
     for r in extra_routers:
         app.include_router(r)
 
-    # CORS.
+    # 6. FastAPI observability instrumentation.
+    if observability is not None:
+        observability.instrument_app(app)
+
+    # SP2 — install structured error handlers FIRST so CORS ends up
+    # outermost (Starlette's ``add_middleware`` prepends — last added =
+    # outermost). Inverse order causes error responses to bypass CORS
+    # and the browser masks the real 500 as a CORS failure.
+    from ballast.api.error_middleware import install_error_handlers
+    install_error_handlers(app)
+
+    # CORS — added last so it wraps everything, including error
+    # responses produced by BallastErrorMiddleware.
     if cors is not None:
         from fastapi.middleware.cors import CORSMiddleware
 
@@ -159,14 +171,6 @@ def create_app(
             expose_headers=list(cors.expose_headers),
             max_age=cors.max_age,
         )
-
-    # 6. FastAPI observability instrumentation.
-    if observability is not None:
-        observability.instrument_app(app)
-
-    # SP2 — install structured error handlers.
-    from ballast.api.error_middleware import install_error_handlers
-    install_error_handlers(app)
 
     return app
 

@@ -266,7 +266,16 @@ class Ballast:
         for r in routers:
             app.include_router(r)
 
-        # CORS.
+        # Structured-error handlers FIRST so CORSMiddleware ends up
+        # outermost. Starlette's ``add_middleware`` prepends — last added
+        # = outermost. If CORS is inner and an exception turns into an
+        # error response via BallastErrorMiddleware (outer), CORS never
+        # sees the response and headers don't get attached, and the
+        # browser masks the real 500 as a CORS failure.
+        install_error_handlers(app)
+
+        # CORS — added last so it wraps everything, including error
+        # responses produced by BallastErrorMiddleware.
         if cors_config is not None:
             from fastapi.middleware.cors import CORSMiddleware
 
@@ -279,9 +288,6 @@ class Ballast:
                 expose_headers=list(cors_config.expose_headers),
                 max_age=cors_config.max_age,
             )
-
-        # Structured-error handlers (parity with :func:`create_app`).
-        install_error_handlers(app)
 
         return app
 

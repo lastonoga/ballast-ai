@@ -92,9 +92,12 @@ async def stateflow_error_handler(request: Request, exc: BallastError) -> JSONRe
 class BallastErrorMiddleware(BaseHTTPMiddleware):
     """Catches BallastError that escapes streaming / background paths.
 
-    Also logs unexpected (non-Ballast) exceptions with full traceback before
-    re-raising — otherwise FastAPI's default 500 handler swallows them
-    silently and there is no way to tell what blew up.
+    Also logs unexpected (non-Ballast) exceptions with full traceback and
+    converts them into a 500 JSON response. Re-raising here would
+    propagate the exception past inner ``CORSMiddleware``, which then
+    cannot attach CORS headers to the error response — and the browser
+    masks the real status as a CORS failure. Returning a Response keeps
+    CORS happy and still produces the 500 the client expects.
     """
 
     async def dispatch(self, request, call_next):
@@ -102,12 +105,24 @@ class BallastErrorMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         except BallastError as exc:
             return await stateflow_error_handler(request, exc)
-        except Exception:
+        except Exception as exc:
             _logger.exception(
                 "Unhandled exception during %s %s",
                 request.method, request.url.path,
             )
-            raise
+            body: dict[str, Any] = {
+                "error": {
+                    "code": "internal_error",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                },
+            }
+            if _resolve_expose_tracebacks():
+                body["error"]["traceback"] = _tb.format_exc()
+            return JSONResponse(
+                content=body,
+                status_code=500,
+                media_type=PROBLEM_JSON,
+            )
 
 
 def install_error_handlers(app: FastAPI) -> None:
