@@ -154,7 +154,35 @@ _CHAT_RENDERED_EVENTS: tuple[type[BaseModel], ...] = (
     BranchFailed,
     DedupCompleted,
     ConvergeStarted,
+    ConvergeCompleted,
 )
+
+
+def _stable_message_id(event: DivergentEvent) -> str | None:
+    """Compute the chat ``message_id`` for an event — reused by enqueued /
+    completed / failed phases of the SAME branch so the row mutates
+    rather than stacks.
+
+    Scoped to the current DBOS workflow id so two concurrent brainstorm
+    runs on the same thread don't collide on ``"branch:practical:0"``.
+
+    Returns ``None`` for events whose row should be a fresh append
+    instead of an in-place update.
+    """
+    from dbos import DBOS  # noqa: PLC0415
+
+    try:
+        scope = DBOS.workflow_id or "no-workflow"
+    except Exception:  # noqa: BLE001 — DBOS not in workflow context
+        scope = "no-workflow"
+
+    if isinstance(event, BranchEnqueued | BranchCompleted | BranchFailed):
+        return f"{scope}:branch:{event.label}:{event.sample_idx}"
+    if isinstance(event, DedupCompleted):
+        return f"{scope}:dedup"
+    if isinstance(event, ConvergeStarted | ConvergeCompleted):
+        return f"{scope}:converge"
+    return None
 
 
 async def default_chat_router(
@@ -171,10 +199,16 @@ async def default_chat_router(
     :data:`chat_message_requested`; the frontend renders each one
     with a bespoke component.
 
-    ``VerifyCompleted`` / ``ConvergeCompleted`` are absorbed — they
-    don't add UX value beyond what the surrounding workflow's own
-    narration already says. The typed signal still fires for those
-    so observers (analytics, audit) see them.
+    Successive events for the SAME logical row (branch, dedup,
+    converge) share a stable ``message_id`` (see
+    :func:`_stable_message_id`), so the default chat handler upserts
+    in place — a "branch enqueued" spinner morphs into a "branch
+    completed" check on the same chat line instead of stacking up.
+
+    ``VerifyCompleted`` is absorbed — it doesn't add UX value beyond
+    what the surrounding workflow's own narration already says. The
+    typed signal still fires for it so observers (analytics, audit)
+    see it.
 
     Auto-connected at module import. Apps that want to replace its
     behaviour entirely should:
@@ -191,6 +225,7 @@ async def default_chat_router(
     await chat_message_requested.send(
         sender=sender,
         thread_id=thread_id,
+        message_id=_stable_message_id(event),
         parts=[{
             "type": f"data-{event.type}",
             "data": event.model_dump(mode="json"),

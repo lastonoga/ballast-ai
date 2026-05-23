@@ -62,6 +62,10 @@ type ConvergeStartedData = {
   candidate_count: number;
 };
 
+type ConvergeCompletedData = {
+  type: "converge-completed";
+};
+
 // ── Shared row primitive ───────────────────────────────────────────────
 
 function Row({
@@ -153,7 +157,7 @@ export const ConvergeStartedUI = makeAssistantDataUI<ConvergeStartedData>({
   render: (props) => {
     const data = props.data as ConvergeStartedData;
     return (
-      <Row icon={<Brain className="size-3.5" />} tone="muted">
+      <Row icon={<Brain className="size-3.5 animate-pulse" />} tone="muted">
         Picking the best of{" "}
         <span className="tabular-nums font-medium text-foreground">
           {data.candidate_count}
@@ -162,6 +166,15 @@ export const ConvergeStartedUI = makeAssistantDataUI<ConvergeStartedData>({
       </Row>
     );
   },
+});
+
+export const ConvergeCompletedUI = makeAssistantDataUI<ConvergeCompletedData>({
+  name: "converge-completed",
+  render: () => (
+    <Row icon={<Check className="size-3.5" />} tone="ok">
+      Picked the winner
+    </Row>
+  ),
 });
 
 /**
@@ -177,6 +190,7 @@ export function DivergentConvergentEventsUI() {
       <BranchFailedUI />
       <DedupCompletedUI />
       <ConvergeStartedUI />
+      <ConvergeCompletedUI />
     </>
   );
 }

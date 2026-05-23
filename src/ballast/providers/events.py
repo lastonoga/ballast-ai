@@ -51,27 +51,42 @@ async def _default_chat_message_requested(
     thread_id: UUID,
     text: str | None = None,
     parts: list[dict[str, Any]] | None = None,
+    message_id: str | None = None,
     **_: Any,
 ) -> None:
     """Default handler for :data:`ballast.events.chat_message_requested`.
 
-    Appends an assistant message via the thread repo. ``parts`` (when
-    supplied) takes precedence; otherwise falls back to one trivial
-    ``{type: text, text, state: done}`` part built from ``text``.
+    ``parts`` (when supplied) takes precedence over ``text``; otherwise
+    falls back to one trivial ``{type:text, text, state:done}`` part.
+
+    Routing:
+
+    * ``message_id is None`` (default) → ``thread_repo.add_message`` —
+      always a fresh row.
+    * ``message_id is set`` → ``thread_repo.upsert_message(id=...)`` —
+      replaces parts in place. Callers reuse the same id across
+      successive emits to get one mutating chat row instead of N
+      stacked messages (e.g. a branch spinner that flips to a check).
 
     NOT wrapped in ``@Durable.step`` — ``ThreadRepository.add_message``
-    fires its own ``message_added`` whose default handler IS a step,
-    which is where the durability boundary actually matters. Nesting
-    steps here would just add noise to the workflow log.
+    /``upsert_message`` fire their own ``message_added`` whose default
+    handler IS a step, which is where the durability boundary actually
+    matters. Nesting steps here would just add noise to the workflow log.
     """
     from ballast.runtime.engine import get_ballast  # noqa: PLC0415
 
     final_parts = parts or [
         {"type": "text", "text": text or "", "state": "done"},
     ]
-    await get_ballast().thread_repo.add_message(
-        thread_id, role="assistant", parts=final_parts,
-    )
+    repo = get_ballast().thread_repo
+    if message_id is None:
+        await repo.add_message(
+            thread_id, role="assistant", parts=final_parts,
+        )
+    else:
+        await repo.upsert_message(
+            thread_id, id=message_id, role="assistant", parts=final_parts,
+        )
 
 
 @Durable.step()
