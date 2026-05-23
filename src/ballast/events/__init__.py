@@ -29,10 +29,6 @@ that callers used to write inline.
 
 from __future__ import annotations
 
-from ballast.events.adapters import (
-    route_to_thread_as_data,
-    route_to_thread_as_text,
-)
 from ballast.events.signals import Signal, receiver
 
 # ── Built-in signals ────────────────────────────────────────────────────
@@ -48,12 +44,37 @@ helper_thread_created: Signal = Signal("helper_thread_created")
 Payload: ``sender=workflow, *, parent_thread_id: UUID,
 helper_thread_id: UUID, helper_agent_name: str, helper_metadata: dict``."""
 
+chat_message_requested: Signal = Signal("chat_message_requested")
+"""Request to append an assistant chat message to a thread.
+
+Payload: ``sender=anything, *, thread_id: UUID, text: str,
+parts: list[dict] | None = None``. The default handler (connected by
+:class:`EventsProvider` at app startup) routes the request through
+``ThreadRepository.add_message`` — which then itself fires
+:data:`message_added` to drive the log + SSE publish chain.
+
+Existing as a signal (not just a function call) so:
+
+  - All "append a message" intents flow through ONE pluggable
+    primitive (apps can intercept for audit, filtering, rewriting).
+  - The handler is connected at module-load time on the framework
+    side, so it fires reliably from any execution context
+    (durable-workflow body, queue worker, HTTP handler, …) without
+    each caller having to register its own closure.
+  - Patterns can publish progress as ``chat_message_requested.send(
+    thread_id=..., text=...)`` and the framework decides where it
+    lands — same channel as a hand-written ``say()`` helper.
+
+When ``parts`` is supplied it OVERRIDES the trivial ``[{type:text,
+text, state:done}]`` construction so callers can post typed data
+parts (``[{type: "data-foo", data: {...}, state: "done"}]``) for
+custom UI rendering."""
+
 
 __all__ = [
     "Signal",
+    "chat_message_requested",
     "helper_thread_created",
     "message_added",
     "receiver",
-    "route_to_thread_as_data",
-    "route_to_thread_as_text",
 ]

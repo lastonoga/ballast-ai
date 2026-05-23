@@ -13,6 +13,9 @@ from dbos import DBOSConfiguredInstance, Queue
 from ballast.durable import Durable
 from ballast.observability.spans import traced
 from ballast.observability.trace_names import TraceName
+from uuid import UUID
+
+from ballast.events import chat_message_requested
 from ballast.patterns.divergent_convergent.events import (
     BranchCompleted,
     BranchEnqueued,
@@ -20,6 +23,7 @@ from ballast.patterns.divergent_convergent.events import (
     ConvergeCompleted,
     ConvergeStarted,
     DedupCompleted,
+    DivergentEvent,
     VerifyCompleted,
     divergent_convergent_progress,
 )
@@ -221,17 +225,40 @@ class DivergentConvergent(
         "branch_count": len(self._branches),
         "best_of_n": self._best_of_n,
     })
-    async def run(self, task: InT) -> OutT:
+    async def run(
+        self,
+        task: InT,
+        *,
+        progress_thread_id: UUID | None = None,
+    ) -> OutT:
         """Run the divergent → optional dedup → optional verify →
         synthesize pipeline.
 
         Emits typed progress events on
         :data:`divergent_convergent_progress` at every observable
-        boundary. Apps opt in by connecting a handler
-        (``ballast.events.adapters.route_to_thread_as_text`` etc.) BEFORE
-        calling ``run``. With no handler connected the emits are
-        cheap no-ops.
+        boundary (for analytics / Slack / custom subscribers).
+
+        When ``progress_thread_id`` is set, ALSO publishes a plain
+        human-readable assistant message into that thread for each
+        event via :data:`chat_message_requested` — this is the
+        on-by-default UX path for chat UIs. The framework's default
+        chat handler (wired by :class:`EventsProvider` at startup)
+        owns the actual write, so the side effect is reliable
+        regardless of who's calling ``run`` (HTTP handler, durable
+        workflow body, queue worker, …).
         """
+        async def _publish(event: DivergentEvent) -> None:
+            """Fire the typed progress signal + (optionally) post to thread."""
+            await divergent_convergent_progress.send(sender=self, event=event)
+            if progress_thread_id is not None:
+                text = _format_divergent_event_for_chat(event)
+                if text:
+                    await chat_message_requested.send(
+                        sender=self,
+                        thread_id=progress_thread_id,
+                        text=text,
+                    )
+
         # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
         #    enqueued worker (``_diverge_one`` + pydantic-ai chat
@@ -245,10 +272,9 @@ class DivergentConvergent(
                     self._diverge_one, label, sample_idx, task,
                 )
                 handles.append((label, sample_idx, handle))
-                await divergent_convergent_progress.send(
-                    sender=self,
-                    event=BranchEnqueued(label=label, sample_idx=sample_idx),
-                )
+                await _publish(BranchEnqueued(
+                    label=label, sample_idx=sample_idx,
+                ))
 
         # 2. Collect with per-branch failure policy.
         pools: list[list[HypothesisT]] = []
@@ -259,21 +285,15 @@ class DivergentConvergent(
                 pool = await handle.get_result()
                 pools.append(pool)
                 outcomes[key] = f"ok:{len(pool)}"
-                await divergent_convergent_progress.send(
-                    sender=self,
-                    event=BranchCompleted(
-                        label=label, sample_idx=sample_idx,
-                        pool_size=len(pool),
-                    ),
-                )
+                await _publish(BranchCompleted(
+                    label=label, sample_idx=sample_idx,
+                    pool_size=len(pool),
+                ))
             except Exception as exc:  # noqa: BLE001 — caller policy decides
-                await divergent_convergent_progress.send(
-                    sender=self,
-                    event=BranchFailed(
-                        label=label, sample_idx=sample_idx,
-                        error_type=type(exc).__name__,
-                    ),
-                )
+                await _publish(BranchFailed(
+                    label=label, sample_idx=sample_idx,
+                    error_type=type(exc).__name__,
+                ))
                 if self._per_branch_failure == "strict":
                     raise
                 outcomes[key] = f"failed:{type(exc).__name__}"
@@ -284,12 +304,9 @@ class DivergentConvergent(
         if self._deduper is not None and merged:
             input_count = len(merged)
             merged = await self._deduper.run(merged)
-            await divergent_convergent_progress.send(
-                sender=self,
-                event=DedupCompleted(
-                    input_count=input_count, output_count=len(merged),
-                ),
-            )
+            await _publish(DedupCompleted(
+                input_count=input_count, output_count=len(merged),
+            ))
 
         # 4. Minimum-cardinality guard.
         if len(merged) < self._min_hypotheses:
@@ -310,23 +327,14 @@ class DivergentConvergent(
             if self._top_k is not None:
                 scored = scored[: self._top_k]
             merged = [s.hypothesis for s in scored]
-            await divergent_convergent_progress.send(
-                sender=self,
-                event=VerifyCompleted(
-                    scored_count=scored_count, top_k_applied=self._top_k,
-                ),
-            )
+            await _publish(VerifyCompleted(
+                scored_count=scored_count, top_k_applied=self._top_k,
+            ))
 
         # 6. Synthesize.
-        await divergent_convergent_progress.send(
-            sender=self,
-            event=ConvergeStarted(candidate_count=len(merged)),
-        )
+        await _publish(ConvergeStarted(candidate_count=len(merged)))
         result = await self._converge(task, merged)
-        await divergent_convergent_progress.send(
-            sender=self,
-            event=ConvergeCompleted(),
-        )
+        await _publish(ConvergeCompleted())
         return result
 
     # ── steps ────────────────────────────────────────────────────────────
@@ -361,3 +369,27 @@ class DivergentConvergent(
         prompt = self._format_synth_prompt(task, candidates)
         result = await self._synthesizer.run(prompt)
         return result.output
+
+
+def _format_divergent_event_for_chat(event: DivergentEvent) -> str:
+    """Render one progress event as a human-readable chat line.
+
+    Returned strings are posted as plain assistant text when
+    ``run(progress_thread_id=...)`` is set. Returning ``""`` from any
+    branch suppresses that event (the pattern still fires the typed
+    signal so observers see it). Indented bullets so the lines visually
+    nest under the workflow's own narration ("Brainstorming on …").
+    """
+    if isinstance(event, BranchEnqueued):
+        return f"  · Branch '{event.label}' enqueued (sample {event.sample_idx})…"
+    if isinstance(event, BranchCompleted):
+        return f"  · Branch '{event.label}' completed: {event.pool_size} ideas"
+    if isinstance(event, BranchFailed):
+        return f"  · Branch '{event.label}' FAILED ({event.error_type})"
+    if isinstance(event, DedupCompleted):
+        return f"  · Dedup: {event.input_count} → {event.output_count} ideas"
+    if isinstance(event, ConvergeStarted):
+        return f"  · Picking the best of {event.candidate_count} candidates…"
+    # VerifyCompleted + ConvergeCompleted are absorbed — too noisy
+    # for chat narration. Typed signal still fires for observers.
+    return ""

@@ -56,9 +56,9 @@ from ballast import (
     SemanticDedupConfig,
     TimeoutResponse,
     ask_human,
-    get_ballast,
 )
 from ballast.capabilities.helpers.embedder import Embedder
+from ballast.events import chat_message_requested
 
 from notes_app.agents.brainstorm import (
     BrainstormDivergentAgent,
@@ -157,7 +157,15 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
 
     await say(parent_thread_id, f'Brainstorming on "{topic}"…')
 
-    chosen: TodoIdea = await _divergent.run(topic)
+    # Pattern emits its own per-step narration into the same thread.
+    # ``progress_thread_id`` is a plain UUID — no closures cross the
+    # workflow boundary, and the framework's default
+    # ``chat_message_requested`` handler (wired by EventsProvider at
+    # startup) handles the actual write so delivery is independent of
+    # who's running the body.
+    chosen: TodoIdea = await _divergent.run(
+        topic, progress_thread_id=parent_thread_id,
+    )
 
     await say(
         parent_thread_id,
@@ -217,16 +225,14 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
 async def say(thread_id: UUID, text: str) -> None:
     """Append a plain assistant message to ``thread_id``.
 
-    No step wrapper here — ``ThreadRepository.add_message`` itself
-    self-emits the ``message_added`` signal whose default subscriber
-    is a ``@Durable.step``. That's where DBOS replay memoisation
-    actually matters (the broadcast side effects). Adding another
-    step layer here would just nest steps without gaining anything.
+    Goes through the :data:`chat_message_requested` signal (default
+    handler wired by the framework's ``EventsProvider`` at startup)
+    so this and the pattern's per-step narration follow the same
+    code path — no fork between "direct write" and "signal-routed
+    write" depending on caller.
     """
-    await get_ballast().thread_repo.add_message(
-        thread_id,
-        role="assistant",
-        parts=[{"type": "text", "text": text, "state": "done"}],
+    await chat_message_requested.send(
+        sender=None, thread_id=thread_id, text=text,
     )
 
 

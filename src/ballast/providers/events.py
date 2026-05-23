@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ballast.durable import Durable
-from ballast.events import helper_thread_created, message_added
+from ballast.events import (
+    chat_message_requested,
+    helper_thread_created,
+    message_added,
+)
 from ballast.runtime.event_stream import EventNotification, thread_channel
 
 if TYPE_CHECKING:
@@ -36,8 +40,38 @@ class EventsProvider:
         ballast._set_event_stream(self._event_stream)
         # ``Signal.connect`` is idempotent, so re-registering across
         # fixture rebuilds doesn't double-fire the defaults.
+        chat_message_requested.connect(_default_chat_message_requested)
         message_added.connect(_default_message_added)
         helper_thread_created.connect(_default_helper_thread_created)
+
+
+async def _default_chat_message_requested(
+    sender: Any,  # noqa: ARG001
+    *,
+    thread_id: UUID,
+    text: str | None = None,
+    parts: list[dict[str, Any]] | None = None,
+    **_: Any,
+) -> None:
+    """Default handler for :data:`ballast.events.chat_message_requested`.
+
+    Appends an assistant message via the thread repo. ``parts`` (when
+    supplied) takes precedence; otherwise falls back to one trivial
+    ``{type: text, text, state: done}`` part built from ``text``.
+
+    NOT wrapped in ``@Durable.step`` — ``ThreadRepository.add_message``
+    fires its own ``message_added`` whose default handler IS a step,
+    which is where the durability boundary actually matters. Nesting
+    steps here would just add noise to the workflow log.
+    """
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+
+    final_parts = parts or [
+        {"type": "text", "text": text or "", "state": "done"},
+    ]
+    await get_ballast().thread_repo.add_message(
+        thread_id, role="assistant", parts=final_parts,
+    )
 
 
 @Durable.step()
