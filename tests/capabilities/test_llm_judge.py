@@ -307,6 +307,62 @@ async def test_judge_after_run_propagates_judgefailed_on_sync_judge(
         )
 
 
+@pytest.mark.asyncio
+async def test_judge_after_run_fail_open_swallows_judge_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default ``fail_open=True`` — judge model down → log + skip,
+    user-facing turn proceeds unblocked."""
+
+    async def _down(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        raise ConnectionError("model dead")
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _down)
+
+    on_verdict_called = {"n": 0}
+
+    async def _on_verdict(_v: Any, _ctx: Any) -> None:
+        on_verdict_called["n"] += 1
+
+    cap = JudgeAfterRun(
+        LLMJudge("R", max_retries=0),
+        on_verdict=_on_verdict,
+    )
+    result = _FakeAgentRunResult(output="hi")
+    returned = await cap.after_run(_FakeRunContext(), result=result)
+    assert returned is result
+    # on_verdict NOT called because grade failed before verdict came back
+    assert on_verdict_called["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_judge_after_run_fail_open_false_propagates_judge_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fail_open=False`` — JudgeUnavailable bubbles, agent run dies.
+    Use this when grading is contractually required (compliance,
+    audit) and a missing verdict is itself a failure."""
+
+    async def _down(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        raise TimeoutError("judge timed out")
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _down)
+
+    from ballast.capabilities.llm_judge import JudgeUnavailable
+
+    cap = JudgeAfterRun(
+        LLMJudge("R", max_retries=0),
+        fail_open=False,
+    )
+    with pytest.raises(JudgeUnavailable):
+        await cap.after_run(
+            _FakeRunContext(),
+            result=_FakeAgentRunResult(output="x"),
+        )
+
+
 # ── retry / JudgeUnavailable ──────────────────────────────────────────
 
 

@@ -14,6 +14,7 @@ opt-in by passing the corresponding constructor arg.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -21,6 +22,7 @@ from uuid import UUID
 from pydantic_ai import RunContext
 
 from ballast.capabilities.base import BallastCapability
+from ballast.capabilities.llm_judge._errors import JudgeUnavailable
 from ballast.capabilities.llm_judge.persistence import (
     persist_verdict_as_thread_event,
 )
@@ -30,6 +32,9 @@ if TYPE_CHECKING:
 
     from ballast.capabilities.llm_judge._models import JudgeVerdict
     from ballast.capabilities.llm_judge.judge import LLMJudge
+
+
+_log = logging.getLogger("ballast.judge_after_run")
 
 
 class JudgeAfterRun(BallastCapability):
@@ -70,11 +75,13 @@ class JudgeAfterRun(BallastCapability):
         on_verdict: Callable[
             ["JudgeVerdict", RunContext[Any]], Awaitable[None],
         ] | None = None,
+        fail_open: bool = True,
     ) -> None:
         self.judge = judge
         self.subject = subject
         self.thread_id_from = thread_id_from
         self.on_verdict = on_verdict
+        self.fail_open = fail_open
 
     async def after_run(
         self,
@@ -85,11 +92,26 @@ class JudgeAfterRun(BallastCapability):
         """Grade ``result.output``, persist + dispatch as configured.
 
         Returns the result unchanged — judge observes, doesn't mutate.
-        If the underlying :class:`LLMJudge` is configured ``sync=True``
-        and the verdict misses threshold, ``JudgeFailed`` propagates
-        here unblocked.
+
+        Failure modes:
+          - ``JudgeFailed`` (from a ``sync=True`` judge crossing
+            threshold) ALWAYS propagates — the app explicitly asked
+            for a hard gate.
+          - ``JudgeUnavailable`` (infra: model 5xx, timeout, network)
+            is swallowed when ``fail_open=True`` (default). Log and
+            continue, so a flaky judge model never holds up the
+            user-facing reply. Set ``fail_open=False`` to propagate.
         """
-        verdict = await self.judge.grade(result.output)
+        try:
+            verdict = await self.judge.grade(result.output)
+        except JudgeUnavailable as exc:
+            if not self.fail_open:
+                raise
+            _log.warning(
+                "judge unavailable; skipping verdict for "
+                "subject=%r: %s", self.subject, exc,
+            )
+            return result
 
         if self.thread_id_from is not None:
             thread_id = self.thread_id_from(ctx)
