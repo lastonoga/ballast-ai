@@ -106,6 +106,9 @@ async def test_reflection_exhausted_raises_with_last_critique(
         await refl.run("topic")
     assert exc_info.value.iterations == 3
     assert exc_info.value.last_critique.issues == ["still wrong at v3"]
+    # ``last_draft`` is the most recent writer output — callers can
+    # persist it as a best-effort fallback instead of dropping work.
+    assert exc_info.value.last_draft == "v3"
 
 
 @pytest.mark.asyncio

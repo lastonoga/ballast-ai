@@ -143,6 +143,7 @@ class Reflection(DBOSConfiguredInstance, Generic[InT, OutT]):
         raise ReflectionExhausted(
             iterations=self.max_iter,
             last_critique=last_critique,
+            last_draft=last_draft,
         )
 
     # ── per-iteration steps (memoised by DBOS) ──────────────────────
