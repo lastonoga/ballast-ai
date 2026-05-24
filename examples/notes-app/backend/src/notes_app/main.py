@@ -142,15 +142,18 @@ app: FastAPI = (
     )
     .with_thread_repo(thread_repo)
     .with_events(event_log, event_stream)
-    # Same Qwen 3.6 endpoint the production agents use, with
-    # deterministic knobs (temperature=0, reasoning off) so verdicts
-    # are stable and the judge agent doesn't burn extra tokens on
-    # an unused thought-trace.
+    # Claude Haiku for the judge: pydantic-evals' judge agent
+    # internally uses ``output_type=GradingOutput`` (a BaseModel) which
+    # pydantic-ai wraps in ``ToolOutput`` with ``tool_choice="required"``.
+    # Qwen 3.6 endpoints on OpenRouter reject that value with a 404
+    # (same compat bug NotesAgent dodges via
+    # ``output_type=[str, DeferredToolRequests]``). Haiku supports
+    # tool_choice cleanly + is cheap enough for fire-and-forget use.
+    # ``temperature=0`` keeps verdicts stable across re-runs.
     .with_judge_defaults(
-        "openrouter:qwen/qwen3.6-plus",
+        "openrouter:anthropic/claude-haiku-4.5",
         model_settings=OpenRouterModelSettings(
             temperature=0.0,
-            openrouter_reasoning={"effort": "none"},
             openrouter_usage={"include": True},
         ),
     )
