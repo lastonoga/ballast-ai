@@ -30,7 +30,6 @@ from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
-from ballast.capabilities import set_default_judge_model
 from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
@@ -61,22 +60,6 @@ from notes_app.workflows.todo_approval import todo_flow  # noqa: F401 — DBOS c
 
 
 load_dotenv()
-
-
-# Process-wide judge default — every ``LLMJudge(model=None, ...)`` in
-# the app (e.g. NotesAgent's JudgeAfterRun) picks this up. Same Qwen
-# 3.6 endpoint the production agents use, with deterministic knobs:
-# temperature=0 (we want stable verdicts, not "creative" ones) and
-# reasoning disabled (the judge agent doesn't need a thought-trace,
-# only a final pass/score/reason).
-set_default_judge_model(
-    "openrouter:qwen/qwen3.6-plus",
-    model_settings=OpenRouterModelSettings(
-        temperature=0.0,
-        openrouter_reasoning={"effort": "none"},
-        openrouter_usage={"include": True},
-    ),
-)
 
 
 def _dbos_db_url() -> str:
@@ -159,6 +142,18 @@ app: FastAPI = (
     )
     .with_thread_repo(thread_repo)
     .with_events(event_log, event_stream)
+    # Same Qwen 3.6 endpoint the production agents use, with
+    # deterministic knobs (temperature=0, reasoning off) so verdicts
+    # are stable and the judge agent doesn't burn extra tokens on
+    # an unused thought-trace.
+    .with_judge_defaults(
+        "openrouter:qwen/qwen3.6-plus",
+        model_settings=OpenRouterModelSettings(
+            temperature=0.0,
+            openrouter_reasoning={"effort": "none"},
+            openrouter_usage={"include": True},
+        ),
+    )
     .fastapi(
         cors="dev",
         routers=[

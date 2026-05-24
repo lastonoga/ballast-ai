@@ -155,6 +155,45 @@ class Ballast:
         self._dbos_lifecycle = True
         return self
 
+    def with_judge_defaults(
+        self,
+        model: str,
+        *,
+        model_settings: "object | None" = None,
+    ) -> Self:
+        """Set the process-wide default judge model + ``ModelSettings``.
+
+        Every ``LLMJudge(model=None, model_settings=None, ...)`` in
+        the app — including the ones inside :class:`JudgeAfterRun`
+        capabilities — picks these up. Per-instance args still win.
+
+        Thin convenience over :func:`set_default_judge_model`; lives
+        on the builder so judge wiring stays consistent with the
+        other ``.with_*`` slots instead of being an ad-hoc global
+        call somewhere in module scope::
+
+            ballast.Ballast(settings)
+                .with_judge_defaults(
+                    "openrouter:qwen/qwen3.6-plus",
+                    model_settings=OpenRouterModelSettings(
+                        temperature=0.0,
+                        openrouter_reasoning={"effort": "none"},
+                    ),
+                )
+                .with_thread_repo(thread_repo)
+                .with_events(event_log, event_stream)
+                ...
+
+        Returns ``self`` for chaining. Idempotent — re-calling
+        overwrites the previous default.
+        """
+        from ballast.capabilities.llm_judge import (  # noqa: PLC0415
+            set_default_judge_model,
+        )
+
+        set_default_judge_model(model, model_settings=model_settings)
+        return self
+
     def with_observability(
         self, config: "object | None" = None,
     ) -> Self:
