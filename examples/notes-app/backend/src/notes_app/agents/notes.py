@@ -42,10 +42,12 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
 from ballast.capabilities import (
+    BallastCapability,
     BudgetGuard,
+    JudgeAfterRun,
+    LLMJudge,
     PIIGuard,
     RegexDetector,
-    BallastCapability,
 )
 from ballast.grounded import Ref, Selector
 from ballast.persistence.thread.domain import Thread
@@ -84,6 +86,18 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_RE = re.compile(r"\+?\d[\d\s\-().]{8,}\d")
 
 
+_QUALITY_JUDGE = LLMJudge(
+    rubric=(
+        "The assistant's reply addresses the user's actual request. "
+        "Replies that ignore the user's intent, dodge the question, "
+        "or reply with empty acknowledgements like 'sure' or 'ok' "
+        "without doing anything DO NOT pass."
+    ),
+    threshold=0.6,
+    max_retries=1,       # one retry on transient model error, then skip
+)
+
+
 def default_notes_capabilities() -> list[BallastCapability]:
     """Capabilities applied to every ``NotesAgent`` run.
 
@@ -96,6 +110,11 @@ def default_notes_capabilities() -> list[BallastCapability]:
       apps that need DB-grounded leak detection (e.g. "is this email
       one of OUR users in another thread?") swap ``RegexDetector`` for
       a custom ``PIIDetector`` that hits their user repo.
+    - ``JudgeAfterRun`` grades every assistant turn against a
+      sanity-check rubric and pushes the verdict to the chat as a
+      ``data-judge-verdict`` card (fire-and-forget; never blocks the
+      user reply). ``fail_open=True`` (the default) means a judge
+      model outage is logged + skipped, not user-visible.
     """
     return [
         BudgetGuard(
@@ -110,6 +129,11 @@ def default_notes_capabilities() -> list[BallastCapability]:
                     "phone": [_PHONE_RE],
                 },
             ),
+        ),
+        JudgeAfterRun(
+            _QUALITY_JUDGE,
+            subject="assistant-turn",
+            thread_id_from=lambda ctx: ctx.deps.parent_thread_id,
         ),
     ]
 
