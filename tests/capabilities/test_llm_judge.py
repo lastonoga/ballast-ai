@@ -14,6 +14,7 @@ import pytest
 from pydantic_evals.evaluators.llm_as_a_judge import GradingOutput
 
 from ballast.capabilities.llm_judge import (
+    JudgeAfterRun,
     JudgeFailed,
     JudgeVerdict,
     LLMJudge,
@@ -201,3 +202,106 @@ async def test_pairwise_returns_winner_from_stub_agent(
     assert verdict.winner == "b"
     assert "detailed" in verdict.reason.lower()
     assert verdict.model_used
+
+
+# ── JudgeAfterRun (capability wrapper) ────────────────────────────────
+
+
+class _FakeAgentRunResult:
+    def __init__(self, output: Any) -> None:
+        self.output = output
+
+
+class _FakeRunContext:
+    def __init__(self, deps: Any = None) -> None:
+        self.deps = deps
+
+
+@pytest.mark.asyncio
+async def test_judge_after_run_invokes_judge_and_returns_result_unchanged(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    """``after_run`` hook calls ``judge.grade(result.output)`` and
+    returns the result unchanged — judge observes, doesn't mutate."""
+    cap = JudgeAfterRun(LLMJudge("Output is non-empty"))
+    result = _FakeAgentRunResult(output="hello")
+    returned = await cap.after_run(_FakeRunContext(), result=result)
+    assert returned is result
+    # The judge stub returns score=0.8 → no exception, just observed.
+    assert stub_judge_funcs["name"] == "judge_output"
+
+
+@pytest.mark.asyncio
+async def test_judge_after_run_persists_when_thread_id_supplied(
+    stub_judge_funcs: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``thread_id_from(ctx)`` → routes verdict through
+    ``persist_verdict_as_thread_event``."""
+    del stub_judge_funcs
+    from uuid import uuid4
+
+    persisted: list[tuple[Any, JudgeVerdict, str]] = []
+
+    async def _fake_persist(thread_id, verdict, *, subject):
+        persisted.append((thread_id, verdict, subject))
+
+    monkeypatch.setattr(
+        "ballast.capabilities.llm_judge.persist_verdict_as_thread_event",
+        _fake_persist,
+    )
+
+    tid = uuid4()
+    cap = JudgeAfterRun(
+        LLMJudge("R"),
+        subject="assistant-turn",
+        thread_id_from=lambda _ctx: tid,
+    )
+    await cap.after_run(
+        _FakeRunContext(),
+        result=_FakeAgentRunResult(output="hi"),
+    )
+    assert len(persisted) == 1
+    assert persisted[0][0] == tid
+    assert persisted[0][2] == "assistant-turn"
+
+
+@pytest.mark.asyncio
+async def test_judge_after_run_invokes_on_verdict_callback(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    del stub_judge_funcs
+    seen: list[JudgeVerdict] = []
+
+    async def _on_verdict(v: JudgeVerdict, _ctx: Any) -> None:
+        seen.append(v)
+
+    cap = JudgeAfterRun(LLMJudge("R"), on_verdict=_on_verdict)
+    await cap.after_run(
+        _FakeRunContext(),
+        result=_FakeAgentRunResult(output="hi"),
+    )
+    assert len(seen) == 1
+    assert seen[0].pass_ is True
+
+
+@pytest.mark.asyncio
+async def test_judge_after_run_propagates_judgefailed_on_sync_judge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrapping a ``sync=True`` judge means threshold failures abort
+    the agent run — the capability does not swallow ``JudgeFailed``."""
+    failing = GradingOutput(reason="bad", pass_=False, score=0.1)
+
+    async def _stub(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        return failing
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _stub)
+
+    cap = JudgeAfterRun(LLMJudge("R", threshold=0.5, sync=True))
+    with pytest.raises(JudgeFailed):
+        await cap.after_run(
+            _FakeRunContext(),
+            result=_FakeAgentRunResult(output="x"),
+        )

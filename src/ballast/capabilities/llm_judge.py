@@ -35,14 +35,18 @@ only some callers want the verdict on the thread's event log.
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from pydantic_ai import RunContext
 
+from ballast.capabilities.base import BallastCapability
 from ballast.errors import BallastError
 
 if TYPE_CHECKING:
+    from pydantic_ai.run import AgentRunResult
     from pydantic_ai.settings import ModelSettings
 
 
@@ -335,7 +339,96 @@ async def persist_verdict_as_thread_event(
     )
 
 
+class JudgeAfterRun(BallastCapability):
+    """Auto-grade the final agent output via ``LLMJudge`` after each run.
+
+    Plugs an :class:`LLMJudge` into pydantic-ai's ``after_run`` hook so
+    every agent turn produces a verdict without app code having to call
+    the judge explicitly. Three behaviours combined as you opt in:
+
+      1. **Just observe** — pass ``judge`` only. Verdict is computed
+         per-run; if ``judge.sync=True`` and threshold is missed,
+         ``JudgeFailed`` propagates out of the agent's ``run`` call.
+
+      2. **Persist to thread** — pass ``thread_id_from(ctx)`` returning
+         the destination thread. Each verdict lands as a
+         ``data-judge-verdict`` card in the SSE feed via
+         :func:`persist_verdict_as_thread_event`.
+
+      3. **Custom side-effect** — pass ``on_verdict(verdict, ctx)`` for
+         arbitrary work (Slack alert, OTel attribute, metric counter,
+         HITL escalation, …). Runs AFTER persistence (if enabled).
+
+    Wire it on the agent like any other capability::
+
+        class NotesAgent(DurableAgent):
+            def build_agent(self):
+                return Agent(
+                    model=...,
+                    capabilities=[
+                        BudgetGuard(max_iterations=20),
+                        JudgeAfterRun(
+                            LLMJudge(
+                                "Answer is grounded in retrieved notes",
+                                threshold=0.7,
+                            ),
+                            thread_id_from=lambda ctx: ctx.deps.thread_id,
+                        ),
+                    ],
+                    ...
+                )
+
+    Per-run isolation: the capability is stateless across runs (the
+    judge itself is stateless too); no ``for_run`` override needed.
+    """
+
+    name = "judge_after_run"
+
+    def __init__(
+        self,
+        judge: "LLMJudge",
+        *,
+        subject: str = "assistant-turn",
+        thread_id_from: Callable[[RunContext[Any]], UUID | None] | None = None,
+        on_verdict: Callable[
+            ["JudgeVerdict", RunContext[Any]], Awaitable[None],
+        ] | None = None,
+    ) -> None:
+        self.judge = judge
+        self.subject = subject
+        self.thread_id_from = thread_id_from
+        self.on_verdict = on_verdict
+
+    async def after_run(
+        self,
+        ctx: RunContext[Any],
+        *,
+        result: "AgentRunResult[Any]",
+    ) -> "AgentRunResult[Any]":
+        """Grade ``result.output``, persist + dispatch as configured.
+
+        Returns the result unchanged — judge does not mutate the
+        agent's output, just observes / escalates. If the underlying
+        ``LLMJudge`` is configured ``sync=True`` and the verdict misses
+        threshold, ``JudgeFailed`` propagates here.
+        """
+        verdict = await self.judge.grade(result.output)
+
+        if self.thread_id_from is not None:
+            thread_id = self.thread_id_from(ctx)
+            if thread_id is not None:
+                await persist_verdict_as_thread_event(
+                    thread_id, verdict, subject=self.subject,
+                )
+
+        if self.on_verdict is not None:
+            await self.on_verdict(verdict, ctx)
+
+        return result
+
+
 __all__ = [
+    "JudgeAfterRun",
     "JudgeFailed",
     "JudgeVerdict",
     "LLMJudge",
