@@ -10,6 +10,7 @@ keywords = [
     "ai",
     "agents",
     "pydantic-ai",
+    "pydantic-evals",
     "fastapi",
     "dbos",
     "workflow",
@@ -32,6 +33,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.7",
     "pydantic-ai>=0.0.13",
+    "pydantic-evals>=0.0.13",
     "sqlmodel>=0.0.22",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",

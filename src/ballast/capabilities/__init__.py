@@ -1,6 +1,13 @@
 from ballast.capabilities.base import BallastCapability
 from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
 from ballast.capabilities.grounded_retry import GroundedRetry
+from ballast.capabilities.llm_judge import (
+    JudgeFailed,
+    JudgeVerdict,
+    LLMJudge,
+    PairwiseVerdict,
+    persist_verdict_as_thread_event,
+)
 from ballast.capabilities.pii import (
     PIIDetector,
     PIIGuard,
@@ -13,16 +20,21 @@ from ballast.capabilities.pii import (
 from ballast.capabilities.semantic_loop import SemanticLoopDetector
 
 __all__ = [
+    "BallastCapability",
     "BudgetExhausted",
     "BudgetGuard",
     "GroundedRetry",
+    "JudgeFailed",
+    "JudgeVerdict",
+    "LLMJudge",
     "PIIDetector",
     "PIIGuard",
     "PIISpan",
+    "PairwiseVerdict",
     "Redactor",
     "RegexDetector",
     "SemanticLoopDetector",
-    "BallastCapability",
     "categorized_redactor",
     "constant_redactor",
+    "persist_verdict_as_thread_event",
 ]

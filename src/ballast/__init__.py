@@ -84,12 +84,17 @@ from ballast.api.deps import (
     get_thread_repo,
 )
 from ballast.capabilities import (
+    BallastCapability,
     BudgetExhausted,
     BudgetGuard,
     GroundedRetry,
+    JudgeFailed,
+    JudgeVerdict,
+    LLMJudge,
+    PairwiseVerdict,
     PIIGuard,
     SemanticLoopDetector,
-    BallastCapability,
+    persist_verdict_as_thread_event,
 )
 from ballast.capabilities.helpers import (
     Critique,
@@ -258,6 +263,9 @@ __all__ = [
     "IdempotencyInput",
     "IdempotencyValue",
     "InsufficientDivergence",
+    "JudgeFailed",
+    "JudgeVerdict",
+    "LLMJudge",
     "LifespanHook",
     "MissingDependencyError",
     "ModifiedResponse",
@@ -266,6 +274,7 @@ __all__ = [
     "OpenRouterCostExtractor",
     "OpenRouterUpstreamCostExtractor",
     "PIIGuard",
+    "PairwiseVerdict",
     "Pattern",
     "PatternError",
     "PersistenceError",

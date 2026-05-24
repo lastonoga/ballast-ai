@@ -1,0 +1,203 @@
+"""``LLMJudge`` runtime-gate tests.
+
+We stub the underlying pydantic-evals ``judge_*`` functions and the
+pairwise pydantic-ai agent so the suite doesn't hit a real model.
+What we're actually asserting is the framework's contract: routing
+between the four pydantic-evals signatures, threshold behaviour,
+verdict shape, and the JudgeFailed escalation path.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from pydantic_evals.evaluators.llm_as_a_judge import GradingOutput
+
+from ballast.capabilities.llm_judge import (
+    JudgeFailed,
+    JudgeVerdict,
+    LLMJudge,
+    PairwiseVerdict,
+)
+
+
+@pytest.fixture
+def stub_judge_funcs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace pydantic-evals ``judge_*`` with deterministic stubs and
+    record which one was invoked with what args."""
+    calls: dict[str, Any] = {}
+
+    def _make_stub(name: str, *, grading: GradingOutput):
+        async def _stub(*args: Any, **kwargs: Any) -> GradingOutput:
+            calls.setdefault("name", name)
+            calls.setdefault("args", args)
+            calls.setdefault("kwargs", kwargs)
+            return grading
+        return _stub
+
+    grading = GradingOutput(reason="looks ok", pass_=True, score=0.8)
+    from pydantic_evals.evaluators import llm_as_a_judge
+
+    for fn_name in (
+        "judge_output",
+        "judge_input_output",
+        "judge_output_expected",
+        "judge_input_output_expected",
+    ):
+        monkeypatch.setattr(
+            llm_as_a_judge, fn_name, _make_stub(fn_name, grading=grading),
+        )
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_grade_with_output_only_routes_to_judge_output(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    judge = LLMJudge("Output is non-empty", threshold=0.5)
+    verdict = await judge.grade("hello")
+    assert stub_judge_funcs["name"] == "judge_output"
+    assert isinstance(verdict, JudgeVerdict)
+    assert verdict.pass_ is True
+    assert verdict.score == 0.8
+    assert verdict.reason == "looks ok"
+    assert verdict.model_used  # populated, content not asserted
+
+
+@pytest.mark.asyncio
+async def test_grade_with_input_routes_to_judge_input_output(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    judge = LLMJudge("Output responds to input")
+    await judge.grade("hi back", input_="hi")
+    assert stub_judge_funcs["name"] == "judge_input_output"
+
+
+@pytest.mark.asyncio
+async def test_grade_with_expected_routes_to_judge_output_expected(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    judge = LLMJudge("Output matches expected")
+    await judge.grade("hello", expected="hello")
+    assert stub_judge_funcs["name"] == "judge_output_expected"
+
+
+@pytest.mark.asyncio
+async def test_grade_with_input_and_expected_routes_to_full_judge(
+    stub_judge_funcs: dict[str, Any],
+) -> None:
+    judge = LLMJudge("Output matches expected given input")
+    await judge.grade("hello", input_="hi", expected="hello")
+    assert stub_judge_funcs["name"] == "judge_input_output_expected"
+
+
+@pytest.mark.asyncio
+async def test_sync_mode_raises_judgefailed_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``sync=True`` + score < threshold → JudgeFailed with verdict
+    attached (so HITL handlers can read the rationale)."""
+    failing = GradingOutput(reason="off topic", pass_=False, score=0.2)
+
+    async def _stub(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        return failing
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _stub)
+
+    judge = LLMJudge("Strict rubric", threshold=0.5, sync=True)
+    with pytest.raises(JudgeFailed) as exc_info:
+        await judge.grade("garbage")
+    assert exc_info.value.verdict.score == 0.2
+    assert exc_info.value.verdict.reason == "off topic"
+    # Context exposes the full verdict so escalation handlers can
+    # surface it to the user without re-running the judge.
+    assert exc_info.value.context["verdict"]["score"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_async_default_returns_failing_verdict_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``sync=False`` (the default) returns the verdict regardless of
+    threshold — the caller decides what to do."""
+    failing = GradingOutput(reason="off topic", pass_=False, score=0.2)
+
+    async def _stub(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        return failing
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _stub)
+
+    judge = LLMJudge("Strict rubric", threshold=0.5)
+    verdict = await judge.grade("garbage")
+    assert verdict.pass_ is False
+    assert verdict.score == 0.2
+
+
+@pytest.mark.asyncio
+async def test_per_call_sync_overrides_instance_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing = GradingOutput(reason="bad", pass_=False, score=0.1)
+
+    async def _stub(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        return failing
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _stub)
+
+    judge = LLMJudge("R", threshold=0.5, sync=False)
+    with pytest.raises(JudgeFailed):
+        await judge.grade("x", sync=True)
+
+
+def test_constructor_rejects_empty_rubric() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        LLMJudge("")
+
+
+def test_constructor_rejects_out_of_range_threshold() -> None:
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        LLMJudge("R", threshold=1.5)
+
+
+@pytest.mark.asyncio
+async def test_pairwise_returns_winner_from_stub_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``grade_pairwise`` builds an internal pydantic-ai Agent. We
+    monkey-patch the Agent constructor so we don't try to instantiate
+    a real provider (would need OPENAI_API_KEY)."""
+    from ballast.capabilities import llm_judge as judge_mod
+
+    class _FakeRunResult:
+        def __init__(self, output: judge_mod._PairwiseGrading) -> None:
+            self.output = output
+
+    class _FakeAgent:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+
+        async def run(self, *args: Any, **kwargs: Any) -> _FakeRunResult:
+            del args, kwargs
+            return _FakeRunResult(judge_mod._PairwiseGrading(
+                reason="B is more detailed", winner="b",
+            ))
+
+    monkeypatch.setattr(
+        "ballast.capabilities.llm_judge.Agent",
+        _FakeAgent,
+        raising=False,
+    )
+    # The import inside ``grade_pairwise`` is local, so patch the
+    # ``pydantic_ai.Agent`` name at the module level too.
+    import pydantic_ai
+    monkeypatch.setattr(pydantic_ai, "Agent", _FakeAgent)
+
+    judge = LLMJudge("Detailed answer", mode="pairwise")
+    verdict = await judge.grade_pairwise("short", "looong and detailed")
+    assert isinstance(verdict, PairwiseVerdict)
+    assert verdict.winner == "b"
+    assert "detailed" in verdict.reason.lower()
+    assert verdict.model_used
