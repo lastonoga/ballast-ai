@@ -10,6 +10,7 @@ from ballast.events import helper_thread_created, message_added
 from ballast.patterns.divergent_convergent.events import (
     divergent_convergent_progress,
 )
+from ballast.patterns.reflection import reflection_progress
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +30,7 @@ def _isolate_signals() -> Iterator[None]:
             message_added,
             helper_thread_created,
             divergent_convergent_progress,
+            reflection_progress,
         )
     }
     try:

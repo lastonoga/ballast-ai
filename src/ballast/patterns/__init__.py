@@ -12,6 +12,7 @@ from ballast.patterns.errors import (
     PatternError,
 )
 from ballast.patterns.protocol import Pattern
+from ballast.patterns.reflection import Reflection, ReflectionExhausted
 
 __all__ = [
     "DivergentAgent",
@@ -22,6 +23,8 @@ __all__ = [
     "InsufficientDivergence",
     "Pattern",
     "PatternError",
+    "Reflection",
+    "ReflectionExhausted",
     "Synthesizer",
     "Verifier",
 ]

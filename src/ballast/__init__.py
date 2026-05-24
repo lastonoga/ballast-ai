@@ -187,6 +187,8 @@ from ballast.patterns import (
     InsufficientDivergence,
     Pattern,
     PatternError,
+    Reflection,
+    ReflectionExhausted,
     Synthesizer,
     Verifier,
 )
@@ -286,6 +288,8 @@ __all__ = [
     "Provider",
     "ProviderDetailsCostExtractor",
     "Ref",
+    "Reflection",
+    "ReflectionExhausted",
     "Registry",
     "RejectedResponse",
     "SchemaAdherenceScorer",
