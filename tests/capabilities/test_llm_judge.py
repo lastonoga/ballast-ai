@@ -465,3 +465,31 @@ def test_set_default_judge_model_forwards_to_pydantic_evals(
 
     set_default_judge_model("openrouter:qwen/qwen-3.6-72b-instruct")
     assert seen == ["openrouter:qwen/qwen-3.6-72b-instruct"]
+
+
+def test_set_default_judge_model_stores_global_model_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``model_settings=`` arg goes into a module-global slot that
+    ``LLMJudge`` reads when its own ``model_settings=None``."""
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(
+        llm_as_a_judge, "set_default_judge_model", lambda _m: None,
+    )
+
+    from ballast.capabilities.llm_judge.judge import (
+        get_default_judge_model_settings,
+    )
+
+    sentinel = object()  # any object that compares by identity
+    set_default_judge_model("x", model_settings=sentinel)  # type: ignore[arg-type]
+    assert get_default_judge_model_settings() is sentinel
+
+    judge = LLMJudge("R")
+    assert judge.model_settings is sentinel
+
+    judge_explicit = LLMJudge("R", model_settings={"temperature": 1.0})  # type: ignore[arg-type]
+    assert judge_explicit.model_settings == {"temperature": 1.0}
+
+    # Reset so we don't pollute other tests.
+    set_default_judge_model("x", model_settings=None)

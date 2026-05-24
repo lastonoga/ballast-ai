@@ -23,6 +23,7 @@ from ballast.capabilities.llm_judge._models import (
 from ballast.capabilities.llm_judge.capability import JudgeAfterRun
 from ballast.capabilities.llm_judge.judge import (
     LLMJudge,
+    get_default_judge_model_settings,
     set_default_judge_model,
 )
 from ballast.capabilities.llm_judge.persistence import (
@@ -36,6 +37,7 @@ __all__ = [
     "JudgeVerdict",
     "LLMJudge",
     "PairwiseVerdict",
+    "get_default_judge_model_settings",
     "persist_verdict_as_thread_event",
     "set_default_judge_model",
 ]

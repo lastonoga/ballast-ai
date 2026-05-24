@@ -30,6 +30,7 @@ from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from ballast.capabilities import set_default_judge_model
 from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
@@ -38,6 +39,7 @@ from ballast.persistence import (
 )
 from ballast.observability.config import ObservabilityConfig
 from ballast.settings import get_settings
+from pydantic_ai.models.openrouter import OpenRouterModelSettings
 
 from notes_app.agents.notes import notes_agent
 from notes_app.agents.todo_approval import approval_agent
@@ -59,6 +61,22 @@ from notes_app.workflows.todo_approval import todo_flow  # noqa: F401 — DBOS c
 
 
 load_dotenv()
+
+
+# Process-wide judge default — every ``LLMJudge(model=None, ...)`` in
+# the app (e.g. NotesAgent's JudgeAfterRun) picks this up. Same Qwen
+# 3.6 endpoint the production agents use, with deterministic knobs:
+# temperature=0 (we want stable verdicts, not "creative" ones) and
+# reasoning disabled (the judge agent doesn't need a thought-trace,
+# only a final pass/score/reason).
+set_default_judge_model(
+    "openrouter:qwen/qwen3.6-plus",
+    model_settings=OpenRouterModelSettings(
+        temperature=0.0,
+        openrouter_reasoning={"effort": "none"},
+        openrouter_usage={"include": True},
+    ),
+)
 
 
 def _dbos_db_url() -> str:

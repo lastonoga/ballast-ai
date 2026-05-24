@@ -47,26 +47,50 @@ if TYPE_CHECKING:
     from pydantic_ai.settings import ModelSettings
 
 
-def set_default_judge_model(model: str) -> None:
-    """Process-wide default model for every ``LLMJudge(model=None, ...)``.
+_default_model_settings: "ModelSettings | None" = None
 
-    Thin pass-through to
-    ``pydantic_evals.evaluators.llm_as_a_judge.set_default_judge_model``
-    — same setting that pydantic-evals' batch CI evaluators consult,
-    so direct-mode runtime grading and CI use the same model unless
-    overridden per-instance.
 
-    Call once at app boot before any judge instance grades anything::
+def set_default_judge_model(
+    model: "str | object",
+    *,
+    model_settings: "ModelSettings | None" = None,
+) -> None:
+    """Process-wide default for every ``LLMJudge(model=None, ...)``.
+
+    Two settings combined behind one call:
+
+    - ``model`` — forwarded to pydantic-evals so batch CI evaluators
+      use the same judge as runtime grading.
+    - ``model_settings`` — framework-side default for any
+      ``LLMJudge(model_settings=None)``. Pydantic-evals doesn't have
+      a global slot for this, so we track it ourselves and inject at
+      grade-time.
+
+    Use it once at app boot::
 
         from ballast import set_default_judge_model
+        from pydantic_ai.models.openrouter import OpenRouterModelSettings
 
-        set_default_judge_model("openrouter:qwen/qwen-3.6-72b-instruct")
+        set_default_judge_model(
+            "openrouter:qwen/qwen3.6-plus",
+            model_settings=OpenRouterModelSettings(
+                temperature=0.0,                       # deterministic
+                openrouter_reasoning={"effort": "none"},
+            ),
+        )
     """
     from pydantic_evals.evaluators.llm_as_a_judge import (  # noqa: PLC0415
         set_default_judge_model as _upstream,
     )
 
     _upstream(model)
+    global _default_model_settings
+    _default_model_settings = model_settings
+
+
+def get_default_judge_model_settings() -> "ModelSettings | None":
+    """Read the global default ``ModelSettings``; ``None`` if unset."""
+    return _default_model_settings
 
 
 def _resolve_default_model() -> str:
@@ -141,9 +165,22 @@ class LLMJudge:
         self.mode = mode
         self.threshold = threshold
         self.sync = sync
-        self.model_settings = model_settings
+        self._explicit_model_settings = model_settings
         self.max_retries = max_retries
         self.retry_backoff_base_s = retry_backoff_base_s
+
+    @property
+    def model_settings(self) -> "ModelSettings | None":
+        """Per-instance ``model_settings`` if set, else the global
+        default (:func:`set_default_judge_model` ``model_settings=``).
+
+        Property (not stored attribute) so global-default changes after
+        ``LLMJudge(...)`` construction still affect subsequent grades —
+        matches how the global model id propagates.
+        """
+        if self._explicit_model_settings is not None:
+            return self._explicit_model_settings
+        return _default_model_settings
 
     async def grade(
         self,
@@ -255,4 +292,8 @@ class LLMJudge:
         )
 
 
-__all__ = ["LLMJudge", "set_default_judge_model"]
+__all__ = [
+    "LLMJudge",
+    "get_default_judge_model_settings",
+    "set_default_judge_model",
+]
