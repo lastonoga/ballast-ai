@@ -225,10 +225,45 @@ async def create_note(
     Persisted by default (``DurableAgent`` wraps in @DBOS.step) —
     crash recovery returns the memoized note instead of creating a
     duplicate.
+
+    Runs the proposed ``(title, body)`` through a Reflection loop
+    before saving: an LLM critic checks for vague titles / thin
+    bodies, and a refiner rewrites with the feedback up to
+    ``max_iter`` times. Progress events (``data-reflection-*``) stream
+    into the chat when a ``progress_to_thread`` scope is open
+    (always true under a normal agent turn). On critic-exhaustion
+    we save the last refined draft anyway — losing the user's note
+    to a picky critic is worse than persisting an imperfect version.
     """
-    del ctx
+    from contextlib import nullcontext  # noqa: PLC0415
+
+    from ballast.events import progress_to_thread  # noqa: PLC0415
+    from ballast.patterns import ReflectionExhausted  # noqa: PLC0415
+
+    from notes_app.agents.note_refiner import (  # noqa: PLC0415
+        ProposedNote, note_refiner,
+    )
     from notes_app.repositories.note import notes_repo  # noqa: PLC0415
-    return await notes_repo.create(title=title, body=body)
+
+    draft = ProposedNote(title=title, body=body)
+    if note_refiner is None:
+        # No API key → no critic LLM; save the draft as-is.
+        refined = draft
+    else:
+        scope = (
+            progress_to_thread(ctx.deps.parent_thread_id)
+            if ctx.deps.parent_thread_id is not None
+            else nullcontext()
+        )
+        with scope:
+            try:
+                refined = await note_refiner.run(draft)
+            except ReflectionExhausted as exc:
+                # Best-effort: save the last attempt the critic saw.
+                refined = exc.last_draft
+    return await notes_repo.create(
+        title=refined.title, body=refined.body,
+    )
 
 
 @NotesAgent.tool
