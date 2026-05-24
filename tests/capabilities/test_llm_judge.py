@@ -16,9 +16,11 @@ from pydantic_evals.evaluators.llm_as_a_judge import GradingOutput
 from ballast.capabilities.llm_judge import (
     JudgeAfterRun,
     JudgeFailed,
+    JudgeUnavailable,
     JudgeVerdict,
     LLMJudge,
     PairwiseVerdict,
+    set_default_judge_model,
 )
 
 
@@ -305,3 +307,107 @@ async def test_judge_after_run_propagates_judgefailed_on_sync_judge(
             _FakeRunContext(),
             result=_FakeAgentRunResult(output="x"),
         )
+
+
+# ── retry / JudgeUnavailable ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_grade_raises_judge_unavailable_with_zero_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``max_retries=0`` (default): one attempt, exception wrapped as
+    ``JudgeUnavailable`` with ``attempts=1``."""
+    calls = {"n": 0}
+
+    async def _flaky(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        calls["n"] += 1
+        raise RuntimeError("simulated 429")
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _flaky)
+
+    judge = LLMJudge("R", max_retries=0)
+    with pytest.raises(JudgeUnavailable) as exc_info:
+        await judge.grade("x")
+    assert calls["n"] == 1
+    assert exc_info.value.attempts == 1
+    assert isinstance(exc_info.value.last_error, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_grade_retries_until_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First two calls raise, third succeeds → verdict returned, no
+    JudgeUnavailable."""
+    calls = {"n": 0}
+
+    async def _flaky_then_ok(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("model timed out")
+        return GradingOutput(reason="ok", pass_=True, score=0.9)
+
+    # Skip the asyncio.sleep so the test stays fast.
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _flaky_then_ok)
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    judge = LLMJudge("R", max_retries=2, retry_backoff_base_s=0.01)
+    verdict = await judge.grade("x")
+    assert calls["n"] == 3
+    assert verdict.score == 0.9
+
+
+@pytest.mark.asyncio
+async def test_grade_exhausts_retries_and_raises_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All ``max_retries + 1`` attempts fail → JudgeUnavailable with
+    ``attempts=`` count."""
+    calls = {"n": 0}
+
+    async def _always_failing(*_args: Any, **_kwargs: Any) -> GradingOutput:
+        calls["n"] += 1
+        raise ConnectionError("no route to host")
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "judge_output", _always_failing)
+    monkeypatch.setattr("asyncio.sleep", _no_sleep)
+
+    judge = LLMJudge("R", max_retries=2, retry_backoff_base_s=0.01)
+    with pytest.raises(JudgeUnavailable) as exc_info:
+        await judge.grade("x")
+    assert calls["n"] == 3  # initial + 2 retries
+    assert exc_info.value.attempts == 3
+    assert isinstance(exc_info.value.last_error, ConnectionError)
+
+
+def test_constructor_rejects_negative_max_retries() -> None:
+    with pytest.raises(ValueError, match=">= 0"):
+        LLMJudge("R", max_retries=-1)
+
+
+def test_set_default_judge_model_forwards_to_pydantic_evals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``set_default_judge_model`` is a thin pass-through to the
+    pydantic-evals function; it should be called with the same
+    argument."""
+    seen: list[Any] = []
+
+    def _capture(model: Any) -> None:
+        seen.append(model)
+
+    from pydantic_evals.evaluators import llm_as_a_judge
+    monkeypatch.setattr(llm_as_a_judge, "set_default_judge_model", _capture)
+
+    set_default_judge_model("openrouter:qwen/qwen-3.6-72b-instruct")
+    assert seen == ["openrouter:qwen/qwen-3.6-72b-instruct"]

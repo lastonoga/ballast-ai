@@ -57,7 +57,13 @@ class JudgeFailed(BallastError):
     """Raised when ``LLMJudge.grade(..., sync=True)`` returns a verdict
     below the configured threshold. The verdict is attached as
     ``context['verdict']`` so handlers can route into HITL with the
-    rationale already in hand."""
+    rationale already in hand.
+
+    Distinct from :class:`JudgeUnavailable` — this means the judge
+    DID grade the output and ruled against it. Infrastructure-level
+    failures (timeout, rate limit, model 5xx) raise ``JudgeUnavailable``
+    instead.
+    """
 
     code = "BALLAST_JUDGE_FAILED"
     status_code = 500
@@ -73,6 +79,48 @@ class JudgeFailed(BallastError):
                 "verdict via ``context['verdict']``."
             ),
             context={"verdict": verdict.model_dump(mode="json")},
+        )
+
+
+class JudgeUnavailable(BallastError):
+    """Raised when the judge model itself failed (network, rate-limit,
+    5xx, timeout) and the ``max_retries`` budget was exhausted.
+
+    Separate from :class:`JudgeFailed` because the policy is different:
+    failed-verdict is the judge doing its job and saying "this output
+    is bad"; unavailable is the judge infrastructure not reaching the
+    model at all. Callers usually want to log + skip (fail-open) on
+    unavailability rather than blocking the user-facing turn.
+    """
+
+    code = "BALLAST_JUDGE_UNAVAILABLE"
+    status_code = 503
+
+    def __init__(
+        self,
+        *,
+        attempts: int,
+        last_error: BaseException,
+        model_used: str,
+    ) -> None:
+        self.attempts = attempts
+        self.last_error = last_error
+        self.model_used = model_used
+        super().__init__(
+            f"LLMJudge model {model_used!r} unavailable after "
+            f"{attempts} attempt(s): {type(last_error).__name__}: "
+            f"{last_error}",
+            hint=(
+                "Transient model error. Raise ``max_retries`` for "
+                "more resilience, switch ``model=`` to a faster / "
+                "more reliable judge, or wrap the grade call in a "
+                "try/except ``JudgeUnavailable`` to fail-open."
+            ),
+            context={
+                "attempts": attempts,
+                "model": model_used,
+                "last_error_type": type(last_error).__name__,
+            },
         )
 
 
@@ -107,6 +155,28 @@ class PairwiseVerdict(BaseModel):
     latency_ms: int
 
 
+def set_default_judge_model(model: str) -> None:
+    """Process-wide default model for every ``LLMJudge(model=None, ...)``.
+
+    Thin pass-through to
+    ``pydantic_evals.evaluators.llm_as_a_judge.set_default_judge_model``
+    — same setting that pydantic-evals' batch CI evaluators consult,
+    so direct-mode runtime grading and CI use the same model unless
+    overridden per-instance.
+
+    Call once at app boot before any judge instance grades anything::
+
+        from ballast import set_default_judge_model
+
+        set_default_judge_model("openrouter:qwen/qwen-3.6-72b-instruct")
+    """
+    from pydantic_evals.evaluators.llm_as_a_judge import (  # noqa: PLC0415
+        set_default_judge_model as _upstream,
+    )
+
+    _upstream(model)
+
+
 class LLMJudge:
     """LLM-as-a-judge quality gate.
 
@@ -117,8 +187,8 @@ class LLMJudge:
             regresses to the mean per published evaluator-research.
         model: pydantic-ai model id (``"openai:gpt-5.2"``,
             ``"anthropic:claude-3-7-sonnet"``, …). ``None`` uses the
-            pydantic-evals default (controllable via
-            ``pydantic_evals.evaluators.llm_as_a_judge.set_default_judge_model``).
+            pydantic-evals default — change globally with
+            :func:`set_default_judge_model`.
         mode: ``"direct"`` (default) grades one output;
             ``"pairwise"`` compares two via :meth:`grade_pairwise`.
         threshold: ``score < threshold`` → ``pass_`` ignored, raises
@@ -126,7 +196,18 @@ class LLMJudge:
         sync: Default for :meth:`grade`. ``True`` raises on threshold
             miss; ``False`` returns the verdict regardless and the
             caller decides what to do.
-        model_settings: Forwarded to pydantic-ai's agent. Optional.
+        model_settings: Forwarded to pydantic-ai's agent. Use this to
+            cap ``temperature`` (a judge benefits from ~0.0 — you want
+            deterministic verdicts, not "creative" ones) or set
+            ``max_tokens``.
+        max_retries: Transient-error budget for the judge model call.
+            ``0`` (default) = no retry; the original error propagates
+            as :class:`JudgeUnavailable`. ``n`` = up to ``n`` retries
+            with exponential backoff (``0.5s``, ``1s``, ``2s``, …)
+            before giving up. Use ``2``–``3`` if the rest of your stack
+            tolerates a small extra latency budget on transient blips.
+        retry_backoff_base_s: First-attempt backoff (seconds). Doubles
+            on each subsequent retry.
     """
 
     def __init__(
@@ -138,6 +219,8 @@ class LLMJudge:
         threshold: float = 0.5,
         sync: bool = False,
         model_settings: "ModelSettings | None" = None,
+        max_retries: int = 0,
+        retry_backoff_base_s: float = 0.5,
     ) -> None:
         if not rubric or not rubric.strip():
             raise ValueError("LLMJudge: ``rubric`` must be non-empty")
@@ -146,12 +229,19 @@ class LLMJudge:
                 f"LLMJudge: ``threshold`` must be in [0, 1], "
                 f"got {threshold!r}",
             )
+        if max_retries < 0:
+            raise ValueError(
+                f"LLMJudge: ``max_retries`` must be >= 0, "
+                f"got {max_retries!r}",
+            )
         self.rubric = rubric
         self.model = model
         self.mode = mode
         self.threshold = threshold
         self.sync = sync
         self.model_settings = model_settings
+        self.max_retries = max_retries
+        self.retry_backoff_base_s = retry_backoff_base_s
 
     async def grade(
         self,
@@ -174,33 +264,39 @@ class LLMJudge:
         ``sync`` overrides the instance default — pass ``True`` to
         raise :class:`JudgeFailed` on threshold-miss, ``False`` to
         always return the verdict.
+
+        Raises :class:`JudgeUnavailable` if the underlying model call
+        fails ``max_retries + 1`` times in a row (transient errors are
+        retried with exponential backoff).
         """
         from pydantic_evals.evaluators import llm_as_a_judge  # noqa: PLC0415
 
         sync_resolved = self.sync if sync is None else sync
         model_id = self.model or _resolve_default_model()
 
-        started = time.perf_counter()
-        if input_ is not None and expected is not None:
-            grading = await llm_as_a_judge.judge_input_output_expected(
-                input_, output, expected, self.rubric,
-                model=self.model, model_settings=self.model_settings,
-            )
-        elif input_ is not None:
-            grading = await llm_as_a_judge.judge_input_output(
-                input_, output, self.rubric,
-                model=self.model, model_settings=self.model_settings,
-            )
-        elif expected is not None:
-            grading = await llm_as_a_judge.judge_output_expected(
-                output, expected, self.rubric,
-                model=self.model, model_settings=self.model_settings,
-            )
-        else:
-            grading = await llm_as_a_judge.judge_output(
+        async def _call_judge() -> Any:
+            if input_ is not None and expected is not None:
+                return await llm_as_a_judge.judge_input_output_expected(
+                    input_, output, expected, self.rubric,
+                    model=self.model, model_settings=self.model_settings,
+                )
+            if input_ is not None:
+                return await llm_as_a_judge.judge_input_output(
+                    input_, output, self.rubric,
+                    model=self.model, model_settings=self.model_settings,
+                )
+            if expected is not None:
+                return await llm_as_a_judge.judge_output_expected(
+                    output, expected, self.rubric,
+                    model=self.model, model_settings=self.model_settings,
+                )
+            return await llm_as_a_judge.judge_output(
                 output, self.rubric,
                 model=self.model, model_settings=self.model_settings,
             )
+
+        started = time.perf_counter()
+        grading = await self._retry(_call_judge, model_id=model_id)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         verdict = JudgeVerdict(
@@ -213,6 +309,38 @@ class LLMJudge:
         if sync_resolved and verdict.score < self.threshold:
             raise JudgeFailed(verdict=verdict)
         return verdict
+
+    async def _retry(
+        self,
+        call: Callable[[], Awaitable[Any]],
+        *,
+        model_id: str,
+    ) -> Any:
+        """Execute ``call`` with up to ``self.max_retries`` retries on
+        any exception. Backoff doubles each attempt starting from
+        ``self.retry_backoff_base_s``.
+
+        Translates the final exception into :class:`JudgeUnavailable`
+        so callers can distinguish infrastructure failure from
+        :class:`JudgeFailed` (real low-score verdict).
+        """
+        import asyncio  # noqa: PLC0415
+
+        attempts = self.max_retries + 1
+        last_error: BaseException | None = None
+        for attempt in range(attempts):
+            try:
+                return await call()
+            except Exception as exc:  # noqa: BLE001 — wrap all transients
+                last_error = exc
+                if attempt + 1 >= attempts:
+                    break
+                backoff = self.retry_backoff_base_s * (2 ** attempt)
+                await asyncio.sleep(backoff)
+        assert last_error is not None  # for type-checker — loop ran at least once
+        raise JudgeUnavailable(
+            attempts=attempts, last_error=last_error, model_used=model_id,
+        )
 
     async def grade_pairwise(
         self,
@@ -257,7 +385,7 @@ class LLMJudge:
         )
 
         started = time.perf_counter()
-        result = await agent.run(prompt)
+        result = await self._retry(lambda: agent.run(prompt), model_id=model_id)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
         return PairwiseVerdict(
@@ -430,8 +558,10 @@ class JudgeAfterRun(BallastCapability):
 __all__ = [
     "JudgeAfterRun",
     "JudgeFailed",
+    "JudgeUnavailable",
     "JudgeVerdict",
     "LLMJudge",
     "PairwiseVerdict",
     "persist_verdict_as_thread_event",
+    "set_default_judge_model",
 ]

@@ -4,10 +4,12 @@ from ballast.capabilities.grounded_retry import GroundedRetry
 from ballast.capabilities.llm_judge import (
     JudgeAfterRun,
     JudgeFailed,
+    JudgeUnavailable,
     JudgeVerdict,
     LLMJudge,
     PairwiseVerdict,
     persist_verdict_as_thread_event,
+    set_default_judge_model,
 )
 from ballast.capabilities.pii import (
     PIIDetector,
@@ -27,6 +29,7 @@ __all__ = [
     "GroundedRetry",
     "JudgeAfterRun",
     "JudgeFailed",
+    "JudgeUnavailable",
     "JudgeVerdict",
     "LLMJudge",
     "PIIDetector",
@@ -39,4 +42,5 @@ __all__ = [
     "categorized_redactor",
     "constant_redactor",
     "persist_verdict_as_thread_event",
+    "set_default_judge_model",
 ]
