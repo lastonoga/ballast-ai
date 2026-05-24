@@ -169,34 +169,28 @@ def test_constructor_rejects_out_of_range_threshold() -> None:
 async def test_pairwise_returns_winner_from_stub_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``grade_pairwise`` builds an internal pydantic-ai Agent. We
-    monkey-patch the Agent constructor so we don't try to instantiate
-    a real provider (would need OPENAI_API_KEY)."""
-    from ballast.capabilities import llm_judge as judge_mod
+    """``grade_pairwise`` builds an internal pydantic-ai Agent via the
+    ``make_pairwise_agent`` factory. Patch the factory so we return a
+    fake agent and skip the real OpenAI provider init."""
+    from ballast.capabilities.llm_judge import _pairwise as pairwise_mod
 
     class _FakeRunResult:
-        def __init__(self, output: judge_mod._PairwiseGrading) -> None:
+        def __init__(
+            self, output: pairwise_mod._PairwiseGrading,
+        ) -> None:
             self.output = output
 
     class _FakeAgent:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            del args, kwargs
-
         async def run(self, *args: Any, **kwargs: Any) -> _FakeRunResult:
             del args, kwargs
-            return _FakeRunResult(judge_mod._PairwiseGrading(
+            return _FakeRunResult(pairwise_mod._PairwiseGrading(
                 reason="B is more detailed", winner="b",
             ))
 
     monkeypatch.setattr(
-        "ballast.capabilities.llm_judge.Agent",
-        _FakeAgent,
-        raising=False,
+        "ballast.capabilities.llm_judge.judge.make_pairwise_agent",
+        lambda *_a, **_kw: _FakeAgent(),
     )
-    # The import inside ``grade_pairwise`` is local, so patch the
-    # ``pydantic_ai.Agent`` name at the module level too.
-    import pydantic_ai
-    monkeypatch.setattr(pydantic_ai, "Agent", _FakeAgent)
 
     judge = LLMJudge("Detailed answer", mode="pairwise")
     verdict = await judge.grade_pairwise("short", "looong and detailed")
@@ -248,8 +242,12 @@ async def test_judge_after_run_persists_when_thread_id_supplied(
     async def _fake_persist(thread_id, verdict, *, subject):
         persisted.append((thread_id, verdict, subject))
 
+    # Patch where ``capability.py`` binds the symbol — the canonical
+    # location ``persistence`` module isn't enough because
+    # ``capability.py`` did ``from .persistence import …`` at import.
     monkeypatch.setattr(
-        "ballast.capabilities.llm_judge.persist_verdict_as_thread_event",
+        "ballast.capabilities.llm_judge.capability."
+        "persist_verdict_as_thread_event",
         _fake_persist,
     )
 
