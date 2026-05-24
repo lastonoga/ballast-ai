@@ -4,8 +4,7 @@ Imports the SQLModel domain modules from BOTH the framework
 (``ballast.persistence.thread.domain`` + ``ballast.persistence.events.domain``)
 AND the notes-app (``notes_app.models.note``) so ``SQLModel.metadata``
 contains every table the app cares about: ``notes`` + ``threads`` +
-``messages`` + ``thread_events``. (Outbox / HITL tables also register
-on import but aren't used by notes-app's current wiring; harmless.)
+``messages`` + ``thread_events``.
 
 The DBOS workflow store lives on its own sqlite file (see
 ``main.py:_dbos_db_url``) and is NOT managed by this alembic config.
@@ -29,8 +28,6 @@ from sqlmodel import SQLModel
 
 # Import all SQLModel table classes so they register with SQLModel.metadata.
 import ballast.persistence.events.domain  # noqa: F401
-import ballast.persistence.hitl.domain  # noqa: F401
-import ballast.persistence.outbox.domain  # noqa: F401
 import ballast.persistence.thread.domain  # noqa: F401
 
 import notes_app.models.note  # noqa: F401

@@ -21,8 +21,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlmodel import SQLModel
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-import ballast.persistence.hitl.domain  # noqa: F401
-import ballast.persistence.outbox.domain  # noqa: F401
+import ballast.persistence.events.domain  # noqa: F401
 import ballast.persistence.thread.domain  # noqa: F401
 
 

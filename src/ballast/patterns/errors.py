@@ -14,50 +14,6 @@ class PatternError(_BasePatternError):
     """
 
 
-class ReflectionExhausted(PatternError):  # noqa: N818
-    """Reflection.run exhausted max_iterations without the critic returning passed=True."""
-
-    code = "BALLAST_PATTERN_REFLECTION_EXHAUSTED"
-    status_code = 500
-
-    def __init__(self, *, iterations: int, last_feedback: list[Any]) -> None:
-        self.iterations = iterations
-        self.last_feedback = last_feedback
-        super().__init__(
-            f"ReflectionExhausted: {iterations} iterations without convergence; "
-            f"last_feedback={last_feedback!r}",
-            hint=(
-                "Raise ``max_iterations``, soften the critic's passing "
-                "criteria, or improve the worker prompt."
-            ),
-            context={"iterations": iterations, "last_feedback": list(last_feedback)},
-        )
-
-
-class MutationRejected(PatternError):  # noqa: N818
-    """A MutationPipeline stage returned RejectedAt and RaiseOnReject was in effect."""
-
-    code = "BALLAST_PATTERN_MUTATION_REJECTED"
-    status_code = 500
-
-    def __init__(self, *, stage: str, reason: str, actor_id: str | None = None) -> None:
-        self.stage = stage
-        self.reason = reason
-        self.actor_id = actor_id
-        super().__init__(
-            f"MutationRejected at stage={stage!r}: {reason}",
-            hint=(
-                "Use ``DropOnReject`` to skip rejected proposals instead "
-                "of raising, or adjust the stage's reject criteria."
-            ),
-            context={
-                "stage": stage,
-                "reason": reason,
-                "actor_id": actor_id,
-            },
-        )
-
-
 class HITLTimedOut(PatternError):  # noqa: N818
     """The HITL gate timed out before any authorized actor responded."""
 

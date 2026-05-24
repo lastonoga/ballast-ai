@@ -14,10 +14,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
 # Import all framework persistence modules so their tables register with metadata.
-import ballast.persistence.hitl.persistence  # noqa: F401
-import ballast.persistence.outbox.persistence  # noqa: F401
-import ballast.persistence.tenant.persistence  # noqa: F401
-import ballast.persistence.thread.persistence  # noqa: F401
+import ballast.persistence.events.domain  # noqa: F401
+import ballast.persistence.thread.domain  # noqa: F401
 
 config = context.config
 

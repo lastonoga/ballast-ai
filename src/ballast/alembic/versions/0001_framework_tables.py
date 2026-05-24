@@ -1,4 +1,4 @@
-"""framework tables: threads, messages, outbox, hitl_*
+"""framework tables: threads, messages, thread_events
 
 The framework intentionally does NOT model tenants, actors, or
 identity. Apps that need multi-tenancy / per-user scoping store that
@@ -75,122 +75,39 @@ def upgrade() -> None:
     )
     op.create_index("ix_messages_thread_id", "messages", ["thread_id"])
 
-    # 3. outbox
+    # 3. thread_events
     op.create_table(
-        "outbox",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("event_type", sa.String(), nullable=False),
+        "thread_events",
         sa.Column(
-            "payload",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-        sa.Column("workflow_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_index("ix_outbox_delivered_at", "outbox", ["delivered_at"])
-    op.create_index("ix_outbox_created_at", "outbox", ["created_at"])
-
-    # 4. hitl_blocking_requirements
-    op.create_table(
-        "hitl_blocking_requirements",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column("gate_kind", sa.String(), nullable=False),
-        sa.Column("workflow_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column(
-            "payload",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-        sa.Column("purpose", sa.String(), nullable=False),
-        sa.Column("status", sa.String(), nullable=False),
-        sa.Column("timeout_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.create_index(
-        "ix_hitl_blocking_requirements_workflow_id",
-        "hitl_blocking_requirements",
-        ["workflow_id"],
-    )
-    op.create_index(
-        "ix_hitl_blocking_requirements_created_at",
-        "hitl_blocking_requirements",
-        ["created_at"],
-    )
-
-    # 5. hitl_decisions (FK → hitl_blocking_requirements, threads (nullable))
-    op.create_table(
-        "hitl_decisions",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "blocking_requirement_id",
+            "id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("hitl_blocking_requirements.id"),
-            nullable=False,
-        ),
-        sa.Column("actor_id", sa.String(), nullable=False),
-        sa.Column("verdict", sa.String(), nullable=False),
-        sa.Column(
-            "payload",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
+            primary_key=True,
         ),
         sa.Column(
-            "helper_verdict_payload",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=True,
-        ),
-        sa.Column("helper_verdict_context_type", sa.String(), nullable=True),
-        sa.Column(
-            "helper_thread_id",
+            "thread_id",
             postgresql.UUID(as_uuid=True),
             sa.ForeignKey("threads.id"),
-            nullable=True,
-        ),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_index(
-        "ix_hitl_decisions_blocking_requirement_id",
-        "hitl_decisions",
-        ["blocking_requirement_id"],
-    )
-    op.create_index("ix_hitl_decisions_created_at", "hitl_decisions", ["created_at"])
-
-    # 6. hitl_authz_denials (FK → hitl_blocking_requirements)
-    op.create_table(
-        "hitl_authz_denials",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "request_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("hitl_blocking_requirements.id"),
             nullable=False,
         ),
-        sa.Column("actor_id", sa.String(), nullable=False),
+        sa.Column("seq", sa.Integer(), nullable=False),
+        sa.Column("kind", sa.String(), nullable=False),
         sa.Column(
-            "voter_votes",
+            "payload",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
         ),
-        sa.Column("attempted_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "thread_id", "seq", name="uq_thread_events_thread_seq",
+        ),
     )
     op.create_index(
-        "ix_hitl_authz_denials_request_id",
-        "hitl_authz_denials",
-        ["request_id"],
+        "ix_thread_events_thread_id", "thread_events", ["thread_id"],
     )
 
 
 def downgrade() -> None:
-    op.drop_table("hitl_authz_denials")
-    op.drop_table("hitl_decisions")
-    op.drop_table("hitl_blocking_requirements")
-    op.drop_table("outbox")
+    op.drop_table("thread_events")
     op.drop_table("messages")
     op.drop_table("threads")

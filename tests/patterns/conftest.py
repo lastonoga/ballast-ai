@@ -1,10 +1,10 @@
 """DBOS bootstrap for pattern tests that need a running runtime.
 
-``Reflection.run`` is a @DBOS.workflow and ``Reflection._write`` /
-``_critique`` are @DBOS.step, so DBOS must be initialised before the
-wrapped callables can be invoked. We use a session-scoped temporary
-SQLite system database (DBOS supports sqlite natively) so the suite
-runs without Docker, and only spin DBOS up for the tests that actually
+``DivergentConvergent`` declares ``@DBOS.workflow`` / ``@DBOS.step``
+inside its run path, so DBOS must be initialised before the wrapped
+callables can be invoked. We use a session-scoped temporary SQLite
+system database (DBOS supports sqlite natively) so the suite runs
+without Docker, and only spin DBOS up for the tests that actually
 need it (those that explicitly request ``dbos_runtime``).
 
 Event-loop / executor note: pytest-asyncio (mode=auto) creates a fresh
@@ -46,7 +46,7 @@ def dbos_runtime() -> Iterator[type[DBOS]]:
     finally:
         # destroy_registry=False — leave @DBOS.workflow / @DBOS.step
         # registrations intact for subsequent test modules that import
-        # Reflection (decorators ran at import time and would not be
+        # patterns (decorators ran at import time and would not be
         # re-applied if their registry entries were wiped).
         DBOS.destroy(destroy_registry=False)
 
