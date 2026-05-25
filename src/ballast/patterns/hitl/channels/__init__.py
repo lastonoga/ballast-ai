@@ -11,6 +11,7 @@ from ballast.patterns.hitl.channels._protocol import (
     InT,
     VerdictT,
 )
+from ballast.patterns.hitl.channels.thread import ThreadChannel
 from ballast.patterns.hitl.channels.ui_card import (
     CardVerdict,
     UICardChannel,
@@ -25,6 +26,7 @@ __all__ = [
     "DBOSHITLChannel",
     "HITLChannel",
     "InT",
+    "ThreadChannel",
     "UICardChannel",
     "VerdictT",
     "approval_card_decided",
