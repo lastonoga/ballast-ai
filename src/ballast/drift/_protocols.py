@@ -14,11 +14,13 @@ Protocols (added in Task 3): ``DriftCheckStrategy``, ``TraceWindow``,
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from pydantic_ai.messages import ModelMessage
+
+from ballast.drift._verdict import DriftVerdictBase
 
 
 @dataclass
@@ -62,4 +64,55 @@ class DriftContext:
     """Application-populated scratch (e.g. ``{"budget": {...}}`` for OnBudgetThreshold)."""
 
 
-__all__ = ["DriftCheckSignal", "DriftContext"]
+@runtime_checkable
+class DriftCheckStrategy(Protocol):
+    """When to fire the judge.
+
+    Implementations may be stateful (e.g., ``EveryNToolCalls`` tracks the
+    last fire count). ``should_check`` is called on every agent step.
+    """
+
+    def should_check(self, signal: DriftCheckSignal) -> bool: ...
+
+
+@runtime_checkable
+class TraceWindow(Protocol):
+    """What slice of message history to show the judge."""
+
+    async def slice(self, ctx: DriftContext) -> list["ModelMessage"]: ...
+
+
+@runtime_checkable
+class GoalSource(Protocol):
+    """Where the original objective comes from."""
+
+    async def goal(self, ctx: DriftContext) -> str: ...
+
+
+@runtime_checkable
+class PromptBuilder(Protocol):
+    """How to ask the judge.
+
+    Returns the user prompt for the judge agent. The judge's system prompt
+    is owned by the judge agent itself (see ``make_default_judge``).
+    """
+
+    def build(self, goal: str, trace: list["ModelMessage"]) -> str: ...
+
+
+@runtime_checkable
+class DriftHandler(Protocol):
+    """What to do on drift.
+
+    Multiple handlers run in declared order. Exceptions from non-Raise
+    handlers are swallowed individually (see ``DriftEngine.maybe_check``).
+    """
+
+    async def handle(self, verdict: DriftVerdictBase, ctx: DriftContext) -> None: ...
+
+
+__all__ = [
+    "DriftCheckSignal", "DriftContext",
+    "DriftCheckStrategy", "TraceWindow", "GoalSource",
+    "PromptBuilder", "DriftHandler",
+]
