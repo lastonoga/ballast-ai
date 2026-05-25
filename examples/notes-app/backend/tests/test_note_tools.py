@@ -51,23 +51,6 @@ def _bound_tool(agent: Any, name: str) -> Any:
     return tool.function
 
 
-async def test_create_note_persists_via_repo(
-    repo: InMemoryNoteRepository,
-) -> None:
-    deps = _make_deps()
-    ctx = _FakeCtx(deps=deps)
-
-    agent = _agent_with_tools(repo)
-    create_note = _bound_tool(agent, "create_note")
-
-    note = await create_note(ctx, title="grocery", body="milk, eggs")
-    assert isinstance(note, Note)
-    assert note.title == "grocery"
-    assert note.body == "milk, eggs"
-
-    listed = await repo.list_()
-    assert [n.id for n in listed] == [note.id]
-
 
 async def test_search_notes_substring_match(
     repo: InMemoryNoteRepository,

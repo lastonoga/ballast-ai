@@ -35,6 +35,8 @@ from notes_app.settings import get_notes_settings
 class ProposedNote(BaseModel):
     """Draft + refined shape Reflection passes around the loop."""
 
+    __hitl_kind__ = "note.create"
+
     title: str
     body: str
 

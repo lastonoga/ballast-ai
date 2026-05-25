@@ -216,54 +216,43 @@ class NotesAgent(DurableAgent):
 @NotesAgent.tool
 async def create_note(
     ctx: RunContext[NoteToolDeps], title: str, body: str,
-) -> Note:
-    """Create a new note with the given title and body.
+) -> str:
+    """Save a note for the current user, gated by a UI approval card.
 
-    Returns the saved note (including its ``id``, which you should use
-    for any follow-up edit/delete in the same turn).
-
-    Persisted by default (``DurableAgent`` wraps in @DBOS.step) —
-    crash recovery returns the memoized note instead of creating a
-    duplicate.
-
-    Runs the proposed ``(title, body)`` through a Reflection loop
-    before saving: an LLM critic checks for vague titles / thin
-    bodies, and a refiner rewrites with the feedback up to
-    ``max_iter`` times. Progress events (``data-reflection-*``) stream
-    into the chat when a ``progress_to_thread`` scope is open
-    (always true under a normal agent turn). On critic-exhaustion
-    we save the last refined draft anyway — losing the user's note
-    to a picky critic is worse than persisting an imperfect version.
+    Refines the draft, then suspends on ``create_note_flow``; the user
+    sees the card in the side-panel "Approvals" drawer (separate from
+    chat). On approve the note is persisted; on reject the save is
+    cancelled. While waiting, a "Waiting for your approval →" pill
+    appears in the chat thread.
     """
     from contextlib import nullcontext  # noqa: PLC0415
 
     from ballast.events import progress_to_thread  # noqa: PLC0415
     from ballast.patterns import ReflectionExhausted  # noqa: PLC0415
 
-    from notes_app.agents.note_refiner import (  # noqa: PLC0415
-        ProposedNote, note_refiner,
-    )
-    from notes_app.repositories.note import notes_repo  # noqa: PLC0415
+    from notes_app.agents.note_refiner import ProposedNote, note_refiner  # noqa: PLC0415
+    from notes_app.workflows.create_note import create_note_flow  # noqa: PLC0415
 
     draft = ProposedNote(title=title, body=body)
-    if note_refiner is None:
-        # No API key → no critic LLM; save the draft as-is.
-        refined = draft
-    else:
-        scope = (
-            progress_to_thread(ctx.deps.parent_thread_id)
-            if ctx.deps.parent_thread_id is not None
-            else nullcontext()
-        )
-        with scope:
+    scope = (
+        progress_to_thread(ctx.deps.parent_thread_id)
+        if ctx.deps.parent_thread_id is not None
+        else nullcontext()
+    )
+    with scope:
+        if note_refiner is not None:
             try:
                 refined = await note_refiner.run(draft)
             except ReflectionExhausted as exc:
-                # Best-effort: save the last attempt the critic saw.
                 refined = exc.last_draft
-    return await notes_repo.create(
-        title=refined.title, body=refined.body,
-    )
+        else:
+            refined = draft
+
+        note = await create_note_flow(refined)
+
+    if note is None:
+        return "Note save cancelled by user."
+    return f"Saved note '{note.title}'."
 
 
 @NotesAgent.tool
