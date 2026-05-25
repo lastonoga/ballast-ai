@@ -87,6 +87,7 @@ from ballast.capabilities import (
     BallastCapability,
     BudgetExhausted,
     BudgetGuard,
+    GoalDriftDetector,
     GroundedRetry,
     JudgeAfterRun,
     JudgeFailed,
@@ -191,6 +192,7 @@ from ballast.patterns import (
     ReflectionExhausted,
     Synthesizer,
     Verifier,
+    with_drift_monitor,
 )
 from ballast.patterns.hitl import (
     CardVerdict,
@@ -258,6 +260,7 @@ __all__ = [
     "DivergentBranch",
     "DivergentConvergent",
     "Durable",
+    "GoalDriftDetector",
     "Embedder",
     "EmptyMessageBody",
     "Engine",
@@ -357,4 +360,5 @@ __all__ = [
     "testing",
     "traced",
     "validate_thread_metadata",
+    "with_drift_monitor",
 ]

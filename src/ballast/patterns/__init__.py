@@ -5,6 +5,7 @@ from ballast.patterns.divergent_convergent import (
     Synthesizer,
     Verifier,
 )
+from ballast.patterns.drift_monitor import with_drift_monitor
 from ballast.patterns.errors import (
     HITLDenied,
     HITLTimedOut,
@@ -27,4 +28,5 @@ __all__ = [
     "ReflectionExhausted",
     "Synthesizer",
     "Verifier",
+    "with_drift_monitor",
 ]

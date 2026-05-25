@@ -1,5 +1,6 @@
 from ballast.capabilities.base import BallastCapability
 from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
+from ballast.capabilities.drift import GoalDriftDetector
 from ballast.capabilities.grounded_retry import GroundedRetry
 from ballast.capabilities.llm_judge import (
     JudgeAfterRun,
@@ -26,6 +27,7 @@ __all__ = [
     "BallastCapability",
     "BudgetExhausted",
     "BudgetGuard",
+    "GoalDriftDetector",
     "GroundedRetry",
     "JudgeAfterRun",
     "JudgeFailed",
