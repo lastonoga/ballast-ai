@@ -20,13 +20,9 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from fastapi import APIRouter, FastAPI
 
     from ballast.api.cors import CORSConfig
-    from ballast.memory._scope import Scope
-    from ballast.memory.episodic._facade import EpisodicMemory
-    from ballast.memory.semantic._facade import SemanticMemory
     from ballast.persistence.approval_card import ApprovalCardRepository
     from ballast.settings import BallastSettings
 
@@ -84,9 +80,6 @@ class Ballast:
         self._on_startup: list[LifespanHook] = []
         self._on_shutdown: list[LifespanHook] = []
         self._approval_repo: "ApprovalCardRepository | None" = None
-        self._episodic_memory: "EpisodicMemory | None" = None
-        self._memory: "EpisodicMemory | None" = None  # back-compat shadow
-        self._semantic_memory: "SemanticMemory | None" = None
 
     def use(self, *providers: Provider) -> Self:
         """Register one or more third-party providers.
@@ -202,54 +195,6 @@ class Ballast:
 
         set_default_judge_model(model, model_settings=model_settings)
         return self
-
-    def with_episodic_memory(
-        self,
-        memory: "EpisodicMemory",
-        *,
-        scope_builder: "Callable[[], Scope] | None" = None,
-    ) -> Self:
-        """Wire an EpisodicMemory facade + optional default scope-builder.
-
-        Replaces the deprecated ``with_memory`` (kept as a backward-
-        compatible alias for one release window).
-        """
-        self._episodic_memory = memory
-        self._memory = memory  # back-compat shadow for Phase 1 consumers
-        if scope_builder is not None:
-            memory._default_scope_builder = scope_builder
-        return self
-
-    def with_semantic_memory(
-        self,
-        memory: "SemanticMemory",
-    ) -> Self:
-        """Wire a SemanticMemory facade for agent-pull tool exposure.
-
-        Workflow code accesses semantic sources directly via their module
-        singletons (e.g. ``from notes_app.memory.semantic_sources import
-        notes_semantic``) — the facade is purely for agent tool collection.
-        """
-        self._semantic_memory = memory
-        return self
-
-    def with_memory(
-        self,
-        memory: "EpisodicMemory",
-        *,
-        scope_builder: "Callable[[], Scope] | None" = None,
-    ) -> Self:
-        """Deprecated — use ``with_episodic_memory(...)`` instead.
-
-        Kept as a backward-compatible alias for one release window so
-        existing Phase 1 wiring continues to work.
-        """
-        import warnings
-        warnings.warn(
-            "Ballast.with_memory is deprecated; use with_episodic_memory.",
-            DeprecationWarning, stacklevel=2,
-        )
-        return self.with_episodic_memory(memory, scope_builder=scope_builder)
 
     def with_approval_repo(
         self, repo: "ApprovalCardRepository",
