@@ -25,6 +25,7 @@ from sqlmodel import SQLModel
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 # ── Import all persistence modules so SQLModel.metadata is fully populated ──
+import ballast.persistence.approval_card._models  # noqa: F401
 import ballast.persistence.events.domain  # noqa: F401
 import ballast.persistence.thread.domain  # noqa: F401
 

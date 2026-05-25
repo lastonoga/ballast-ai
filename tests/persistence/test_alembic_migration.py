@@ -57,6 +57,7 @@ def test_alembic_upgrade_creates_framework_tables(pg_dsn: str) -> None:
         "hitl_blocking_requirements",
         "hitl_decisions",
         "hitl_authz_denials",
+        "approval_cards",
         "alembic_version",
     }
     missing = expected - table_names

@@ -1,4 +1,4 @@
-"""Approval card persistence — model + Protocol + in-memory impl."""
+"""Approval card persistence — model + Protocol + in-memory + SQL impls."""
 from ballast.persistence.approval_card._memory import (
     InMemoryApprovalCardRepository,
 )
@@ -7,12 +7,14 @@ from ballast.persistence.approval_card._models import (
     CardStatus,
 )
 from ballast.persistence.approval_card._repo import ApprovalCardRepository
+from ballast.persistence.approval_card._sql import SqlApprovalCardRepository
 
 __all__ = [
     "ApprovalCard",
     "ApprovalCardRepository",
     "CardStatus",
     "InMemoryApprovalCardRepository",
+    "SqlApprovalCardRepository",
     "approval_card_repo",
 ]
 
