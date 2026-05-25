@@ -200,42 +200,7 @@ from ballast.patterns.hitl import (
     UICardChannel,
     register_card_kind,
 )
-# Memory subsystem (CoALA Phase 1 + Phase 2 semantic)
 from ballast.memory import Scope
-from ballast.memory.semantic import (
-    DomainSemanticSource,
-    SemanticMemory,
-    SemanticSource,
-    VectorSemanticSource,
-    memory_tool,
-)
-from ballast.memory.episodic import (
-    DetailLevel,
-    Episode,
-    EpisodicMemory,
-    EpisodicSource,
-    RecallResult,
-    RememberTurn,
-    ScoredEpisode,
-)
-from ballast.memory.episodic.sources._thread import ThreadEpisodicSource
-
-try:
-    from ballast.memory.episodic.sources._vector import (  # noqa: PLC0415
-        EpisodeRow,
-        VectorEpisodicSource,
-    )
-except ImportError:
-    EpisodeRow = None  # type: ignore[assignment,misc]
-    VectorEpisodicSource = None  # type: ignore[assignment,misc]
-from ballast.memory.episodic.strategies import (
-    AllRelevant,
-    Cluster,
-    MapReduce as MapReduceStrategy,
-    Recency,
-    RecallStrategy,
-    TopK,
-)
 from ballast.patterns.map_reduce import MapReduce
 from ballast.durable import Durable
 from ballast.runtime import (  # noqa: I001
@@ -256,9 +221,7 @@ from ballast.runtime import (
 
 __all__ = [
     "A2AAgentAdapter",
-    "A2AAgentAdapter",
     "AgentCard",
-    "AllRelevant",
     "AgentNotRegistered",
     "AgentRef",
     "AuthError",
@@ -276,13 +239,10 @@ __all__ = [
     "ConfigurationError",
     "ConfigurationInvariantViolation",
     "CostExtractor",
-    "Cluster",
     "Critique",
     "DBOSConfig",
     "DBOSHITLChannel",
     "Dataset",
-    "DetailLevel",
-    "DomainSemanticSource",
     "DepsFactory",
     "Det",
     "DivergentAgent",
@@ -292,10 +252,6 @@ __all__ = [
     "Embedder",
     "EmptyMessageBody",
     "Engine",
-    "Episode",
-    "EpisodeRow",
-    "EpisodicMemory",
-    "EpisodicSource",
     "EvalCase",
     "EvalReport",
     "EvalRunOutput",
@@ -318,7 +274,7 @@ __all__ = [
     "JudgeVerdict",
     "LLMJudge",
     "LifespanHook",
-    "MapReduceStrategy",
+    "MapReduce",
     "MissingDependencyError",
     "Named",
     "ObservabilityConfig",
@@ -331,46 +287,34 @@ __all__ = [
     "PersistenceError",
     "Provider",
     "ProviderDetailsCostExtractor",
-    "RecallResult",
-    "RecallStrategy",
-    "Recency",
     "Ref",
     "Reflection",
     "ReflectionExhausted",
     "Registry",
-    "RememberTurn",
     "SchemaAdherenceScorer",
     "Scope",
     "ScoreResult",
-    "ScoredEpisode",
     "Scorer",
     "Selector",
     "SelectorRegistry",
     "SemanticDeduper",
     "SemanticLoopDetected",
     "SemanticLoopDetector",
-    "SemanticMemory",
-    "SemanticSource",
     "SettingsValidationError",
     "Signal",
     "Synthesizer",
     "ThreadChannel",
-    "ThreadEpisodicSource",
     "ThreadEventBroadcaster",
     "ThreadEventStream",
     "ThreadEventType",
     "ThreadMetadataInvalid",
     "ThreadNotFound",
-    "TopK",
     "TraceName",
     "TypedLoopGuard",
     "UICardChannel",
     "Verifier",
-    "VectorEpisodicSource",
-    "VectorSemanticSource",
     "WorkflowNotFound",
     "as_critique",
-    "MapReduce",
     "build_a2a_router",
     "build_dbos_config",
     "build_health_router",
@@ -388,7 +332,6 @@ __all__ = [
     "get_thread_repo",
     "has_logfire",
     "helper_thread_created",
-    "memory_tool",
     "message_added",
     "messages_to_model_history",
     "receiver",
