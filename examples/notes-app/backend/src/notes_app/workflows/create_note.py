@@ -40,7 +40,7 @@ async def create_note_flow(draft: ProposedNote) -> Note | None:
     # Best-effort recall: similar past notes for context. Failures don't
     # block the save flow.
     try:
-        memory = getattr(get_ballast(), "_memory", None)
+        memory = getattr(get_ballast(), "_episodic_memory", None)
         if memory is not None:
             recall = await memory.episodic_for(
                 intent=f"prior notes about {draft.title}",

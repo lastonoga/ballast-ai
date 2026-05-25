@@ -140,7 +140,7 @@ def default_notes_capabilities() -> list[BallastCapability]:
     ]
     # Memory may not be wired in test envs — degrade gracefully.
     try:
-        memory = getattr(get_ballast(), "_memory", None)
+        memory = getattr(get_ballast(), "_episodic_memory", None)
         if memory is not None:
             caps.append(RememberTurn(memory=memory))
     except Exception:  # noqa: BLE001
