@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from fastapi import APIRouter, FastAPI
 
     from ballast.api.cors import CORSConfig
+    from ballast.persistence.approval_card import ApprovalCardRepository
     from ballast.settings import BallastSettings
 
 try:  # Python 3.11+ has ``Self``; fall back for older bytecode caches.
@@ -78,6 +79,7 @@ class Ballast:
         self._dbos_config: object | None = None
         self._on_startup: list[LifespanHook] = []
         self._on_shutdown: list[LifespanHook] = []
+        self._approval_repo: "ApprovalCardRepository | None" = None
 
     def use(self, *providers: Provider) -> Self:
         """Register one or more third-party providers.
@@ -192,6 +194,25 @@ class Ballast:
         )
 
         set_default_judge_model(model, model_settings=model_settings)
+        return self
+
+    def with_approval_repo(
+        self, repo: "ApprovalCardRepository",
+    ) -> Self:
+        """Configure the approval-card repository (defaults to in-memory).
+
+        Reassigns the module-level ``approval_card_repo`` singleton so
+        tools / channels that do
+        ``from ballast.persistence.approval_card import approval_card_repo``
+        pick up the configured instance without explicit DI.
+
+        Returns ``self`` for chaining. Idempotent — re-calling overwrites
+        the previous repository.
+        """
+        import ballast.persistence.approval_card as _ac  # noqa: PLC0415
+
+        _ac.approval_card_repo = repo
+        self._approval_repo = repo
         return self
 
     def with_observability(
