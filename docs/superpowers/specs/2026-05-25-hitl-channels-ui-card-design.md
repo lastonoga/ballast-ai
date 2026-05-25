@@ -184,6 +184,203 @@ class CardVerdict(BaseModel, Generic[OutT]):
     answered_at: datetime
 ```
 
+### 3.5. Worked examples — verdict wire
+
+Both channels suspend the caller on the same DBOS topic
+(`f"hitl:{request_id}"`). What differs is **who** dials
+`Durable.send_async` with the verdict dict.
+
+#### UICardChannel — verdict via REST endpoint
+
+```
+POST /approvals/{card_id}/decision
+Content-Type: application/json
+{
+  "decision": "approve",
+  "modified": {"title": "Grocery — Sat AM", "body": "milk, eggs, tea"},
+  "feedback": null
+}
+```
+
+Router handler:
+
+```python
+# src/ballast/api/approvals/router.py
+@router.post("/approvals/{card_id}/decision")
+async def decide(card_id: str, body: DecisionRequest) -> ApprovalCard:
+    card = await approval_card_repo.get(card_id)
+    if not card:                          raise HTTPException(404)
+    if card.user_id != current_user_id(): raise HTTPException(403)
+    if card.status != "pending":          raise HTTPException(409, ...)
+
+    # Look up the verdict type the channel that opened this card expects.
+    # (Channels register on import: card_verdict_registry[kind] = type.)
+    verdict_type = card_verdict_registry[card.kind]
+    verdict = TypeAdapter(verdict_type).validate_python({
+        "decision":    body.decision,
+        "modified":    body.modified,
+        "feedback":    body.feedback,
+        "answered_at": Det.now(),
+    })
+
+    await Durable.send_async(
+        destination_id=card.workflow_id,
+        message=verdict.model_dump(mode="json"),
+        topic=card.respond_topic,
+    )
+    return await approval_card_repo.resolve(card.id, verdict=verdict)
+```
+
+Channel's `decode_verdict` then re-hydrates the same shape on the
+suspended workflow's side:
+
+```python
+class UICardChannel(DBOSHITLChannel[InT, CardVerdict[InT]]):
+    async def decode_verdict(self, raw: Any) -> CardVerdict[InT]:
+        return TypeAdapter(CardVerdict[InT]).validate_python(raw)
+```
+
+Workflow then sees a typed `CardVerdict[ProposedNote]` with
+`decision`, `modified`, `feedback`.
+
+#### ThreadChannel — verdict via helper-agent tools
+
+The helper agent has explicit tools the user invokes during the
+sub-conversation. Each tool builds a typed verdict and ships it to
+the suspended workflow via `Durable.send_async`. `ThreadChannel.deliver`
+stamps `workflow_id` + `respond_topic` into the helper thread's
+metadata so the tools can read them.
+
+```python
+# notes_app/agents/todo_approval_agent.py
+class TodoApprovalContext(BaseModel):
+    """Helper agent's run-state. Channel writes these into the
+    helper thread's metadata at deliver-time; agent reads them via
+    its DurableAgent capability."""
+    workflow_id:   str       # destination_id for send_async
+    respond_topic: str       # topic for send_async
+    proposal:      TodoProposal
+
+
+class NotesTodoApprovalAgent(BallastAgent):
+    """Helper agent that asks the user about a proposed todo and
+    ships back a CardVerdict[TodoProposal] when they decide."""
+
+    def build_agent(self) -> Agent[TodoApprovalContext, str]:
+        return Agent(
+            model="openrouter:anthropic/claude-haiku-4.5",
+            deps_type=TodoApprovalContext,
+            system_prompt=(
+                "You are asking the user whether to save this proposed "
+                "todo. When they decide, call approve_todo / reject_todo "
+                "/ modify_todo with their answer. Don't argue — relay."
+            ),
+        )
+
+
+@NotesTodoApprovalAgent.tool
+async def approve_todo(ctx: RunContext[TodoApprovalContext]) -> str:
+    """User approved the todo as proposed."""
+    verdict = CardVerdict[TodoProposal](
+        decision="approve",
+        modified=None,
+        feedback=None,
+        answered_at=Det.now(),
+    )
+    await Durable.send_async(
+        destination_id=ctx.deps.workflow_id,
+        message=verdict.model_dump(mode="json"),
+        topic=ctx.deps.respond_topic,
+    )
+    return "Approved. Saving the todo."
+
+
+@NotesTodoApprovalAgent.tool
+async def reject_todo(
+    ctx: RunContext[TodoApprovalContext], reason: str | None = None,
+) -> str:
+    """User rejected the todo (optional reason)."""
+    verdict = CardVerdict[TodoProposal](
+        decision="reject", feedback=reason, answered_at=Det.now(),
+    )
+    await Durable.send_async(
+        destination_id=ctx.deps.workflow_id,
+        message=verdict.model_dump(mode="json"),
+        topic=ctx.deps.respond_topic,
+    )
+    return "Got it — won't save."
+
+
+@NotesTodoApprovalAgent.tool
+async def modify_todo(
+    ctx: RunContext[TodoApprovalContext],
+    title: str | None = None,
+    body:  str | None = None,
+) -> str:
+    """User wants to save a tweaked version."""
+    edited = ctx.deps.proposal.model_copy(update={
+        k: v for k, v in {"title": title, "body": body}.items() if v
+    })
+    verdict = CardVerdict[TodoProposal](
+        decision="approve", modified=edited, answered_at=Det.now(),
+    )
+    await Durable.send_async(
+        destination_id=ctx.deps.workflow_id,
+        message=verdict.model_dump(mode="json"),
+        topic=ctx.deps.respond_topic,
+    )
+    return f"Saving with your edits: '{edited.title}'."
+```
+
+`ThreadChannel.deliver` implementation:
+
+```python
+# src/ballast/patterns/hitl/channels/thread.py
+class ThreadChannel(DBOSHITLChannel[InT, VerdictT]):
+    def __init__(
+        self, *,
+        helper_agent: type[BallastAgent],
+        verdict_type: type[VerdictT],
+        opening_message_template: str | None = None,
+    ) -> None:
+        self._helper_agent = helper_agent
+        self._verdict_type = verdict_type
+        self._opening      = opening_message_template
+
+    async def deliver(self, *, request_id, workflow_id,
+                      respond_topic, payload: InT) -> None:
+        thread = await thread_repo.create(
+            kind="hitl-helper",
+            parent_thread_id=current_parent_thread_id(),
+            metadata={
+                "request_id":    request_id,
+                "workflow_id":   workflow_id,
+                "respond_topic": respond_topic,
+                # payload shape is channel-specific; helper agent reads
+                # via its run-state deps.
+                "payload":       payload.model_dump(mode="json"),
+            },
+        )
+        await thread_repo.add_message(
+            thread.id,
+            role="assistant",
+            text=self._opening or _default_opening(payload),
+        )
+        # Helper agent picks up the thread; its tools see workflow_id +
+        # respond_topic via run-state deps (DurableAgent capability
+        # already hydrates these from thread metadata).
+
+    async def decode_verdict(self, raw: Any) -> VerdictT:
+        return TypeAdapter(self._verdict_type).validate_python(raw)
+```
+
+The two channels share **zero verdict-transport code** — wire is just
+"a dict on the DBOS topic, decoded by the channel". This is what makes
+new channels (Slack DM with buttons, Slack thread with bot tools,
+custom webhook) drop in cleanly: implement `deliver` + write whatever
+endpoint/tool/handler calls `Durable.send_async`. No central
+coordination.
+
 ### 4. `__hitl_kind__` convention on payload models
 
 `kind` is derived from `type(payload)`, not passed as a parameter:
