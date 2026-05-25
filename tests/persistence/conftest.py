@@ -15,6 +15,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,6 +26,7 @@ from sqlmodel import SQLModel
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 # ── Import all persistence modules so SQLModel.metadata is fully populated ──
+import ballast.memory.episodic.sources._vector  # noqa: F401
 import ballast.persistence.approval_card._models  # noqa: F401
 import ballast.persistence.events.domain  # noqa: F401
 import ballast.persistence.thread.domain  # noqa: F401
@@ -55,7 +57,7 @@ _DOCKER_OK = _docker_available()
 def pg_container() -> Iterator[PostgresContainer]:
     if not _DOCKER_OK:
         pytest.skip("Docker daemon not available — skipping testcontainers PG tests")
-    with PostgresContainer("postgres:16-alpine") as container:
+    with PostgresContainer("pgvector/pgvector:pg16") as container:
         yield container
 
 
@@ -96,6 +98,7 @@ def create_all_tables(pg_dsn: str) -> None:
     async def _create() -> None:
         engine = _make_engine(pg_dsn)
         async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             await conn.run_sync(SQLModel.metadata.create_all)
         await engine.dispose()
 
