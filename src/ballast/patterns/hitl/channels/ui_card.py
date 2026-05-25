@@ -30,11 +30,20 @@ async def _emit_thread_marker(thread_id: str, payload: dict) -> None:
     Delegates to ``get_ballast().broadcaster.emit_raw`` — the same path
     that Reflection / DivergentConvergent use for their ``data-*`` markers.
     The ``payload`` dict is used directly as the message part.
+
+    ``thread_id`` may arrive as a ``str`` (when called from the
+    ``approval_card_decided`` handler — ``ApprovalCard.parent_thread_id``
+    is a ``str`` field) or as a ``UUID`` (when called directly from
+    ``deliver`` with the ContextVar value). The broadcaster's SQL repo
+    expects a ``UUID``, so coerce here.
     """
+    from uuid import UUID  # noqa: PLC0415
+
     from ballast.runtime.engine import get_ballast  # noqa: PLC0415
 
+    tid = UUID(thread_id) if isinstance(thread_id, str) else thread_id
     await get_ballast().broadcaster.emit_raw(
-        thread_id,
+        tid,
         part=payload,
         persistent=True,
     )
