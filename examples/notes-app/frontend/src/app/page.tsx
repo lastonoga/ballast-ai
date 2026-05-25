@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AssistantSidebar } from "@/components/assistant-ui/assistant-sidebar";
+import { ApprovalEventsUI } from "@/components/assistant-ui/approval-events";
 import { BrainstormEventsUI } from "@/components/assistant-ui/brainstorm-events";
 import { DeleteNoteApproval } from "@/components/assistant-ui/delete-note-approval";
 import { DivergentConvergentEventsUI } from "@/components/assistant-ui/divergent-convergent-events";
@@ -68,6 +69,7 @@ export default function Home() {
           renderers for typed brainstorm-workflow events (chose / saved /
           cancelled / timed-out) so the chat shows fancy cards instead of
           dropping the data parts. */}
+      <ApprovalEventsUI />
       <BrainstormEventsUI />
       {/* Framework `DivergentConvergent` pattern progress — compact
           per-event rows for branch enqueued / completed / failed,
