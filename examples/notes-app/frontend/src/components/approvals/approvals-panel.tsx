@@ -60,6 +60,15 @@ export function ApprovalsPanel({
   );
 }
 
+import { InboxIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+
 export function ApprovalsBadge({
   count,
   onClick,
@@ -67,17 +76,34 @@ export function ApprovalsBadge({
   count: number;
   onClick: () => void;
 }) {
+  const label =
+    count === 0
+      ? "Approvals — nothing pending"
+      : `Approvals — ${count} pending`;
   return (
-    <button
-      onClick={onClick}
-      className="relative px-3 py-1 rounded bg-gray-100"
-    >
-      Approvals
-      {count > 0 && (
-        <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full px-1.5">
-          {count}
-        </span>
-      )}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={label}
+          onClick={onClick}
+          className="relative"
+        >
+          <InboxIcon className="size-4" />
+          {count > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full
+                         bg-red-500 text-white text-[10px] leading-4 text-center
+                         font-medium"
+            >
+              {count}
+            </span>
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
