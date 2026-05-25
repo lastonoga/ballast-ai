@@ -146,7 +146,15 @@ class ThreadChannel(DBOSHITLChannel[InT, VerdictT]):
 class UICardChannel(DBOSHITLChannel[InT, "CardVerdict[InT]"]):
     """Persists an ApprovalCard, fires a signal so the UI panel SSE
     picks it up, then waits for POST /approvals/{id}/decision to
-    push the verdict back via Durable.send_async."""
+    push the verdict back via Durable.send_async.
+
+    Take ``payload_type`` in the constructor — ``decode_verdict``
+    needs the InT to type-validate the verdict's ``modified`` field,
+    and Python erases generic params at runtime."""
+
+    def __init__(self, payload_type: type[InT]) -> None:
+        super().__init__()
+        self._payload_type = payload_type
 
     async def deliver(self, *, request_id, workflow_id, respond_topic,
                       payload: InT) -> None:
@@ -167,10 +175,7 @@ class UICardChannel(DBOSHITLChannel[InT, "CardVerdict[InT]"]):
         await approval_card_requested.send_async(sender=self, card=card)
 
     async def decode_verdict(self, raw: Any) -> "CardVerdict[InT]":
-        return TypeAdapter(CardVerdict[InT]).validate_python(raw)
-
-
-ui_card_channel: UICardChannel = UICardChannel()    # module singleton
+        return TypeAdapter(CardVerdict[self._payload_type]).validate_python(raw)
 ```
 
 `CardVerdict` — the standard verdict shape for card-style approvals;
@@ -531,7 +536,7 @@ async def create_note_flow(refined: ProposedNote) -> Note | None:
     """Owns the approval gate + save side-effect. Suspends on the
     UI-card channel's recv; returns the persisted Note or None on
     user rejection."""
-    verdict = await ui_card_channel.request(refined)
+    verdict = await _create_note_channel.request(refined)  # UICardChannel(payload_type=ProposedNote)
     if verdict.decision != "approve":
         return None
     final = verdict.modified or refined
@@ -668,7 +673,7 @@ async def propose_todo(ctx, title: str) -> str:
   - `src/ballast/patterns/hitl/channels/_protocol.py`         (HITLChannel)
   - `src/ballast/patterns/hitl/channels/_base.py`             (DBOSHITLChannel)
   - `src/ballast/patterns/hitl/channels/thread.py`            (ThreadChannel)
-  - `src/ballast/patterns/hitl/channels/ui_card.py`           (UICardChannel + CardVerdict + signals + ui_card_channel singleton)
+  - `src/ballast/patterns/hitl/channels/ui_card.py`           (UICardChannel + CardVerdict + signals + __hitl_kind__ registry)
   - `src/ballast/auth/context.py`                             (current_user_id ContextVar + acting_as)
   - `src/ballast/persistence/approval_card.py`                (model + protocol + module singleton)
   - `src/ballast/persistence/in_memory/approval_card.py`
