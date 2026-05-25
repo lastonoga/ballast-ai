@@ -36,10 +36,10 @@ from ballast.drift._windows import (
     TokenBudgetWindow,
 )
 from ballast.drift._core import DriftEngine
+from ballast.drift._coala import goal_drift_as_unit
 
 __all__ = [
     "AfterEveryStep",
-    "DriftEngine",
     "ComposeHandler",
     "ComposeStrategy",
     "DefaultDriftVerdict",
@@ -47,6 +47,7 @@ __all__ = [
     "DriftCheckSignal",
     "DriftCheckStrategy",
     "DriftContext",
+    "DriftEngine",
     "DriftHandler",
     "DriftVerdictBase",
     "EmitDriftEvent",
@@ -56,6 +57,7 @@ __all__ = [
     "ExplicitGoal",
     "FirstUserMessage",
     "FullTrace",
+    "goal_drift_as_unit",
     "GoalDriftError",
     "GoalSource",
     "LastUserMessage",
