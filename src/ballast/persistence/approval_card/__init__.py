@@ -13,4 +13,10 @@ __all__ = [
     "ApprovalCardRepository",
     "CardStatus",
     "InMemoryApprovalCardRepository",
+    "approval_card_repo",
 ]
+
+# Module-level singleton, reassigned at app-build time when the user
+# configures a custom repo (see ``Ballast.with_approval_repo``). Tests
+# monkeypatch this attribute directly — same pattern as ``notes_repo``.
+approval_card_repo: ApprovalCardRepository = InMemoryApprovalCardRepository()
