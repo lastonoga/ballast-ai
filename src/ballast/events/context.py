@@ -85,4 +85,15 @@ def progress_to_thread(thread_id: "UUID") -> "Iterator[None]":
         progress_thread_var.reset(token)
 
 
-__all__ = ["progress_thread_var", "progress_to_thread"]
+def current_parent_thread_id() -> str | None:
+    """Return the thread id bound to the current context, if any.
+
+    Reads the same ContextVar that :func:`progress_to_thread` sets so
+    channels (e.g. ``UICardChannel``) can record which thread spawned
+    the request without threading it through every call signature.
+    """
+    val = progress_thread_var.get()
+    return str(val) if val is not None else None
+
+
+__all__ = ["current_parent_thread_id", "progress_thread_var", "progress_to_thread"]
