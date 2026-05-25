@@ -6,186 +6,237 @@
 
 ## Problem
 
-`create_note` currently saves the (title, body) draft directly after the
-Reflection loop polishes it. The user wants a human approval gate
-before persistence — and explicitly:
+`create_note` saves the (title, body) draft directly after the
+Reflection loop polishes it. We need a human approval gate before
+persistence, with strict UX constraints:
 
-  - **NOT** an inline approval card embedded in the chat (the existing
+  - **NOT** an inline approval card embedded in the chat (existing
     `delete_note` `requires_approval` pattern).
-  - **NOT** a helper sub-thread with an approval agent (the existing
-    `propose_todo` / `ask_human` + `ThreadChannel` pattern).
-  - **YES**: a separate UI surface (side panel/drawer with badge
-    count), with the chat showing a small "Waiting for your approval →"
-    marker linking to it.
+  - **NOT** a helper sub-thread with an approval agent (existing
+    `propose_todo` pattern).
+  - **YES**: a separate UI surface — a side panel/drawer with badge
+    count; the chat shows a small "Waiting for your approval →" pill
+    deep-linking to it.
 
-Future channels (Slack DM, Slack thread, webhook) must drop in without
-re-architecting the suspend/resume machinery.
+Future channels (Slack DM, Slack thread, custom user channels) must
+plug in without re-architecting the suspend/resume machinery.
 
-## Insight
+## Core insight
 
-The existing HITL suspend/resume primitive is already correct:
+The HITL suspend/resume primitive is already correct:
 
-  - `Durable.recv_async(topic=f"hitl:{request_id}")` on the caller side
+  - `Durable.recv_async(topic=f"hitl:{request_id}")` on the caller
   - `Durable.send_async(workflow_id, response, topic=...)` from
-    whoever is delivering the verdict
-  - `HITLResponse` discriminated union (`Approved` / `Rejected` /
-    `Modified` / `Timeout`)
+    whoever delivers the verdict
 
-What varies between in-thread / UI-card / Slack-DM / Slack-thread is
-**only the request delivery surface** — the medium in which the
-request is shown to the human and the wire by which the verdict comes
-back. The suspension topic + response type are identical.
+What varies across mediums (thread / UI card / Slack DM / Slack
+thread) is **only the request delivery surface + the verdict wire**.
+The suspend mechanism and DBOS topic convention are identical.
 
-So the right abstraction is a **`HITLChannel` Protocol**, not a new
-"approval request" pattern. `ask_human` becomes channel-pluggable;
-today's helper-thread behavior is one implementation.
+The right abstraction is therefore a single `HITLChannel` Protocol
+where each channel owns its entire lifecycle (deliver, await, decode).
+No `ask_human` function, no `DurableHITLWorkflow` ABC, no global
+`HITLResponse` union — those are subsumed.
 
 ## Design
 
-### 1. `HITLChannel` Protocol
+### 1. `HITLChannel` Protocol — one method
 
 ```python
 # src/ballast/patterns/hitl/channels/_protocol.py
-from typing import Protocol
-from pydantic import BaseModel
+InT      = TypeVar("InT",      bound=BaseModel)
+VerdictT = TypeVar("VerdictT", bound=BaseModel)
 
-class HITLChannel(Protocol):
-    """Delivers an HITL request to a human via some medium.
+class HITLChannel(Protocol, Generic[InT, VerdictT]):
+    """Owns the full request lifecycle for one human decision.
 
-    Channels never touch DBOS topics directly — they receive
-    ``respond_topic`` and are responsible only for surfacing the
-    request (in a thread, UI card, Slack message, etc.) along with
-    a way for the verdict to reach ``Durable.send_async`` with that
-    topic. Suspend + verdict-unwrap live in ``ask_human``.
+    A channel knows what payload type it accepts, how to surface the
+    request (UI, chat thread, Slack, …), how to wait for the verdict,
+    and how to decode the response into a typed model. The framework
+    knows nothing about the medium.
     """
 
-    async def deliver(
+    async def request(
         self,
+        payload: InT,
         *,
-        request_id: str,           # uuid for this request
-        workflow_id: str,          # caller's DBOS workflow id (recv target)
-        prompt: str,               # short, channel-rendered question
-        payload: BaseModel,        # opaque to channel; rendered by kind
-        context: "HITLContext",    # parent_thread_id, user_id, kind, ...
-        respond_topic: str,        # f"hitl:{request_id}"; channels embed
-                                   # this in their verdict pathway
+        timeout: timedelta | None = None,
+    ) -> VerdictT: ...
+```
+
+That is the entire framework HITL contract. Anything else is a
+recipe / base class / channel implementation.
+
+### 2. `DBOSHITLChannel` — base for durable channels
+
+In practice nearly every channel needs the verdict to arrive via
+`Durable.recv_async` so the workflow is recoverable. A small abstract
+base captures the boilerplate:
+
+```python
+# src/ballast/patterns/hitl/channels/_base.py
+class DBOSHITLChannel(Generic[InT, VerdictT], ABC):
+    """Channels that use DBOS topics for verdict delivery (the common
+    case). Subclasses implement just deliver() + decode_verdict()."""
+
+    async def request(
+        self, payload: InT, *, timeout: timedelta | None = None,
+    ) -> VerdictT:
+        request_id  = Det.uuid4()
+        workflow_id = DBOS.workflow_id
+        topic       = f"hitl:{request_id}"
+        await self.deliver(
+            request_id=request_id, workflow_id=workflow_id,
+            respond_topic=topic, payload=payload,
+        )
+        raw = await Durable.recv_async(topic=topic, timeout=timeout)
+        return await self.decode_verdict(raw)
+
+    @abstractmethod
+    async def deliver(
+        self, *,
+        request_id: str, workflow_id: str, respond_topic: str,
+        payload: InT,
     ) -> None: ...
+
+    @abstractmethod
+    async def decode_verdict(self, raw: Any) -> VerdictT: ...
 ```
 
-`HITLContext`:
+Channels that need a non-DBOS transport (rare; future Kafka /
+long-poll / etc.) implement the Protocol directly without inheriting
+`DBOSHITLChannel`. Framework stays neutral.
 
-```python
-class HITLContext(BaseModel):
-    kind: str                          # e.g. "note.create" — for renderers/routing
-    parent_thread_id: str | None       # for chat marker / deep-link back
-    user_id: str | None = None         # future multi-user routing
-```
+### 3. Built-in channels
 
-### 2. `ask_human` becomes channel-agnostic
-
-```python
-# src/ballast/patterns/hitl/ask.py — REWRITTEN
-async def ask_human(
-    *,
-    channel: HITLChannel,
-    prompt: str,
-    payload: BaseModel,
-    context: HITLContext,
-    timeout: timedelta | None = None,
-) -> HITLResponse:
-    request_id = Det.uuid4()
-    workflow_id = DBOS.workflow_id
-    await channel.deliver(
-        request_id=request_id, workflow_id=workflow_id,
-        prompt=prompt, payload=payload, context=context,
-        respond_topic=f"hitl:{request_id}",
-    )
-    return await Durable.recv_async(
-        topic=f"hitl:{request_id}", timeout=timeout,
-    )
-```
-
-The current `ask_human(helper_agent=..., context=..., opening_message=..., ...)`
-signature is removed. Today's only caller (`propose_todo`) migrates to
-explicit `channel=ThreadChannel(NotesTodoApprovalAgent)`.
-
-### 3. Channel implementations
-
-#### `ThreadChannel` (wraps existing helper-thread flow)
+#### `ThreadChannel` — migration of helper-thread flow
 
 ```python
 # src/ballast/patterns/hitl/channels/thread.py
-class ThreadChannel(HITLChannel):
+class ThreadChannel(DBOSHITLChannel[InT, VerdictT]):
+    """Opens a helper sub-thread + agent. Today's helper-thread
+    code (currently in DurableHITLWorkflow / ask_human) moves here
+    verbatim; no behavior change."""
+
     def __init__(
         self,
-        helper_agent: type[BallastAgent],
         *,
+        helper_agent: type[BallastAgent],
+        verdict_type: type[VerdictT],
         opening_message_template: str | None = None,
     ) -> None: ...
 
-    async def deliver(self, *, request_id, workflow_id, prompt, payload,
-                      context, respond_topic) -> None:
-        # Open helper thread, persist metadata {request_id, workflow_id,
-        # respond_topic}, post the opening assistant message, register
-        # the helper agent. Existing helper-thread logic moves here
-        # verbatim — no behavior change.
+    async def deliver(self, *, request_id, workflow_id, respond_topic,
+                      payload) -> None:
+        # Open helper thread; persist {request_id, workflow_id,
+        # respond_topic} as thread metadata; post opening assistant
+        # message; register helper agent. Helper-agent tools call
+        # Durable.send_async(workflow_id, verdict_dict, respond_topic)
+        # when the user decides.
         ...
+
+    async def decode_verdict(self, raw: Any) -> VerdictT:
+        return TypeAdapter(self._verdict_type).validate_python(raw)
 ```
 
-`DurableHITLWorkflow.open` already does this work — `ThreadChannel.deliver`
-is its body extracted into the protocol.
-
-#### `UICardChannel` (new)
+#### `UICardChannel` — new
 
 ```python
 # src/ballast/patterns/hitl/channels/ui_card.py
-class UICardChannel(HITLChannel):
-    def __init__(
-        self,
-        *,
-        repo: ApprovalCardRepository,
-        marker_emitter: ChatMarkerEmitter | None = None,
-    ) -> None: ...
+class UICardChannel(DBOSHITLChannel[InT, "CardVerdict[InT]"]):
+    """Persists an ApprovalCard, fires a signal so the UI panel SSE
+    picks it up, then waits for POST /approvals/{id}/decision to
+    push the verdict back via Durable.send_async."""
 
-    async def deliver(self, *, request_id, workflow_id, prompt, payload,
-                      context, respond_topic) -> None:
+    async def deliver(self, *, request_id, workflow_id, respond_topic,
+                      payload: InT) -> None:
+        from ballast.persistence.approval_card import approval_card_repo  # noqa: PLC0415
+        from ballast.events.context import current_parent_thread_id    # noqa: PLC0415
+        from ballast.auth.context import current_user_id               # noqa: PLC0415
+
         card = ApprovalCard(
             id=request_id, workflow_id=workflow_id,
             respond_topic=respond_topic,
-            kind=context.kind, prompt=prompt,
+            kind=type(payload).__hitl_kind__,
             payload=payload.model_dump(mode="json"),
-            parent_thread_id=context.parent_thread_id,
-            user_id=context.user_id,
+            parent_thread_id=current_parent_thread_id(),
+            user_id=current_user_id(),
             status="pending", created_at=Det.now(),
         )
-        await self._repo.add(card)
+        await approval_card_repo.add(card)
         await approval_card_requested.send_async(sender=self, card=card)
-        if context.parent_thread_id and self._marker_emitter:
-            await self._marker_emitter.emit(
-                thread_id=context.parent_thread_id,
-                card_id=card.id, prompt=prompt,
-            )
+
+    async def decode_verdict(self, raw: Any) -> "CardVerdict[InT]":
+        return TypeAdapter(CardVerdict[InT]).validate_python(raw)
+
+
+ui_card_channel: UICardChannel = UICardChannel()    # module singleton
 ```
 
-### 4. New persistence: `ApprovalCard` + `ApprovalCardRepository`
+`CardVerdict` — the standard verdict shape for card-style approvals;
+caller-owned channels can ship their own:
 
-Storage is **separate** from existing HITL helper-thread persistence
-(different lifecycle, different query patterns — "list pending by
-user" doesn't apply to helper threads). Confirmed in earlier Q&A.
+```python
+class CardVerdict(BaseModel, Generic[OutT]):
+    decision: Literal["approve", "reject"]
+    modified: OutT | None = None          # populated when approve-with-edits
+    feedback: str | None = None
+    answered_at: datetime
+```
+
+### 4. `__hitl_kind__` convention on payload models
+
+`kind` is derived from `type(payload)`, not passed as a parameter:
+
+```python
+class ProposedNote(BaseModel):
+    __hitl_kind__: ClassVar[str] = "note.create"
+    title: str
+    body: str
+```
+
+The card renderer keys off `kind`; the frontend registers per-kind
+components (`"note.create"` → `<NoteCreateCard/>`).
+
+### 5. `current_user_id` ContextVar
+
+```python
+# src/ballast/auth/context.py
+_current_user_id: ContextVar[str | None] = ContextVar(
+    "current_user_id", default=None,
+)
+
+def current_user_id() -> str | None:
+    return _current_user_id.get()
+
+@contextmanager
+def acting_as(user_id: str) -> Iterator[None]:
+    tok = _current_user_id.set(user_id)
+    try: yield
+    finally: _current_user_id.reset(tok)
+```
+
+API middleware wraps each request handler in `acting_as(user_id)`.
+Notes-app sets a static dev user. Tests set per-test.
+
+### 6. Persistence: `ApprovalCard` + `ApprovalCardRepository`
+
+Separate from existing HITL helper-thread persistence (different
+lifecycle, different queries — "list pending by user" doesn't apply
+to helper threads).
 
 ```python
 # src/ballast/persistence/approval_card.py
 class ApprovalCard(BaseModel):
-    id: str                          # == request_id
+    id: str                              # == request_id
     workflow_id: str
-    respond_topic: str               # f"hitl:{id}"
-    kind: str                        # "note.create", "note.delete", ...
-    prompt: str
-    payload: dict[str, Any]          # JSON dump of the BaseModel
+    respond_topic: str                   # f"hitl:{id}"
+    kind: str                            # "note.create", …
+    payload: dict[str, Any]              # JSON dump of InT
     parent_thread_id: str | None
     user_id: str | None
     status: Literal["pending", "approved", "rejected", "timeout"]
-    resolution: dict[str, Any] | None  # HITLResponse.model_dump on decide
+    resolution: dict[str, Any] | None    # verdict.model_dump() on resolve
     created_at: datetime
     resolved_at: datetime | None
 
@@ -197,177 +248,232 @@ class ApprovalCardRepository(Protocol):
         self, *, user_id: str | None = None, limit: int = 50,
     ) -> list[ApprovalCard]: ...
     async def resolve(
-        self, card_id: str, *, response: HITLResponse,
+        self, card_id: str, *, verdict: BaseModel,
     ) -> ApprovalCard: ...
+
+
+approval_card_repo: ApprovalCardRepository = (
+    _InMemoryApprovalCardRepository()
+)
+# Reassigned at Ballast.build() time when an explicit repo is configured —
+# same module-singleton pattern as notes_repo.
 ```
 
-Implementations: `InMemoryApprovalCardRepository` for tests + dev, plus
-a `PostgresApprovalCardRepository` (SQLAlchemy + new Alembic migration
-`0002_approval_cards.py`).
+Implementations:
+  - `InMemoryApprovalCardRepository` — tests + local dev.
+  - `PostgresApprovalCardRepository` — SQLAlchemy + Alembic
+    migration `0002_approval_cards.py`.
 
-### 5. REST router + SSE
+Repo enforces access on read: `list_pending(user_id=...)` and
+`get(...)` filter by the caller's `current_user_id()` when configured
+to do so (mirrors `ThreadRepository` per-tenant access).
+
+### 7. REST router + SSE
 
 ```
-GET    /approvals?status=pending&limit=50    → list ApprovalCard
-GET    /approvals/{id}                       → single card
-POST   /approvals/{id}/decision              → {approved: bool, feedback?: str}
+GET    /approvals?status=pending&limit=50    → list ApprovalCard (filtered by current_user_id)
+GET    /approvals/{id}                       → single (403 if not yours)
+POST   /approvals/{id}/decision              → {decision: "approve"|"reject", modified?: {...}, feedback?: str}
 GET    /approvals/stream  (SSE)              → live feed of approval_card_*
 ```
 
-`POST /approvals/{id}/decision` body:
+Decision handler:
 
-```json
-{ "approved": true,  "feedback": null }
-{ "approved": false, "feedback": "title is too vague" }
-```
+1. Load card; 404 if missing, 403 if `card.user_id != current_user_id()`,
+   409 if `status != pending`.
+2. Validate body against the channel's verdict type (the card's `kind`
+   indexes into a registry of verdict types — channels register at
+   import time).
+3. Build the typed verdict (e.g. `CardVerdict[ProposedNote]`).
+4. `await Durable.send_async(destination_id=card.workflow_id,
+   message=verdict.model_dump(), topic=card.respond_topic)`.
+5. `await approval_card_repo.resolve(card.id, verdict=verdict)`.
+6. Fire `approval_card_decided` signal.
+7. Return resolved card.
 
-Handler logic:
+SSE subscribes to `approval_card_requested` + `approval_card_decided`
+signals; emits typed `card-*` events.
 
-1. Load card by id; 404 if missing, 409 if not pending.
-2. Build `HITLResponse` (`ApprovedResponse` or `RejectedResponse`).
-3. `await Durable.send_async(destination_id=card.workflow_id,
-   message=response.model_dump(), topic=card.respond_topic)`.
-4. `await repo.resolve(card.id, response=response)` — persist outcome.
-5. Fire `approval_card_decided` signal.
-6. Return resolved card.
+### 8. Chat marker
 
-SSE stream subscribes to both `approval_card_requested` and
-`approval_card_decided` signals; emits a typed `card-*` event payload
-matching the wire shape already used for thread events.
-
-### 6. Chat marker
-
-When `UICardChannel.deliver` runs with a `parent_thread_id`, emit a
+`UICardChannel.deliver` (when `parent_thread_id` is set) emits a
 persistent thread event:
 
 ```
 data-approval-pending {
   card_id: str,
   kind: str,
-  prompt: str,
 }
 ```
 
-Assistant-ui renderer for `data-approval-pending` shows an inline
-"Waiting for your approval →" pill with a link to
-`/approvals#{card_id}` (badge + drawer-open).
+Assistant-ui renderer shows an inline "Waiting for your approval →"
+pill linking to `/approvals#{card_id}` (opens drawer with the card
+focused).
 
-When the card resolves, emit `data-approval-resolved` (same payload +
-`approved: bool`) so the inline pill flips to "Approved ✓" /
-"Rejected ✗".
+On resolution → emit `data-approval-resolved {card_id, approved: bool}`
+so the inline pill flips to "Approved ✓" / "Rejected ✗".
 
-### 7. Frontend `<ApprovalsPanel/>`
+### 9. Frontend `<ApprovalsPanel/>`
 
-  - Side drawer toggle button in app header with badge count
-    (`pending.length`).
-  - On mount: `GET /approvals?status=pending` → initial list.
-  - Open SSE subscription to `/approvals/stream` → react to
-    `card-requested` (prepend) / `card-decided` (remove).
-  - Each card renders the payload by `kind`. For MVP only
-    `"note.create"` is registered → renders title/body preview +
-    Approve / Reject buttons.
-  - Card actions call `POST /approvals/{id}/decision` and remove
-    optimistically.
+  - Side drawer toggle in app header with badge count.
+  - On mount: `GET /approvals?status=pending` for initial list.
+  - SSE subscription to `/approvals/stream` for live updates
+    (prepend on `card-requested`, remove on `card-decided`).
+  - Per-`kind` component registry. MVP: only `"note.create"`
+    registered, renders title/body preview + Approve / Reject.
 
-### 8. `create_note` integration
+### 10. `create_note` integration — child `@Durable.workflow`
+
+The tool body extracts into its own child workflow. The blocking
+`request()` call lives there, not in the tool body directly.
+
+```python
+# notes_app/workflows/create_note.py
+@Durable.workflow
+async def create_note_flow(refined: ProposedNote) -> Note | None:
+    """Owns the approval gate + save side-effect. Suspends on the
+    UI-card channel's recv; returns the persisted Note or None on
+    user rejection."""
+    verdict = await ui_card_channel.request(refined)
+    if verdict.decision != "approve":
+        return None
+    final = verdict.modified or refined
+    return await notes_repo.create(
+        title=final.title, body=final.body,
+    )
+```
+
+The tool body becomes a thin shim:
 
 ```python
 @NotesAgent.tool
-async def create_note(ctx, title, body):
+async def create_note(ctx, title: str, body: str) -> str:
     draft = ProposedNote(title=title, body=body)
     refined = (
         draft if note_refiner is None
         else await _refine_or_fallback(draft, ctx.deps.parent_thread_id)
     )
-
-    verdict = await ask_human(
-        channel=UICardChannel(repo=ctx.deps.approval_repo),
-        prompt="Save this note?",
-        payload=refined,                              # ProposedNote
-        context=HITLContext(
-            kind="note.create",
-            parent_thread_id=ctx.deps.parent_thread_id,
-        ),
-    )
-    if not isinstance(verdict, ApprovedResponse):
-        return "Note save cancelled by user."
-
-    return await notes_repo.create(
-        title=refined.title, body=refined.body,
+    note = await create_note_flow(refined)        # blocks; child workflow
+    return (
+        f"Saved note '{note.title}'."
+        if note else "Note save cancelled by user."
     )
 ```
 
-`NoteToolDeps` gains `approval_repo: ApprovalCardRepository`.
+Why the child workflow:
 
-### 9. `propose_todo` migration (minimal)
+  - Approval can take hours; recovery topology is cleaner if it's
+    its own named DBOS workflow (visible in inspector, restartable
+    independently).
+  - The DurableAgent run workflow is still blocked on the child
+    (per-thread queue concurrency=1) — same suspend semantics, but
+    the unit of durability is the explicit `create_note_flow` rather
+    than a tool body nested inside an agent run.
 
-Today: `await todo_flow.open(helper_agent=NotesTodoApprovalAgent,
-context=TodoApprovalContext(...))` (fire-and-forget via
-`DurableHITLWorkflow`).
+### 11. `propose_todo` migration
 
-`DurableHITLWorkflow` stays — it's the fire-and-forget shape, not part
-of this refactor. Its internals just delegate to `ThreadChannel.deliver`
-instead of duplicating the helper-thread logic. No call-site changes
-in `propose_todo`.
+Today: `await todo_flow.open(helper_agent=..., context=...)` via
+`DurableHITLWorkflow` ABC subclass.
+
+After: plain function + `@Durable.workflow`, no ABC:
+
+```python
+# notes_app/workflows/todo_approval.py
+todo_thread_channel = ThreadChannel(
+    helper_agent=NotesTodoApprovalAgent,
+    verdict_type=CardVerdict[TodoProposal],   # same shape works fine
+)
+
+@Durable.workflow
+async def todo_approval_flow(payload: TodoProposal) -> None:
+    verdict = await todo_thread_channel.request(payload)
+    if verdict.decision == "approve":
+        await notes_repo.create(title=payload.title, body=payload.body)
+        await _notify_parent_thread(
+            payload.parent_thread_id, "Saved!",
+        )
+
+
+@NotesAgent.tool
+async def propose_todo(ctx, title: str) -> str:
+    await Durable.start_workflow(
+        todo_approval_flow,
+        TodoProposal(
+            title=title, parent_thread_id=ctx.deps.parent_thread_id,
+        ),
+    )
+    return "Opened a confirmation thread."
+```
+
+`DurableHITLWorkflow` ABC is deleted from the framework.
+
+## Removed APIs
+
+| Removed | Reason | Replacement |
+|---|---|---|
+| `ask_human()` function | Was orchestrating transport details (`recv_async` + decode) outside the channel; broke SRP. | `channel.request(...)` |
+| `DurableHITLWorkflow` ABC | Existed only to "spawn a workflow that suspends on recv then calls a handler". | Plain `@Durable.workflow` calling `channel.request(...)`. |
+| `HITLResponse` union (`Approved`/`Rejected`/`Modified`/`Timeout`) | Verdict shape is channel-specific; one-size-fits-all hierarchy is wrong shape. | Each channel ships its own verdict type (`CardVerdict`, etc.). |
+| `HITLContext` | All its fields are now sourced from convention (`__hitl_kind__`) or ambient ContextVars. | `__hitl_kind__` class attr; `current_parent_thread_id()`; `current_user_id()`. |
 
 ## Error handling
 
-  - **`POST /approvals/{id}/decision` on already-resolved card** → 409
-    Conflict with current resolution.
-  - **`Durable.send_async` failure** (workflow already cancelled, e.g.
-    user hit Stop in chat): catch in router; mark card `status="timeout"`
-    with explanatory resolution; return 410 Gone to the panel; SSE
-    emits `card-decided` so panel removes it.
-  - **`ask_human` timeout** (caller-supplied) → returns
-    `TimeoutResponse`; card status flips to `"timeout"` via a
-    separate background sweep (out of scope this iteration — for now
-    timeouts are app-policy; the card just sits as `pending`).
-  - **Workflow crash mid-`ask_human`**: DBOS replays from the step
-    before `recv_async`; `channel.deliver` is in a `@Durable.step()`
-    inside `ask_human` so it's memoised — the card row is added once.
+  - **Decision on already-resolved card** → 409 with current
+    resolution.
+  - **Decision attempted by wrong user** → 403.
+  - **`Durable.send_async` failure** (workflow cancelled, e.g. user
+    hit Stop in chat): catch in router, mark card `timeout` with
+    explanatory resolution, return 410 Gone, SSE fires `card-decided`
+    so the panel removes the entry.
+  - **`channel.request` timeout** → raises `TimeoutError`; child
+    workflow handles by leaving the card pending (or, later, a sweep
+    job flips stale cards to `timeout` and sends a synthetic verdict).
+  - **Workflow crash mid-`request`**: DBOS replays from before
+    `recv_async`. `channel.deliver` is invoked inside a `@Durable.step`
+    inside the base class so it's memoised — card row is added once.
     On replay we re-enter `recv_async` and resume waiting.
 
 ## Testing
 
-  - **Framework unit**: `UICardChannel.deliver` writes a card + fires
-    the signal (in-memory repo, signal spy).
-  - **Framework integration**: `ask_human` end-to-end against
-    `UICardChannel` — kick off a workflow, post a decision via the
-    router, assert workflow returns `ApprovedResponse`.
-  - **Notes-app**: existing `test_create_note_persists_via_repo` adapts
-    — a stub channel that auto-approves; assert `notes_repo.create`
-    runs and a card row was added.
-  - **Notes-app**: rejection path — stub channel auto-rejects; assert
-    `notes_repo.create` NOT called; tool returns cancellation string.
-  - **API**: router tests for list / decide (404 / 409 / 200).
-  - **Migration smoke**: alembic upgrade head + downgrade base on a
-    throwaway PG.
+  - **Framework unit** — `UICardChannel.deliver` writes a card +
+    fires the signal (in-memory repo, signal spy).
+  - **Framework integration** — channel end-to-end: kick off a
+    workflow, POST a decision via the router, assert workflow returns
+    the typed verdict.
+  - **Notes-app** — `test_create_note_persists_via_repo` adapts to
+    a stub channel that auto-approves; assert `notes_repo.create`
+    ran AND a card row was added.
+  - **Notes-app** — rejection path: stub channel auto-rejects;
+    assert `notes_repo.create` NOT called; tool returns cancellation
+    string.
+  - **API** — router tests: list (filtered), get (403/404),
+    decision (200/403/404/409).
+  - **Migration smoke** — alembic upgrade head + downgrade base.
 
 ## What this design deliberately does NOT do
 
-  - **No app-level default channel.** Tools pass `channel=...`
-    explicitly. (Q1 answer.)
-  - **No migration of `propose_todo` to cards.** (Q2 answer.)
-  - **No new `HITLResponse` variants.** Approved / Rejected /
-    Timeout cover the card UX.
-  - **No `Modified` from cards in this iteration.** Edit-before-approve
-    needs a frontend form + payload-validation contract — deferred
-    until requested.
-  - **No multi-user approval routing / RBAC.** `user_id` column
-    exists; assignment policy is out of scope.
-  - **No Slack / webhook channels.** Designed-for but not built —
-    Slack channel can be added later by implementing `HITLChannel`
-    without touching `ask_human`, the card repo, or the router.
+  - **No app-level default channel.** Tools/workflows pass channels
+    explicitly. (Confirmed.)
+  - **No card-edit form in MVP.** `CardVerdict.modified` exists in
+    the type but the panel renders Approve / Reject only. Edit form
+    ships in a later iteration.
+  - **No Slack / webhook channels.** Designed-for: implement
+    `HITLChannel` (or `DBOSHITLChannel`) without touching `request`,
+    repo, router. Not built in this iteration.
+  - **No multi-approver / delegation / RBAC beyond per-user.**
+    `user_id` column exists; assignment policy is out of scope.
 
-## Files touched (estimate)
+## Files touched
 
 **Framework — new:**
 
   - `src/ballast/patterns/hitl/channels/__init__.py`
-  - `src/ballast/patterns/hitl/channels/_protocol.py`         (HITLChannel, HITLContext)
+  - `src/ballast/patterns/hitl/channels/_protocol.py`         (HITLChannel)
+  - `src/ballast/patterns/hitl/channels/_base.py`             (DBOSHITLChannel)
   - `src/ballast/patterns/hitl/channels/thread.py`            (ThreadChannel)
-  - `src/ballast/patterns/hitl/channels/ui_card.py`           (UICardChannel + signals)
-  - `src/ballast/persistence/approval_card.py`                (model + protocol)
+  - `src/ballast/patterns/hitl/channels/ui_card.py`           (UICardChannel + CardVerdict + signals + ui_card_channel singleton)
+  - `src/ballast/auth/context.py`                             (current_user_id ContextVar + acting_as)
+  - `src/ballast/persistence/approval_card.py`                (model + protocol + module singleton)
   - `src/ballast/persistence/in_memory/approval_card.py`
   - `src/ballast/persistence/sql/approval_card.py`
   - `src/ballast/persistence/alembic/versions/0002_approval_cards.py`
@@ -375,27 +481,31 @@ in `propose_todo`.
 
 **Framework — modified:**
 
-  - `src/ballast/patterns/hitl/ask.py`                        (new signature)
-  - `src/ballast/patterns/hitl/__init__.py`                   (exports)
-  - `src/ballast/patterns/hitl/durable.py`                    (delegate to ThreadChannel)
-  - `src/ballast/app.py`                                      (wire approvals router)
+  - `src/ballast/patterns/hitl/__init__.py`                   (drop ask_human, DurableHITLWorkflow, HITLResponse exports)
+  - `src/ballast/app.py`                                      (wire approvals router + auth middleware hook)
 
-**Notes-app:**
+**Framework — deleted:**
 
-  - `examples/notes-app/backend/src/notes_app/agents/notes.py`
-    (`create_note` calls `ask_human(channel=UICardChannel(...), …)`)
-  - `examples/notes-app/backend/src/notes_app/agents/notes.py`
-    (`NoteToolDeps.approval_repo`)
-  - `examples/notes-app/backend/src/notes_app/main.py`
-    (construct `ApprovalCardRepository`, inject into deps)
-  - `examples/notes-app/frontend/src/components/approvals-panel.tsx` (new)
-  - `examples/notes-app/frontend/src/components/data-parts/data-approval-pending.tsx` (new)
-  - Header wiring + badge count.
+  - `src/ballast/patterns/hitl/ask.py`                        (ask_human function)
+  - `src/ballast/patterns/hitl/durable.py`                    (DurableHITLWorkflow ABC)
+  - `src/ballast/patterns/hitl/response.py`                   (HITLResponse union)
+
+**Notes-app — new:**
+
+  - `examples/notes-app/backend/src/notes_app/workflows/create_note.py` (create_note_flow)
+  - `examples/notes-app/frontend/src/components/approvals-panel.tsx`
+  - `examples/notes-app/frontend/src/components/data-parts/data-approval-pending.tsx`
+
+**Notes-app — modified:**
+
+  - `examples/notes-app/backend/src/notes_app/agents/notes.py` (create_note → flow, propose_todo → channel)
+  - `examples/notes-app/backend/src/notes_app/workflows/todo_approval.py` (drop DurableHITLWorkflow subclass; plain @Durable.workflow)
+  - `examples/notes-app/backend/src/notes_app/main.py` (configure approval repo via Ballast builder; install auth middleware stub)
+  - Frontend header (drawer toggle + badge count).
 
 ## Open follow-ups (not blocking this iteration)
 
-  - Approval inbox per-user filtering (UI selector + repo filter).
-  - Card timeout sweep (background workflow that flips stale
-    pending → timeout).
-  - `Modified` response path for edit-before-approve.
+  - Card timeout sweep (background workflow flips stale pending → timeout).
+  - Card-edit form + `Modified` rendering.
   - SlackMessageChannel + SlackThreadChannel.
+  - Multi-approver / delegation / RBAC.
