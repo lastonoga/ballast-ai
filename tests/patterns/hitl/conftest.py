@@ -17,10 +17,12 @@ from ballast.patterns.hitl.channels.ui_card import card_kind_registry
 def _isolate_card_registry() -> Iterator[None]:
     """Snapshot + restore card_kind_registry around each test.
 
-    Prevents cross-module re-registration conflicts when multiple test files
-    each define a local _Note class with the same __hitl_kind__.
+    Clears the registry to empty at setup so tests start with a fresh slate,
+    regardless of what other modules registered at import time.  The original
+    contents are restored on teardown.
     """
     snapshot = dict(card_kind_registry)
+    card_kind_registry.clear()
     try:
         yield
     finally:
