@@ -6,8 +6,8 @@ Reads top-to-bottom as the imperative pipeline it is:
      into the parent chat as typed UI events.
   2. ``divergent.run(topic)`` fans out to N LLM agents and picks one
      ``TodoIdea``.
-  3. ``ask_human(...)`` opens a helper thread and blocks for the
-     user's verdict.
+  3. ``_brainstorm_channel.request(...)`` opens a helper thread and
+     blocks for the user's verdict (CardVerdict).
   4. Verdict handling persists the note (or skips) and emits a
      workflow-level event (``BrainstormSaved`` / ``BrainstormCancelled``
      / ``BrainstormTimedOut``) that the default chat router renders.
@@ -21,15 +21,9 @@ No ``from __future__ import annotations``: pydantic-ai introspects
 ``notes_app.agents.notes``).
 """
 
-from ballast import (
-    ApprovedResponse,
-    Durable,
-    ModifiedResponse,
-    RejectedResponse,
-    TimeoutResponse,
-    ask_human,
-)
+from ballast import Durable
 from ballast.events import progress_to_thread
+from ballast.patterns.hitl.channels import CardVerdict, ThreadChannel
 
 from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.brainstorm import BrainstormOutcome, BrainstormTask
@@ -42,6 +36,15 @@ from notes_app.workflows.brainstorm.events import (
     BrainstormSaved,
     BrainstormTimedOut,
     brainstorm_progress,
+)
+
+# Module-level singleton channel — no static opening_message because
+# the opening text is dynamic (contains the proposed title/body).
+# The helper agent's system prompt already receives the full context
+# via TodoApprovalContext.to_system_prompt(), so no UX is lost.
+_brainstorm_channel: ThreadChannel[TodoApprovalContext] = ThreadChannel(
+    helper_agent=NotesTodoApprovalAgent,
+    payload_type=TodoApprovalContext,
 )
 
 
@@ -77,41 +80,40 @@ async def brainstorm(task: BrainstormTask) -> BrainstormOutcome:
             proposed_body=chosen.body,
             parent_thread_id=parent_thread_id,
         )
-        verdict = await ask_human(
-            helper_agent=NotesTodoApprovalAgent,
-            context=approval_context,
-            opening_message=approval_context.to_opening_message(),
-            notify_parent_thread_id=parent_thread_id,
-        )
+
+        try:
+            verdict: CardVerdict[TodoApprovalContext] = await _brainstorm_channel.request(
+                approval_context,
+            )
+        except TimeoutError:
+            await brainstorm_progress.send(
+                sender=None, event=BrainstormTimedOut(),
+            )
+            return BrainstormOutcome(
+                proposed_title=chosen.title,
+                proposed_body=chosen.body,
+                saved_title=None,
+                saved_body=None,
+            )
 
         saved_title: str | None = None
         saved_body: str | None = None
 
-        if isinstance(verdict, ApprovedResponse):
-            note = await _save_note(title=chosen.title, body=chosen.body)
+        if verdict.decision == "approve":
+            final = verdict.modified or approval_context
+            note = await _save_note(title=final.proposed_title, body=final.proposed_body)
             saved_title, saved_body = note.title, note.body
             await brainstorm_progress.send(
                 sender=None,
-                event=BrainstormSaved(title=note.title, modified=False),
+                event=BrainstormSaved(
+                    title=note.title,
+                    modified=verdict.modified is not None,
+                ),
             )
-        elif isinstance(verdict, ModifiedResponse):
-            mod = verdict.modified_proposal
-            title = str(mod.get("title", chosen.title))
-            body = str(mod.get("body", chosen.body))
-            note = await _save_note(title=title, body=body)
-            saved_title, saved_body = note.title, note.body
-            await brainstorm_progress.send(
-                sender=None,
-                event=BrainstormSaved(title=note.title, modified=True),
-            )
-        elif isinstance(verdict, RejectedResponse):
+        else:  # reject
             await brainstorm_progress.send(
                 sender=None,
                 event=BrainstormCancelled(reason=verdict.feedback or None),
-            )
-        else:  # TimeoutResponse
-            await brainstorm_progress.send(
-                sender=None, event=BrainstormTimedOut(),
             )
 
     return BrainstormOutcome(
