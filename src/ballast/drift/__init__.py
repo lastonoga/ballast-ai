@@ -20,6 +20,7 @@ from ballast.drift._goal_sources import (
     ExplicitGoal, FirstUserMessage, LastUserMessage, WorkflowInput,
 )
 from ballast.drift._verdict import DefaultDriftVerdict, DriftVerdictBase
+from ballast.drift._judge import DefaultPromptBuilder, make_default_judge
 from ballast.drift._handlers import (
     Compose as ComposeHandler,
     EmitDriftEvent,
@@ -40,6 +41,7 @@ __all__ = [
     "ComposeHandler",
     "ComposeStrategy",
     "DefaultDriftVerdict",
+    "DefaultPromptBuilder",
     "DriftCheckSignal",
     "DriftCheckStrategy",
     "DriftContext",
@@ -57,6 +59,7 @@ __all__ = [
     "LastUserMessage",
     "LogOnly",
     "LastNMessages",
+    "make_default_judge",
     "OnBudgetThreshold",
     "Periodic",
     "PromptBuilder",
