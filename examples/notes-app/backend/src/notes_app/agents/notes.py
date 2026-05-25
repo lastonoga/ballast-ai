@@ -336,8 +336,12 @@ async def propose_todo(
 
     Both ``title`` and ``body`` are required and free-form.
     """
-    # Direct import of the module-level singleton.
-    from notes_app.workflows.todo_approval import todo_flow
+    from uuid import uuid4  # noqa: PLC0415
+
+    from dbos import SetWorkflowID  # noqa: PLC0415
+
+    from ballast.events.context import progress_to_thread  # noqa: PLC0415
+    from notes_app.workflows.todo_approval import todo_approval_flow  # noqa: PLC0415
 
     if ctx.deps.parent_thread_id is None:
         raise RuntimeError(
@@ -345,17 +349,14 @@ async def propose_todo(
             "— was NotesAgent.build_deps run without a thread?",
         )
 
-    context = TodoApprovalContext(
+    payload = TodoApprovalContext(
         proposed_title=title,
         proposed_body=body,
         parent_thread_id=ctx.deps.parent_thread_id,
     )
-    await todo_flow.open(
-        helper_agent=NotesTodoApprovalAgent,
-        context=context,
-        opening_message=context.to_opening_message(),
-        notify_parent_thread_id=ctx.deps.parent_thread_id,
-    )
+    with progress_to_thread(ctx.deps.parent_thread_id):
+        with SetWorkflowID(str(uuid4())):
+            await Durable.start_workflow(todo_approval_flow, payload)
     return (
         "I opened a confirmation thread to review this todo. "
         "Once you approve (or modify / reject) it there, I'll save "

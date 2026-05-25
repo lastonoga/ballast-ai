@@ -12,19 +12,21 @@ class TodoApprovalContext(BaseModel):
       - ``BallastAgent.metadata_model`` — validates ``Thread.metadata_``
         on thread creation (so the framework rejects malformed threads
         before they reach the agent).
-      - Input contract for ``propose_todo`` → ``TodoApprovalFlow`` (the
+      - Input contract for ``propose_todo`` → ``todo_approval_flow`` (the
         durable workflow gets a JSON-serialised instance of this class
         as its primary argument).
 
     Two framework-injected routing keys live on ``Thread.metadata_``
-    alongside these fields (``request_id``, ``workflow_id``) — those
-    are not modelled here because they're plumbing, not part of the
-    user-facing context. The helper agent's ``build_deps`` reads them
-    out of raw metadata.
+    alongside these fields (``request_id``, ``workflow_id``,
+    ``respond_topic``) — those are not modelled here because they're
+    plumbing, not part of the user-facing context. The helper agent's
+    ``build_deps`` reads them out of raw metadata.
 
     ``to_system_prompt`` projects the context into the agent's system
     prompt — SOLID: the context owns its own prompt projection.
     """
+
+    __hitl_kind__ = "note.propose"
 
     proposed_title: str
     proposed_body: str

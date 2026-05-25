@@ -1,19 +1,20 @@
 """Tests for the durable ``propose_todo`` flow.
 
-The new architecture is fire-and-forget from the parent run's POV:
+The architecture is fire-and-forget from the parent run's POV:
 
-  1. ``propose_todo`` spawns a helper thread + opening message.
-  2. Kicks off ``TodoApprovalFlow.run`` via
-     ``DBOS.start_workflow_async`` with a pre-allocated workflow_id.
-  3. Returns IMMEDIATELY with an "I opened a side conversation" string.
-  4. The helper agent's approve / modify / reject tools DBOS.send their
-     response to the workflow's id (stored in T2 metadata).
-  5. The workflow saves the note (or skips) AND posts a notification
+  1. ``propose_todo`` spawns a helper thread + opening message via
+     ``ThreadChannel``, then starts ``todo_approval_flow`` as a
+     background DBOS workflow.
+  2. Returns IMMEDIATELY with an "I opened a side conversation" string.
+  3. The helper agent's approve / modify / reject tools build a
+     ``CardVerdict[TodoApprovalContext]`` and call
+     ``Durable.send_async(destination_id=workflow_id, topic=respond_topic)``.
+  4. The workflow saves the note (or skips) AND posts a notification
      message back to the parent thread.
 
-Crucially, step (5) doesn't depend on T1's request handler being alive
-— that's the whole point of the refactor. So these tests exercise the
-durable workflow end-to-end via DBOS.send + handle.get_result.
+Crucially, step (4) doesn't depend on T1's request handler being alive
+— that's the whole point of the design. So these tests exercise the
+durable workflow end-to-end via Durable.send_async + handle.get_result.
 
 The framework reads its repo + event log + event stream from the
 process-wide ``Engine`` installed by ``ballast.create_app`` — these tests
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +34,7 @@ import pytest
 
 import ballast
 from ballast.durable import Durable
+from ballast.patterns.hitl.channels.ui_card import CardVerdict
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
 from ballast.persistence import (
@@ -52,7 +55,7 @@ from notes_app.agents.todo_approval import (
 )
 from notes_app.models.todo_approval import TodoApprovalContext
 from notes_app.repositories.note import InMemoryNoteRepository
-from notes_app.workflows.todo_approval import TodoApprovalFlow
+from notes_app.workflows.todo_approval import todo_approval_flow
 
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -141,8 +144,8 @@ async def _trigger_approval(
     del notes_repo  # unused: helper tools route the verdict to the workflow,
     # the workflow itself reaches the repo via the module singleton.
     deps = TodoApprovalDeps(
-        request_id=UUID(t2_metadata["request_id"]),
         workflow_id=str(t2_metadata["workflow_id"]),
+        respond_topic=str(t2_metadata["respond_topic"]),
         metadata=TodoApprovalContext.model_validate(t2_metadata),
     )
     return await fn(_FakeCtx(deps=deps), **tool_kwargs)
@@ -154,14 +157,12 @@ async def _spawn_proposal(
     body: str,
     notes_repo: InMemoryNoteRepository,
     thread_repo: InMemoryThreadRepository,
-    todo_flow: TodoApprovalFlow,
 ) -> tuple[str, Any, dict[str, Any]]:
     """Run ``propose_todo`` and return (return_value, t1, t2_metadata).
 
-    ``todo_flow`` and ``notes_repo`` are reached by the tool via direct
-    import of the module-level singletons — tests swap the singleton
-    refs via ``monkeypatch.setattr`` in the calling test (the fixture
-    receives the per-test repo / flow that way). Framework repos are
+    ``notes_repo`` is reached by the workflow body via direct import of
+    the module-level singleton — tests swap the singleton ref via
+    ``monkeypatch.setattr`` in the calling test. Framework repos are
     reached via the installed process-wide Engine.
     """
     del notes_repo  # only used via the monkeypatch'd module singleton
@@ -171,7 +172,6 @@ async def _spawn_proposal(
     t1 = await thread_repo.create(agent="notes", metadata={})
     deps = NoteToolDeps(parent_thread_id=t1.id)
     result = await propose_todo(_FakeCtx(deps=deps), title=title, body=body)
-    del todo_flow  # only used via the monkeypatch'd module singleton
 
     t2 = await _wait_for_helper_thread(thread_repo)
     return result, t1, dict(t2.metadata_)
@@ -188,16 +188,12 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     """propose_todo creates T2 with the right metadata + opening message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(
-        config_name=f"todo-flow-test-{uuid4()}",
-    )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
     _install_engine(thread_repo=thread_repo)
 
     result, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
-        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+        notes_repo=notes_repo, thread_repo=thread_repo,
     )
 
     # Tool returns an "I opened a side conversation" string — NOT a Note.
@@ -207,8 +203,9 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     assert t2_meta["proposed_title"] == "groceries"
     assert t2_meta["proposed_body"] == "milk eggs"
     assert t2_meta["parent_thread_id"] == str(t1.id)
-    UUID(t2_meta["request_id"])  # well-formed UUID
-    UUID(t2_meta["workflow_id"])  # well-formed UUID
+    UUID(t2_meta["request_id"])    # well-formed UUID
+    UUID(t2_meta["workflow_id"])   # well-formed UUID
+    assert "respond_topic" in t2_meta  # ThreadChannel stamps this in
 
     # Opening assistant message is seeded.
     threads = await thread_repo.list_()
@@ -216,7 +213,19 @@ async def test_propose_todo_spawns_helper_thread_and_workflow(
     history = await thread_repo.history(t2.id)
     assert len(history) == 1
     assert history[0].role == "assistant"
-    assert "groceries" in history[0].parts[0]["text"]
+    # ThreadChannel's fixed opening_message (not the old context-aware one)
+    assert "propose" in history[0].parts[0]["text"].lower() or \
+           "approve" in history[0].parts[0]["text"].lower() or \
+           "note" in history[0].parts[0]["text"].lower()
+
+    # Clean up: fire reject so the dangling workflow finishes.
+    await _trigger_approval(
+        helper_tool="reject",
+        t2_metadata=t2_meta,
+        notes_repo=notes_repo,
+    )
+    handle = await Durable.retrieve_workflow(t2_meta["workflow_id"])
+    await handle.get_result()
 
 
 @pytest.mark.asyncio
@@ -227,16 +236,12 @@ async def test_approve_saves_note_and_notifies_parent(
     """Happy path: approve → note saved + 'Saved your todo' on T1."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(
-        config_name=f"todo-flow-test-{uuid4()}",
-    )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
     _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk eggs",
-        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+        notes_repo=notes_repo, thread_repo=thread_repo,
     )
     workflow_id = t2_meta["workflow_id"]
 
@@ -271,16 +276,12 @@ async def test_modify_saves_note_with_overrides(
     """Modify branch: overrides applied, note saved, parent notified."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(
-        config_name=f"todo-flow-test-{uuid4()}",
-    )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
     _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="groceries", body="milk",
-        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+        notes_repo=notes_repo, thread_repo=thread_repo,
     )
     workflow_id = t2_meta["workflow_id"]
 
@@ -314,16 +315,12 @@ async def test_reject_skips_note_and_notifies_parent(
     """Reject branch: no note saved, parent gets a cancellation message."""
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(
-        config_name=f"todo-flow-test-{uuid4()}",
-    )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
     _install_engine(thread_repo=thread_repo)
 
     _, t1, t2_meta = await _spawn_proposal(
         title="garbage", body="trash",
-        notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+        notes_repo=notes_repo, thread_repo=thread_repo,
     )
     workflow_id = t2_meta["workflow_id"]
 
@@ -360,11 +357,7 @@ async def test_propose_todo_returns_before_helper_decision(
     """
     notes_repo = InMemoryNoteRepository()
     thread_repo = InMemoryThreadRepository()
-    flow = TodoApprovalFlow(
-        config_name=f"todo-flow-test-{uuid4()}",
-    )
     monkeypatch.setattr("notes_app.repositories.note.notes_repo", notes_repo)
-    monkeypatch.setattr("notes_app.workflows.todo_approval.todo_flow", flow)
     _install_engine(thread_repo=thread_repo)
 
     # If this await hung, the test would time out — we explicitly assert
@@ -372,7 +365,7 @@ async def test_propose_todo_returns_before_helper_decision(
     result, _, t2_meta = await asyncio.wait_for(
         _spawn_proposal(
             title="x", body="y",
-            notes_repo=notes_repo, thread_repo=thread_repo, todo_flow=flow,
+            notes_repo=notes_repo, thread_repo=thread_repo,
         ),
         timeout=2.0,
     )
@@ -405,3 +398,5 @@ async def test_propose_todo_rejects_when_deps_missing_parent_thread() -> None:
 # Keep ballast imported — referenced for the `_set_ballast` lifecycle to make
 # it obvious which framework piece these tests are exercising.
 _ = ballast
+# Keep todo_approval_flow imported to confirm the module wires correctly.
+_ = todo_approval_flow

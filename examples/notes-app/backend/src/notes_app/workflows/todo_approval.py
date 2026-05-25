@@ -1,14 +1,8 @@
-"""Notes-app's concrete durable HITL workflow.
+"""Notes-app's durable todo-approval workflow.
 
-Subclasses ``DurableHITLWorkflow`` from the framework — the framework
-owns thread spawn, workflow lifecycle, ``DBOS.recv_async`` blocking,
-and context rehydration. This module just supplies the
-``on_decision`` body: save the note (or skip on reject) and post a
-notification message back to the parent thread.
-
-Repos + stream are reached via the process-wide ``Engine`` installed
-by ``ballast.create_app`` at startup — no per-call ``RunContext`` is
-threaded through ``open(...)`` anymore.
+Uses ``ThreadChannel`` to open a helper sub-thread with the
+``NotesTodoApprovalAgent``, then dispatches on the typed
+``CardVerdict[TodoApprovalContext]`` that comes back.
 
 Note on annotations: like ``notes_app.agents.notes`` we do NOT use
 ``from __future__ import annotations`` so DBOS / pydantic-ai can
@@ -17,94 +11,74 @@ resolve concrete types at decoration time.
 
 from uuid import UUID
 
-from pydantic import BaseModel
-from ballast import get_ballast
-from ballast.patterns.hitl import (
-    ApprovedResponse,
-    DurableHITLWorkflow,
-    HITLResponse,
-    ModifiedResponse,
-    RejectedResponse,
-)
+from ballast.durable import Durable
+from ballast.patterns.hitl.channels.thread import ThreadChannel
+from ballast.patterns.hitl.channels.ui_card import CardVerdict
 
+from notes_app.agents.todo_approval import NotesTodoApprovalAgent
 from notes_app.models.todo_approval import TodoApprovalContext
 
+# ── Channel ────────────────────────────────────────────────────────────────
+# Must be at module level so it is wired before DBOS.launch().
 
-class TodoApprovalFlow(DurableHITLWorkflow):
-    """Save-on-approve / notify-on-reject post-decision logic for todos.
+_channel: ThreadChannel[TodoApprovalContext] = ThreadChannel(
+    helper_agent=NotesTodoApprovalAgent,
+    payload_type=TodoApprovalContext,
+    opening_message=(
+        "I'm proposing a note. Use approve / reject / modify to decide."
+    ),
+)
 
-    Fully durable: the workflow body runs inside DBOS so the note save
-    and the parent-thread notification both happen even if T1's
-    streaming request handler died long before the helper agent
-    finished its conversation.
 
-    Reaches the thread repo + event log + event stream through
-    ``ballast.get_ballast()`` — the framework owns the singleton wired by
-    ``ballast.create_app`` at startup, so ``_notify`` doesn't need per-call
-    infra injection.
+# ── Workflow ───────────────────────────────────────────────────────────────
+
+
+@Durable.workflow()
+async def todo_approval_flow(payload: TodoApprovalContext) -> None:
+    """Durable workflow: block on a helper thread's verdict, then act.
+
+    Fire-and-forget from the parent agent's perspective. The workflow
+    survives process restarts because DBOS persists every step.
     """
-
-    async def on_decision(
-        self,
-        *,
-        response: HITLResponse,
-        context: BaseModel,
-    ) -> None:
-        # Lazy import of the module-level singleton — tests
-        # monkeypatch ``notes_app.repositories.note.notes_repo`` so the
-        # swap is visible here on the per-test fixture.
-        from notes_app.repositories.note import notes_repo
-
-        assert isinstance(context, TodoApprovalContext), (
-            f"Expected TodoApprovalContext, got {type(context).__name__}"
+    try:
+        verdict: CardVerdict[TodoApprovalContext] = await _channel.request(payload)
+    except TimeoutError:
+        await _notify(
+            payload.parent_thread_id,
+            "Todo approval timed out — nothing was saved.",
         )
-        parent_id = context.parent_thread_id
+        return
 
-        if isinstance(response, ApprovedResponse):
-            note = await notes_repo.create(
-                title=context.proposed_title,
-                body=context.proposed_body,
-            )
-            await self._notify(
-                parent_id, f"Saved your todo titled {note.title!r}.",
-            )
-        elif isinstance(response, ModifiedResponse):
-            mod = response.modified_proposal
-            title = str(mod.get("title", context.proposed_title))
-            body = str(mod.get("body", context.proposed_body))
-            note = await notes_repo.create(title=title, body=body)
-            await self._notify(
-                parent_id,
-                f"Saved your todo titled {note.title!r} (with your edits).",
-            )
-        elif isinstance(response, RejectedResponse):
-            reason = (response.feedback or "").strip()
-            tail = f" ({reason})" if reason else ""
-            await self._notify(
-                parent_id, f"Todo creation was cancelled{tail}.",
-            )
-        else:
-            # TimeoutResponse / unknown
-            await self._notify(
-                parent_id, "Todo approval timed out — nothing was saved.",
-            )
+    if verdict.decision == "approve":
+        final = verdict.modified or payload
+        # Lazy import — tests monkeypatch the module singleton.
+        from notes_app.repositories.note import notes_repo  # noqa: PLC0415
 
-    async def _notify(self, parent_id: UUID, text: str) -> None:
-        # ``thread_repo.add_message`` self-emits ``ballast.events.message_added``;
-        # the framework's default handler (installed by ``EventsProvider``)
-        # writes the ``message-added`` event-log row and publishes the
-        # SSE wake-up — no manual ``event_log.append`` / ``event_stream.publish``
-        # here anymore. (See ``ballast.providers.events``.)
-        engine = get_ballast()
-        await engine.thread_repo.add_message(
-            parent_id,
-            role="assistant",
-            parts=[{"type": "text", "text": text, "state": "done"}],
+        note = await notes_repo.create(
+            title=final.proposed_title,
+            body=final.proposed_body,
+        )
+        edits = " (with your edits)" if verdict.modified is not None else ""
+        await _notify(
+            payload.parent_thread_id,
+            f"Saved your todo titled {note.title!r}{edits}.",
+        )
+    else:  # reject
+        reason = (verdict.feedback or "").strip()
+        tail = f" ({reason})" if reason else ""
+        await _notify(
+            payload.parent_thread_id,
+            f"Todo creation was cancelled{tail}.",
         )
 
 
-# ── Module-level singleton ──────────────────────────────────────────────
-# App-specific durable HITL workflow. Imported directly by callers that
-# need to spawn approval flows (NotesAgent.propose_todo, BrainstormFlow).
+async def _notify(parent_id: UUID, text: str) -> None:
+    """Post a notification message back to the parent thread."""
+    from ballast import get_ballast  # noqa: PLC0415
 
-todo_flow: TodoApprovalFlow = TodoApprovalFlow()
+    engine = get_ballast()
+    await engine.thread_repo.add_message(
+        parent_id,
+        role="assistant",
+        parts=[{"type": "text", "text": text, "state": "done"}],
+    )

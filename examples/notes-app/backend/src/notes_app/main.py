@@ -57,7 +57,7 @@ from notes_app.routes.workflows import router as workflows_router
 from notes_app.settings import get_notes_settings
 from notes_app.streams import event_stream
 from notes_app.workflows.brainstorm import brainstorm
-from notes_app.workflows.todo_approval import todo_flow  # noqa: F401 — DBOS classes self-register on import; needed for propose_todo
+from notes_app.workflows.todo_approval import todo_approval_flow  # noqa: F401 — module-level workflow + channel self-register on import
 
 
 load_dotenv()
