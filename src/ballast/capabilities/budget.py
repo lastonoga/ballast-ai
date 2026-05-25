@@ -125,3 +125,23 @@ class BudgetGuard(BallastCapability):
                 limit=self.max_output_tokens,
             )
         return response
+
+    def snapshot(self) -> dict[str, int | None]:
+        """Return a flat dict of current counters + limits.
+
+        Suitable for ``GoalDriftDetector``'s ``metadata_provider`` to
+        bridge into ``DriftContext.metadata["budget"]`` for
+        ``OnBudgetThreshold`` strategy consumption.
+
+        Shape: ``{"iterations": int, "max_iterations": int,
+        "input_tokens": int, "max_input_tokens": int|None,
+        "output_tokens": int, "max_output_tokens": int|None}``.
+        """
+        return {
+            "iterations":        self._iterations,
+            "max_iterations":    self.max_iterations,
+            "input_tokens":      self._input_tokens,
+            "max_input_tokens":  self.max_input_tokens,
+            "output_tokens":     self._output_tokens,
+            "max_output_tokens": self.max_output_tokens,
+        }
