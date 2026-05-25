@@ -16,6 +16,9 @@ from ballast.drift._strategies import (
     OnBudgetThreshold,
     Periodic,
 )
+from ballast.drift._goal_sources import (
+    ExplicitGoal, FirstUserMessage, LastUserMessage, WorkflowInput,
+)
 from ballast.drift._verdict import DefaultDriftVerdict, DriftVerdictBase
 from ballast.drift._windows import (
     FullTrace,
@@ -35,8 +38,11 @@ __all__ = [
     "DriftVerdictBase",
     "EveryNSteps",
     "EveryNToolCalls",
+    "ExplicitGoal",
+    "FirstUserMessage",
     "FullTrace",
     "GoalSource",
+    "LastUserMessage",
     "LastNMessages",
     "OnBudgetThreshold",
     "Periodic",
@@ -44,4 +50,5 @@ __all__ = [
     "SinceLastUserMessage",
     "TokenBudgetWindow",
     "TraceWindow",
+    "WorkflowInput",
 ]
