@@ -200,7 +200,7 @@ from ballast.patterns.hitl import (
     UICardChannel,
     register_card_kind,
 )
-from ballast.memory import Scope
+from ballast.auth import Scope
 from ballast.patterns.map_reduce import MapReduce
 from ballast.durable import Durable
 from ballast.runtime import (  # noqa: I001

@@ -1,7 +1,7 @@
-"""``Scope`` — base scope for memory queries.
+"""``Scope`` — base scope for memory queries / repository filters.
 
 Apps subclass to add domain-specific dimensions (project_id, org_id,
-team_id, …). ``extra="allow"`` so sources can graceful-read
+team_id, …). ``extra="allow"`` so consumers can graceful-read
 app-custom fields via getattr without requiring a subclass.
 """
 from __future__ import annotations
