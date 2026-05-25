@@ -7,7 +7,7 @@ const RENDERERS: Record<
   string,
   React.ComponentType<{
     card: import("./use-approvals").ApprovalCard;
-    onApprove: () => void;
+    onApprove: (opts: Pick<import("./use-approvals").Decision, "modified">) => void;
     onReject: () => void;
   }>
 > = {
@@ -50,7 +50,7 @@ export function ApprovalsPanel({
             <Renderer
               key={card.id}
               card={card}
-              onApprove={() => decide(card.id, { decision: "approve" })}
+              onApprove={(opts) => decide(card.id, { decision: "approve", ...opts })}
               onReject={() => decide(card.id, { decision: "reject" })}
             />
           );
