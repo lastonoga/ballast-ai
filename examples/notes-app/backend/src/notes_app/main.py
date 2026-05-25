@@ -36,6 +36,7 @@ from ballast.persistence import (
     SqlEventLogRepository,
     SqlThreadRepository,
 )
+from ballast.persistence.approval_card import InMemoryApprovalCardRepository
 from ballast.observability.config import ObservabilityConfig
 from ballast.settings import get_settings
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
@@ -157,6 +158,7 @@ app: FastAPI = (
             openrouter_usage={"include": True},
         ),
     )
+    .with_approval_repo(InMemoryApprovalCardRepository())
     .fastapi(
         cors="dev",
         routers=[
