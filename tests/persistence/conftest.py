@@ -26,11 +26,9 @@ from sqlmodel import SQLModel
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 # ── Import all persistence modules so SQLModel.metadata is fully populated ──
-import ballast.memory.episodic.sources._vector  # noqa: F401
 import ballast.persistence.approval_card._models  # noqa: F401
 import ballast.persistence.events.domain  # noqa: F401
 import ballast.persistence.thread.domain  # noqa: F401
-import tests.persistence.test_semantic_vector  # noqa: F401 — registers _DocRow
 
 # ── Session-scoped container & DSN fixtures ──────────────────────────────────
 
