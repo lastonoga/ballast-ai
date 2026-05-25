@@ -28,7 +28,9 @@ class _Note(BaseModel):
     body: str
 
 
-register_card_kind(_Note)
+@pytest.fixture(autouse=True)
+def _register_note_kind() -> None:
+    register_card_kind(_Note)
 
 
 @pytest.fixture

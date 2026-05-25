@@ -10,6 +10,23 @@ import pytest
 import pytest_asyncio
 from dbos import DBOS, DBOSConfig
 
+from ballast.patterns.hitl.channels.ui_card import card_kind_registry
+
+
+@pytest.fixture(autouse=True)
+def _isolate_card_registry() -> Iterator[None]:
+    """Snapshot + restore card_kind_registry around each test.
+
+    Prevents cross-module re-registration conflicts when multiple test files
+    each define a local _Note class with the same __hitl_kind__.
+    """
+    snapshot = dict(card_kind_registry)
+    try:
+        yield
+    finally:
+        card_kind_registry.clear()
+        card_kind_registry.update(snapshot)
+
 
 @pytest.fixture(scope="module")
 def dbos_runtime() -> Iterator[type[DBOS]]:
