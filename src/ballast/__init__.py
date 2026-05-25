@@ -211,11 +211,16 @@ from ballast.memory.episodic import (
     RememberTurn,
     ScoredEpisode,
 )
-from ballast.memory.episodic.sources import (
-    EpisodeRow,
-    ThreadEpisodicSource,
-    VectorEpisodicSource,
-)
+from ballast.memory.episodic.sources._thread import ThreadEpisodicSource
+
+try:
+    from ballast.memory.episodic.sources._vector import (  # noqa: PLC0415
+        EpisodeRow,
+        VectorEpisodicSource,
+    )
+except ImportError:
+    EpisodeRow = None  # type: ignore[assignment,misc]
+    VectorEpisodicSource = None  # type: ignore[assignment,misc]
 from ballast.memory.episodic.strategies import (
     AllRelevant,
     Cluster,

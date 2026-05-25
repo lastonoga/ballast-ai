@@ -30,6 +30,10 @@ from dbos import DBOSConfig
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from ballast.auth.context import current_user_id
+from ballast.memory import Scope
+from ballast.memory.episodic import EpisodicMemory
+from ballast.memory.episodic.sources._thread import ThreadEpisodicSource
 from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
@@ -125,6 +129,54 @@ else:
     assert isinstance(thread_repo, InMemoryThreadRepository)
 
 
+# ── Episodic memory ─────────────────────────────────────────────────────
+# Phase 1: Thread source only (recency-based recall, no embeddings needed).
+# VectorEpisodicSource is wired but inactive — flip _openai_embedder on when
+# a real embedding key is available.
+_openai_embedder = None  # type: ignore[assignment]  # pragma: no cover
+
+
+class _LazyThreadRepo:
+    """Thin adapter — defers thread_repo lookup until first call.
+
+    Needed because thread_repo is available as a module-level var here,
+    but EpisodicMemory is constructed before Ballast.fastapi() runs, so
+    we close over the name to be safe.
+    """
+
+    @property
+    def _repo(self):  # type: ignore[no-untyped-def]
+        return thread_repo
+
+    async def list_(self, **kwargs):  # type: ignore[no-untyped-def]
+        return await self._repo.list_(**kwargs)
+
+    async def history(self, thread_id, **kwargs):  # type: ignore[no-untyped-def]
+        return await self._repo.history(thread_id, **kwargs)
+
+
+def _build_episodic_memory() -> EpisodicMemory:
+    """Compose Thread + optional Vector episodic sources.
+
+    Thread always works (wraps the framework thread_repo). Vector
+    requires Postgres + an embedder; degrades gracefully if either
+    is missing so tests / no-OPENAI envs still get partial recall.
+    """
+    sources = [ThreadEpisodicSource(thread_repo=_LazyThreadRepo())]
+    if _should_use_sql() and _openai_embedder is not None:
+        from ballast.memory.episodic.sources._vector import VectorEpisodicSource  # noqa: PLC0415
+        sources.append(
+            VectorEpisodicSource(
+                sessionmaker=_sessionmaker,  # type: ignore[name-defined]
+                embedder=_openai_embedder,
+            )
+        )
+    return EpisodicMemory(
+        sources=sources,
+        default_scope_builder=lambda: Scope(user_id=current_user_id()),
+    )
+
+
 settings = get_settings()
 
 app: FastAPI = (
@@ -159,6 +211,7 @@ app: FastAPI = (
         ),
     )
     .with_approval_repo(InMemoryApprovalCardRepository())
+    .with_memory(_build_episodic_memory())
     .fastapi(
         cors="dev",
         routers=[
