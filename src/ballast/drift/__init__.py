@@ -17,6 +17,12 @@ from ballast.drift._strategies import (
     Periodic,
 )
 from ballast.drift._verdict import DefaultDriftVerdict, DriftVerdictBase
+from ballast.drift._windows import (
+    FullTrace,
+    LastNMessages,
+    SinceLastUserMessage,
+    TokenBudgetWindow,
+)
 
 __all__ = [
     "AfterEveryStep",
@@ -29,9 +35,13 @@ __all__ = [
     "DriftVerdictBase",
     "EveryNSteps",
     "EveryNToolCalls",
+    "FullTrace",
     "GoalSource",
+    "LastNMessages",
     "OnBudgetThreshold",
     "Periodic",
     "PromptBuilder",
+    "SinceLastUserMessage",
+    "TokenBudgetWindow",
     "TraceWindow",
 ]
