@@ -392,6 +392,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.136.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pgvector", marker = "extra == 'dev'", specifier = ">=0.3.0" },
+    { name = "pgvector", marker = "extra == 'memory'", specifier = ">=0.3.0" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-ai", specifier = ">=0.0.13" },
     { name = "pydantic-evals", specifier = ">=0.0.13" },
@@ -404,7 +406,7 @@ requires-dist = [
     { name = "testcontainers", extras = ["postgresql"], marker = "extra == 'dev'", specifier = ">=4.7" },
     { name = "typer", specifier = ">=0.25.1" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["memory", "dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "types-pyyaml", specifier = ">=6.0.12.20260518" }]

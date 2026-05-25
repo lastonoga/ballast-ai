@@ -41,8 +41,6 @@ from uuid import UUID
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
-from ballast import get_ballast
-from ballast.memory.episodic import RememberTurn
 from ballast.capabilities import (
     BallastCapability,
     BudgetGuard,
@@ -138,13 +136,6 @@ def default_notes_capabilities() -> list[BallastCapability]:
             thread_id_from=lambda ctx: ctx.deps.parent_thread_id,
         ),
     ]
-    # Memory may not be wired in test envs — degrade gracefully.
-    try:
-        memory = getattr(get_ballast(), "_episodic_memory", None)
-        if memory is not None:
-            caps.append(RememberTurn(memory=memory))
-    except Exception:  # noqa: BLE001
-        pass
     return caps
 
 
@@ -187,15 +178,12 @@ class NotesAgent(DurableAgent):
         # ``requires_approval=True`` (e.g. ``delete_note``) the agent
         # pauses and yields a ``DeferredToolRequests`` instead of
         # looping forever over an unresolved tool call.
-        semantic = getattr(get_ballast(), "_semantic_memory", None)
-        extra_tools = semantic.as_tools() if semantic is not None else []
         return Agent(
             model=build_openrouter_model(),
             output_type=[str, DeferredToolRequests],
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
             capabilities=default_notes_capabilities(),
-            tools=extra_tools,
         )
 
     async def build_deps(
