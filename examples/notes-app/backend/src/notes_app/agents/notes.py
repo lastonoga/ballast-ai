@@ -41,6 +41,8 @@ from uuid import UUID
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openrouter import OpenRouterModelSettings
+from ballast import get_ballast
+from ballast.memory.episodic import RememberTurn
 from ballast.capabilities import (
     BallastCapability,
     BudgetGuard,
@@ -116,7 +118,7 @@ def default_notes_capabilities() -> list[BallastCapability]:
       user reply). ``fail_open=True`` (the default) means a judge
       model outage is logged + skipped, not user-visible.
     """
-    return [
+    caps: list[BallastCapability] = [
         BudgetGuard(
             max_iterations=20,
             max_input_tokens=50_000,
@@ -136,6 +138,14 @@ def default_notes_capabilities() -> list[BallastCapability]:
             thread_id_from=lambda ctx: ctx.deps.parent_thread_id,
         ),
     ]
+    # Memory may not be wired in test envs — degrade gracefully.
+    try:
+        memory = getattr(get_ballast(), "_memory", None)
+        if memory is not None:
+            caps.append(RememberTurn(memory=memory))
+    except Exception:  # noqa: BLE001
+        pass
+    return caps
 
 
 @dataclass
