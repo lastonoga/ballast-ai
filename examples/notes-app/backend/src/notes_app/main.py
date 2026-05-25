@@ -34,6 +34,8 @@ from ballast.auth.context import current_user_id
 from ballast.memory import Scope
 from ballast.memory.episodic import EpisodicMemory
 from ballast.memory.episodic.sources._thread import ThreadEpisodicSource
+from ballast.memory.semantic import SemanticMemory
+from notes_app.memory.semantic_sources import notes_semantic
 from ballast.persistence import (
     InMemoryEventLogRepository,
     InMemoryThreadRepository,
@@ -211,7 +213,8 @@ app: FastAPI = (
         ),
     )
     .with_approval_repo(InMemoryApprovalCardRepository())
-    .with_memory(_build_episodic_memory())
+    .with_episodic_memory(_build_episodic_memory())
+    .with_semantic_memory(SemanticMemory(sources=[notes_semantic]))
     .fastapi(
         cors="dev",
         routers=[
