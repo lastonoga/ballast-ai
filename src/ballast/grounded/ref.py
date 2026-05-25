@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import typing
 from typing import Any, ClassVar, Generic, Protocol, TypeVar
 from uuid import UUID
 
@@ -61,6 +62,10 @@ class Ref(Generic[EntityT]):
         def _wrap(value: Any) -> Ref[Any]:
             # Same-type passthrough (already correctly typed).
             if isinstance(value, cls):
+                return value
+            # Concrete Ref passing through a Ref[Any] field — preserve the
+            # subscripted type so scan_context can recover entity_type later.
+            if isinstance(value, Ref) and cls.__entity_type__ is typing.Any:
                 return value
             # Different-type Ref → re-wrap into THIS subscripted class to enforce typing.
             # (Prevents Ref[B] silently slipping into a Ref[A] field.)

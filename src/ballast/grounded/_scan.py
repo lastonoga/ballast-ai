@@ -136,6 +136,11 @@ def scan_context(context: BaseModel, output_spec: OutputSpec, *, max_depth: int 
 def _walk(obj: Any, targets: set[type], sources: ContextSources, depth: int, max_depth: int) -> None:
     if depth > max_depth:
         return
+    # NEW: Ref recognition — fed by Episode.references and any other Ref-bearing context.
+    if isinstance(obj, Ref):
+        if obj.entity_type in targets:
+            sources.by_entity_type.setdefault(obj.entity_type, []).append(obj.id)
+        return
     if isinstance(obj, BaseModel):
         if type(obj) in targets:
             id_val = getattr(obj, "id", None)
