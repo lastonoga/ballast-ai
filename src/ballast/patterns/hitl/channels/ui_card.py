@@ -23,6 +23,22 @@ from ballast.events.signals import Signal
 from ballast.patterns.hitl.channels._base import DBOSHITLChannel
 from ballast.patterns.hitl.channels._protocol import InT
 
+
+async def _emit_thread_marker(thread_id: str, payload: dict) -> None:
+    """Adapter to the framework's persistent thread-event emitter.
+
+    Delegates to ``get_ballast().broadcaster.emit_raw`` — the same path
+    that Reflection / DivergentConvergent use for their ``data-*`` markers.
+    The ``payload`` dict is used directly as the message part.
+    """
+    from ballast.runtime.engine import get_ballast  # noqa: PLC0415
+
+    await get_ballast().broadcaster.emit_raw(
+        thread_id,
+        part=payload,
+        persistent=True,
+    )
+
 OutT = TypeVar("OutT", bound=BaseModel)
 
 
@@ -114,8 +130,40 @@ class UICardChannel(DBOSHITLChannel[InT, "CardVerdict[InT]"]):
         await approval_card_repo.add(card)
         await approval_card_requested.send(self, card=card)
 
+        if card.parent_thread_id is not None:
+            await _emit_thread_marker(
+                card.parent_thread_id,
+                {
+                    "type": "data-approval-pending",
+                    "data": {"card_id": card.id, "kind": card.kind},
+                },
+            )
+
     async def decode_verdict(self, raw: Any) -> "CardVerdict[InT]":
         return TypeAdapter(CardVerdict[self._payload_type]).validate_python(raw)
+
+
+async def _on_card_decided(
+    _sender: Any,
+    *,
+    card: Any,
+    **_: Any,
+) -> None:
+    """Async handler — posts ``data-approval-resolved`` to the thread that
+    created the card, if it was scoped to one."""
+    if card.parent_thread_id is None:
+        return
+    payload = {
+        "type": "data-approval-resolved",
+        "data": {
+            "card_id": card.id,
+            "approved": card.status == "approved",
+        },
+    }
+    await _emit_thread_marker(card.parent_thread_id, payload)
+
+
+approval_card_decided.connect(_on_card_decided)
 
 
 __all__ = [

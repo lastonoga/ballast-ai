@@ -33,6 +33,22 @@ def _register_note_kind() -> None:
     register_card_kind(_Note)
 
 
+@pytest.fixture(autouse=True)
+def _noop_thread_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent ``_emit_thread_marker`` from calling ``get_ballast()`` in tests
+    that do not need to inspect the emitted events.  Tests that DO inspect
+    emitted events override this with their own spy via a second monkeypatch
+    (last writer wins within the same test)."""
+
+    async def _noop(thread_id: str, payload: dict) -> None:  # noqa: ARG001
+        pass
+
+    monkeypatch.setattr(
+        "ballast.patterns.hitl.channels.ui_card._emit_thread_marker",
+        _noop,
+    )
+
+
 @pytest.fixture
 def fresh_repo(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemoryApprovalCardRepository]:
     fresh = InMemoryApprovalCardRepository()
@@ -68,6 +84,66 @@ async def test_deliver_persists_card_and_fires_signal(
     assert stored.parent_thread_id == "thread-1"
 
     assert len(seen) == 1 and seen[0].id == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_deliver_emits_data_approval_pending_when_thread_scoped(
+    fresh_repo: InMemoryApprovalCardRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside a ``progress_to_thread`` scope, ``deliver`` posts a
+    persistent ``data-approval-pending`` event to that thread so the
+    chat shows a 'waiting for your approval' marker."""
+    emitted: list[tuple[str, dict]] = []
+
+    async def _spy_emit(thread_id: str, payload: dict) -> None:
+        emitted.append((thread_id, payload))
+
+    monkeypatch.setattr(
+        "ballast.patterns.hitl.channels.ui_card._emit_thread_marker",
+        _spy_emit,
+    )
+
+    chan: UICardChannel[_Note] = UICardChannel(payload_type=_Note)
+    with progress_to_thread("thread-1"):
+        await chan.deliver(
+            request_id="req-1", workflow_id="wf-1",
+            respond_topic="hitl:req-1",
+            payload=_Note(title="t", body="b"),
+        )
+
+    assert len(emitted) == 1
+    thread_id, payload = emitted[0]
+    assert thread_id == "thread-1"
+    assert payload["type"] == "data-approval-pending"
+    assert payload["data"]["card_id"] == "req-1"
+    assert payload["data"]["kind"] == "note.create"
+
+
+@pytest.mark.asyncio
+async def test_deliver_skips_marker_without_thread_scope(
+    fresh_repo: InMemoryApprovalCardRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Outside ``progress_to_thread``, no marker is emitted (no thread
+    to post to)."""
+    emitted: list[tuple[str, dict]] = []
+
+    async def _spy_emit(thread_id: str, payload: dict) -> None:
+        emitted.append((thread_id, payload))
+
+    monkeypatch.setattr(
+        "ballast.patterns.hitl.channels.ui_card._emit_thread_marker",
+        _spy_emit,
+    )
+
+    chan: UICardChannel[_Note] = UICardChannel(payload_type=_Note)
+    await chan.deliver(
+        request_id="req-1", workflow_id="wf-1",
+        respond_topic="hitl:req-1",
+        payload=_Note(title="t", body="b"),
+    )
+    assert emitted == []
 
 
 @pytest.mark.asyncio
