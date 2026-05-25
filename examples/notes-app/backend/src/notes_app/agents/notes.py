@@ -187,12 +187,15 @@ class NotesAgent(DurableAgent):
         # ``requires_approval=True`` (e.g. ``delete_note``) the agent
         # pauses and yields a ``DeferredToolRequests`` instead of
         # looping forever over an unresolved tool call.
+        semantic = getattr(get_ballast(), "_semantic_memory", None)
+        extra_tools = semantic.as_tools() if semantic is not None else []
         return Agent(
             model=build_openrouter_model(),
             output_type=[str, DeferredToolRequests],
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
             capabilities=default_notes_capabilities(),
+            tools=extra_tools,
         )
 
     async def build_deps(
