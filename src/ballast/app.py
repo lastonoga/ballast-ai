@@ -275,6 +275,7 @@ class Ballast:
         from fastapi import FastAPI
 
         from ballast.api.cors import CORSConfig
+        from ballast.api.approvals.router import approvals_router
         from ballast.api.dbos_router import dbos_router
         from ballast.api.error_middleware import install_error_handlers
         from ballast.api.health import build_health_router, health_router
@@ -387,6 +388,7 @@ class Ballast:
             app.include_router(health_router)
         app.include_router(threads_router)
         app.include_router(dbos_router)
+        app.include_router(approvals_router)
 
         # Extra routers from the app.
         for r in routers:
