@@ -35,9 +35,11 @@ from ballast.drift._windows import (
     SinceLastUserMessage,
     TokenBudgetWindow,
 )
+from ballast.drift._core import DriftEngine
 
 __all__ = [
     "AfterEveryStep",
+    "DriftEngine",
     "ComposeHandler",
     "ComposeStrategy",
     "DefaultDriftVerdict",
