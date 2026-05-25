@@ -5,8 +5,9 @@ from ballast.memory.episodic._models import (
     DetailLevel, Episode, RecallResult, ScoredEpisode,
 )
 from ballast.memory.episodic._protocol import EpisodicSource
+from ballast.memory.episodic._triggers import RememberTurn
 
 __all__ = [
     "DetailLevel", "Episode", "EpisodicMemory", "EpisodicSource", "RRFMerger", "RawScoreMerger",
-    "RecallResult", "ScoreMerger", "ScoredEpisode", "WeightedMerger",
+    "RecallResult", "RememberTurn", "ScoreMerger", "ScoredEpisode", "WeightedMerger",
 ]
