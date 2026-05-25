@@ -229,7 +229,7 @@ from ballast.memory.episodic.strategies import (
     RecallStrategy,
     TopK,
 )
-from ballast.patterns.map_reduce import map_reduce_llm
+from ballast.patterns.map_reduce import MapReduce
 from ballast.durable import Durable
 from ballast.runtime import (  # noqa: I001
     ThreadEventBroadcaster,
@@ -359,7 +359,7 @@ __all__ = [
     "VectorEpisodicSource",
     "WorkflowNotFound",
     "as_critique",
-    "map_reduce_llm",
+    "MapReduce",
     "build_a2a_router",
     "build_dbos_config",
     "build_health_router",

@@ -1,6 +1,6 @@
 """``MapReduce`` strategy — LLM-driven digest of large recall sets.
 
-Builds on ``ballast.patterns.map_reduce.map_reduce_llm``: per-episode
+Builds on ``ballast.patterns.map_reduce.MapReduce``: per-episode
 ``map_fn`` runs in parallel (typically an LLM call summarizing one
 episode); ``reduce_fn`` synthesizes the final digest. The strategy
 wraps the digest in a single synthetic Episode whose ``preview`` is
@@ -21,7 +21,7 @@ from ballast.memory.episodic._models import (
     DetailLevel, Episode, RecallResult, ScoredEpisode,
 )
 from ballast.memory.episodic._protocol import EpisodicSource
-from ballast.patterns.map_reduce import map_reduce_llm
+from ballast.patterns.map_reduce import MapReduce as MapReducePattern
 
 _log = logging.getLogger(__name__)
 
@@ -62,12 +62,12 @@ class MapReduce:
         flat: list[ScoredEpisode] = [se for batch in per_source for se in batch][: self._max]
         if not flat:
             return RecallResult(episodes=[])
-        digest = await map_reduce_llm(
-            items=flat,
+        mr = MapReducePattern(
             map_step=self._map_fn,
             reduce_step=self._reduce_fn,
             map_concurrency=self._map_concurrency,
         )
+        digest = await mr.run(flat)
         synthesized = Episode(
             id=f"digest:{intent[:32]}",
             source="map-reduce-strategy",

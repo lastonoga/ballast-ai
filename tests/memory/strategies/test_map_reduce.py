@@ -26,7 +26,9 @@ def _se(id_: str) -> ScoredEpisode:
 
 
 @pytest.mark.asyncio
-async def test_map_reduce_strategy_calls_map_and_reduce() -> None:
+async def test_map_reduce_strategy_calls_map_and_reduce(
+    fresh_dbos_executor: None,
+) -> None:
     map_calls: list[str] = []
     reduce_calls: list[int] = []
 
