@@ -49,6 +49,7 @@ from ballast.capabilities import (
     PIIGuard,
     RegexDetector,
 )
+from ballast.coala import as_tool
 from ballast.grounded import Ref, Selector
 from ballast.persistence.thread.domain import Thread
 from ballast.durable import Durable
@@ -59,6 +60,7 @@ from notes_app.agents.openrouter import (
     default_model_settings,
 )
 from notes_app.agents.todo_approval import NotesTodoApprovalAgent
+from notes_app.coala.research_summarize import ResearchSummarize
 from notes_app.models.note import Note
 from notes_app.models.todo_approval import TodoApprovalContext
 
@@ -184,6 +186,7 @@ class NotesAgent(DurableAgent):
             deps_type=NoteToolDeps,
             system_prompt=SYSTEM_PROMPT,
             capabilities=default_notes_capabilities(),
+            tools=[as_tool(ResearchSummarize())],
         )
 
     async def build_deps(
