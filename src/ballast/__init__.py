@@ -200,8 +200,15 @@ from ballast.patterns.hitl import (
     UICardChannel,
     register_card_kind,
 )
-# Memory subsystem (CoALA Phase 1)
+# Memory subsystem (CoALA Phase 1 + Phase 2 semantic)
 from ballast.memory import Scope
+from ballast.memory.semantic import (
+    DomainSemanticSource,
+    SemanticMemory,
+    SemanticSource,
+    VectorSemanticSource,
+    memory_tool,
+)
 from ballast.memory.episodic import (
     DetailLevel,
     Episode,
@@ -275,6 +282,7 @@ __all__ = [
     "DBOSHITLChannel",
     "Dataset",
     "DetailLevel",
+    "DomainSemanticSource",
     "DepsFactory",
     "Det",
     "DivergentAgent",
@@ -341,6 +349,8 @@ __all__ = [
     "SemanticDeduper",
     "SemanticLoopDetected",
     "SemanticLoopDetector",
+    "SemanticMemory",
+    "SemanticSource",
     "SettingsValidationError",
     "Signal",
     "Synthesizer",
@@ -357,6 +367,7 @@ __all__ = [
     "UICardChannel",
     "Verifier",
     "VectorEpisodicSource",
+    "VectorSemanticSource",
     "WorkflowNotFound",
     "as_critique",
     "MapReduce",
@@ -377,6 +388,7 @@ __all__ = [
     "get_thread_repo",
     "has_logfire",
     "helper_thread_created",
+    "memory_tool",
     "message_added",
     "messages_to_model_history",
     "receiver",
