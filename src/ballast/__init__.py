@@ -203,6 +203,13 @@ from ballast.patterns.hitl import (
 from ballast.auth import Scope
 from ballast.patterns.map_reduce import MapReduce
 from ballast.durable import Durable
+from ballast.coala import (
+    CoALABase,
+    CoALAUnit,
+    as_capability,
+    as_tool,
+    as_workflow,
+)
 from ballast.runtime import (  # noqa: I001
     ThreadEventBroadcaster,
     ThreadEventStream,
@@ -236,6 +243,8 @@ __all__ = [
     "CORSConfig",
     "CancelNotSupported",
     "CardVerdict",
+    "CoALABase",
+    "CoALAUnit",
     "ConfigurationError",
     "ConfigurationInvariantViolation",
     "CostExtractor",
@@ -314,7 +323,10 @@ __all__ = [
     "UICardChannel",
     "Verifier",
     "WorkflowNotFound",
+    "as_capability",
     "as_critique",
+    "as_tool",
+    "as_workflow",
     "build_a2a_router",
     "build_dbos_config",
     "build_health_router",
