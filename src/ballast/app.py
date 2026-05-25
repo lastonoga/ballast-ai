@@ -20,9 +20,12 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from fastapi import APIRouter, FastAPI
 
     from ballast.api.cors import CORSConfig
+    from ballast.memory._scope import Scope
+    from ballast.memory.episodic._facade import EpisodicMemory
     from ballast.persistence.approval_card import ApprovalCardRepository
     from ballast.settings import BallastSettings
 
@@ -80,6 +83,7 @@ class Ballast:
         self._on_startup: list[LifespanHook] = []
         self._on_shutdown: list[LifespanHook] = []
         self._approval_repo: "ApprovalCardRepository | None" = None
+        self._memory: "EpisodicMemory | None" = None
 
     def use(self, *providers: Provider) -> Self:
         """Register one or more third-party providers.
@@ -194,6 +198,23 @@ class Ballast:
         )
 
         set_default_judge_model(model, model_settings=model_settings)
+        return self
+
+    def with_memory(
+        self,
+        memory: "EpisodicMemory",
+        *,
+        scope_builder: "Callable[[], Scope] | None" = None,
+    ) -> Self:
+        """Wire an EpisodicMemory facade + optional default scope-builder.
+
+        The scope_builder is called by ``memory.episodic_for(...)`` when
+        no explicit scope is passed — typically reads ambient ContextVars
+        (user_id, tenant_id, project_id, ...).
+        """
+        self._memory = memory
+        if scope_builder is not None:
+            memory._default_scope_builder = scope_builder
         return self
 
     def with_approval_repo(
