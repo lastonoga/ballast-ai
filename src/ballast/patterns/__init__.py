@@ -12,6 +12,7 @@ from ballast.patterns.errors import (
     InsufficientDivergence,
     PatternError,
 )
+from ballast.patterns.plan_execute import PlanAndExecute
 from ballast.patterns.protocol import Pattern
 from ballast.patterns.reflection import Reflection, ReflectionExhausted
 
@@ -24,6 +25,7 @@ __all__ = [
     "InsufficientDivergence",
     "Pattern",
     "PatternError",
+    "PlanAndExecute",
     "Reflection",
     "ReflectionExhausted",
     "Synthesizer",
