@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - lastonoga/pypi-publish-setup
     paths:
       - "docs/**"
       - "mkdocs.yml"
