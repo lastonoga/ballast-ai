@@ -195,6 +195,7 @@ from ballast.patterns import (
     Verifier,
     with_drift_monitor,
 )
+from ballast.resilience.circuit_breaker import CircuitBreaker
 from ballast.patterns.hitl import (
     CardVerdict,
     DBOSHITLChannel,
@@ -246,6 +247,7 @@ __all__ = [
     "CORSConfig",
     "CancelNotSupported",
     "CardVerdict",
+    "CircuitBreaker",
     "CoALABase",
     "CoALAUnit",
     "ConfigurationError",
