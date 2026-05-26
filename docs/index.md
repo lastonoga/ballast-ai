@@ -105,5 +105,3 @@ app = (
 That's a runnable FastAPI app with `/threads`, `/approvals`, `/health`, and `/dbos` mounted. Add your own routers for chat streaming on top.
 
 See [chapter 8](concepts/08-running-an-app.md) for the full builder API.
-
----
