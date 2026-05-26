@@ -187,7 +187,7 @@ for case in dataset.cases:
     print(f"{case.id}: score={verdict.score}")
 ```
 
-See [build-eval-dataset-from-traces.md](build-eval-dataset-from-traces.md) for details.
+See [replay-traces-for-regression.md](replay-traces-for-regression.md) for details.
 
 ## Caveats
 
@@ -198,9 +198,9 @@ See [build-eval-dataset-from-traces.md](build-eval-dataset-from-traces.md) for d
 
 ## Related
 
-- [add-goal-drift-detector.md](add-goal-drift-detector.md) — judges process, not output
-- [add-logfire-tracing.md](add-logfire-tracing.md) — where verdicts land
-- [build-eval-dataset-from-traces.md](build-eval-dataset-from-traces.md) — offline eval
+- [detect-goal-drift.md](../cost-control/detect-goal-drift.md) — judges process, not output
+- [add-tracing.md](add-tracing.md) — where verdicts land
+- [replay-traces-for-regression.md](replay-traces-for-regression.md) — offline eval
 - Reference: `reference/capabilities/llm-judge.md`
 - Reference: `reference/evals/scorers.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #18
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #18

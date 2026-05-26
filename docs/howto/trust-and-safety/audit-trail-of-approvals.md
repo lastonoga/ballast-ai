@@ -8,7 +8,7 @@
 
 ### 1. Migration
 
-The framework ships migration `0002_approval_cards.py` alongside the base migrations. If you ran `alembic upgrade head` per [wire-postgres-thread-repo.md](wire-postgres-thread-repo.md), this is already applied.
+The framework ships migration `0002_approval_cards.py` alongside the base migrations. If you ran `alembic upgrade head` per [persist-conversations.md](../state-persistence/persist-conversations.md), this is already applied.
 
 Table schema:
 - `id` (UUID primary key)
@@ -111,7 +111,7 @@ Now `card.user_id == "user-123"` is set automatically. Repo's `list_pending(user
 
 ## Custom approval card kinds
 
-Apps define their own card payloads (already covered in [auto-bridge-requires-approval.md](auto-bridge-requires-approval.md)):
+Apps define their own card payloads (already covered in [require-approval-for-dangerous-tools.md](require-approval-for-dangerous-tools.md)):
 
 ```python
 @register_card_kind
@@ -198,7 +198,7 @@ For unit tests, use `InMemoryApprovalCardRepository` (same Protocol).
 
 ## Related
 
-- [auto-bridge-requires-approval.md](auto-bridge-requires-approval.md) — automated tool-call → card flow via ApprovalCapability
-- [wire-postgres-thread-repo.md](wire-postgres-thread-repo.md) — thread/message persistence (same pattern)
+- [require-approval-for-dangerous-tools.md](require-approval-for-dangerous-tools.md) — automated tool-call → card flow via ApprovalCapability
+- [persist-conversations.md](../state-persistence/persist-conversations.md) — thread/message persistence (same pattern)
 - Reference: `reference/persistence/approval-card-repository.md`
 - Reference: `reference/hitl/ui-card-channel.md`

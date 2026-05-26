@@ -167,7 +167,7 @@ cb.reset()                     # all scopes
 
 ## Related
 
-- [add-budget-guard.md](add-budget-guard.md) — token + iteration caps
-- [auto-bridge-requires-approval.md](auto-bridge-requires-approval.md) — HITL channel for `EscalateToHITL` fallback
+- [cap-tokens-and-iterations.md](../cost-control/cap-tokens-and-iterations.md) — token + iteration caps
+- [require-approval-for-dangerous-tools.md](../trust-and-safety/require-approval-for-dangerous-tools.md) — HITL channel for `EscalateToHITL` fallback
 - Reference: `reference/resilience/circuit-breaker.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #9
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #9

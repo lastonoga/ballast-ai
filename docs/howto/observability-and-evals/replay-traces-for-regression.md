@@ -130,7 +130,7 @@ print(f"B pass rate: {report_b.pass_rate:.1%}")
 print(f"Δ score: {report_b.mean_score - report_a.mean_score:+.3f}")
 ```
 
-Or use pairwise judge for direct preference scoring (see [run-llm-judge-evaluation.md](run-llm-judge-evaluation.md)).
+Or use pairwise judge for direct preference scoring (see [grade-outputs-continuously.md](grade-outputs-continuously.md)).
 
 ## Save reports for CI gates
 
@@ -200,7 +200,7 @@ Run `regressions.json` in CI on every PR — guarantees you don't break previous
 
 ## Related
 
-- [run-llm-judge-evaluation.md](run-llm-judge-evaluation.md) — judges in production
-- [add-logfire-tracing.md](add-logfire-tracing.md) — trace source
+- [grade-outputs-continuously.md](grade-outputs-continuously.md) — judges in production
+- [add-tracing.md](add-tracing.md) — trace source
 - Reference: `reference/evals/dataset.md`
 - Reference: `reference/evals/scorers.md`

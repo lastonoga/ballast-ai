@@ -159,13 +159,13 @@ Each helper is a separate side-thread; main thread sees only the final result of
 ## When NOT to use this
 
 - **Simple yes/no approvals** → use `UICardChannel` + `ApprovalCard` (much cheaper, no helper LLM needed)
-- **Tool-call gating** → use `ApprovalCapability` ([auto-bridge-requires-approval.md](auto-bridge-requires-approval.md))
+- **Tool-call gating** → use `ApprovalCapability` ([require-approval-for-dangerous-tools.md](require-approval-for-dangerous-tools.md))
 - **Async / batch operations** → don't block the workflow on human input; emit a thread event + let the user respond when ready
 
 ## Related
 
-- [auto-bridge-requires-approval.md](auto-bridge-requires-approval.md) — for binary approval / tool gating
+- [require-approval-for-dangerous-tools.md](require-approval-for-dangerous-tools.md) — for binary approval / tool gating
 - [add-approval-card-flow.md](add-approval-card-flow.md) — manual `UICardChannel.request` for structured approvals (non-conversational)
 - Reference: `reference/hitl/helper-agent.md`
 - Reference: `reference/hitl/conversational-channel.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #22
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #22

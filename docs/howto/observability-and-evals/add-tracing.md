@@ -223,7 +223,7 @@ Logfire's `@instrument_*` decorators work the same; spans now flow to your OTel 
 
 ## Related
 
-- [run-llm-judge-evaluation.md](run-llm-judge-evaluation.md) — `JudgeAfterRun` writes verdicts as span attributes
-- [build-eval-dataset-from-traces.md](build-eval-dataset-from-traces.md) — replay traces as eval cases
+- [grade-outputs-continuously.md](grade-outputs-continuously.md) — `JudgeAfterRun` writes verdicts as span attributes
+- [replay-traces-for-regression.md](replay-traces-for-regression.md) — replay traces as eval cases
 - Reference: `reference/observability/traced.md`
 - Reference: `reference/observability/cost-extractors.md`

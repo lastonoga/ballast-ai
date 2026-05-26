@@ -185,4 +185,4 @@ If a unit doesn't need one phase, default it. If it needs custom storage, overri
 - [deploy-coala-unit-as-workflow.md](deploy-coala-unit-as-workflow.md) — `as_workflow` + DBOS replay semantics
 - [compose-coala-units-in-plan.md](compose-coala-units-in-plan.md) — `UnitStep` in PlanAndExecute
 - Reference: `reference/coala/coala-unit-protocol.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #25
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #25

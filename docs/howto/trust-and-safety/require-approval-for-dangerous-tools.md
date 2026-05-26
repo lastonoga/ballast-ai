@@ -141,4 +141,4 @@ The reference app uses this for `propose_note` flow — see `examples/notes-app/
 - [customize-hitl-channel.md](customize-hitl-channel.md) — Slack/email/Telegram channel implementations
 - Reference: `reference/capabilities/approval-capability.md`
 - Reference: `reference/hitl/ui-card-channel.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #21
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #21

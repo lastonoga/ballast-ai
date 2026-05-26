@@ -171,8 +171,8 @@ Both subclass `BallastError`; catch at app boundary.
 
 ## Related
 
-- [add-confidence-to-tool-outputs.md](add-confidence-to-tool-outputs.md) — `Scored[T]` composition
-- [build-coala-unit.md](build-coala-unit.md) — CoALA units that return entities by `Ref`
+- [add-confidence-to-outputs.md](add-confidence-to-outputs.md) — `Scored[T]` composition
+- [build-cognitive-units.md](../multi-step-orchestration/build-cognitive-units.md) — CoALA units that return entities by `Ref`
 - Reference: `reference/grounded/ref-t.md`
 - Reference: `reference/grounded/grounded-agent.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #11
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #11

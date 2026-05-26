@@ -189,7 +189,7 @@ Framework reads only `should_interrupt + reason`; everything else is for your ha
 
 ## Related
 
-- [add-circuit-breaker-to-tool.md](add-circuit-breaker-to-tool.md) — resilience for individual tools
-- [add-budget-guard.md](add-budget-guard.md) — bridge via `OnBudgetThreshold`
+- [handle-flaky-external-api.md](../reliability/handle-flaky-external-api.md) — resilience for individual tools
+- [cap-tokens-and-iterations.md](cap-tokens-and-iterations.md) — bridge via `OnBudgetThreshold`
 - Reference: `reference/capabilities/goal-drift-detector.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #19
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #19

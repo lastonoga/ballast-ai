@@ -38,7 +38,7 @@ Migrations create:
 - `threads` (id, agent name, metadata JSONB, timestamps)
 - `messages` (thread_id, parent_id, role, content, timestamps)
 - `outbox` (transactional outbox for downstream publishing)
-- `approval_cards` (HITL persistence — see [persist-approval-cards.md](persist-approval-cards.md))
+- `approval_cards` (HITL persistence — see [audit-trail-of-approvals.md](../trust-and-safety/audit-trail-of-approvals.md))
 
 ### 3. Wire the repo
 
@@ -218,7 +218,7 @@ repo = InMemoryThreadRepository()
 
 ## Related
 
-- [persist-approval-cards.md](persist-approval-cards.md) — same pattern for HITL cards
+- [audit-trail-of-approvals.md](../trust-and-safety/audit-trail-of-approvals.md) — same pattern for HITL cards
 - [swap-thread-repo-for-mongo.md](swap-thread-repo-for-mongo.md) — custom repo recipe (planned)
 - Reference: `reference/persistence/thread-repository.md`
 - Reference: `reference/persistence/sql-repositories.md`

@@ -147,8 +147,8 @@ On crash mid-MapReduce, DBOS replay skips completed map calls + the final reduce
 
 ## Related
 
-- [add-confidence-to-tool-outputs.md](add-confidence-to-tool-outputs.md) — `Scored[T]` wrapper for Map-phase quality
-- [add-circuit-breaker-to-tool.md](add-circuit-breaker-to-tool.md) — protect Map calls from flaky chunks
+- [add-confidence-to-outputs.md](../data-quality/add-confidence-to-outputs.md) — `Scored[T]` wrapper for Map-phase quality
+- [handle-flaky-external-api.md](../reliability/handle-flaky-external-api.md) — protect Map calls from flaky chunks
 - [build-plan-execute-pipeline.md](build-plan-execute-pipeline.md) — when you need a DAG, not a fan-out
 - Reference: `reference/patterns/mapreduce.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #5
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #5

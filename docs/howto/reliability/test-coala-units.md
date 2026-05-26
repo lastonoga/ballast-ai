@@ -185,7 +185,7 @@ async def test_unit_as_capability_after_run_calls_learn() -> None:
 
 ## Test through the `as_workflow` adapter (DBOS-bound)
 
-This requires DBOS fixture — see [test-workflows-with-dbos-fixture.md](test-workflows-with-dbos-fixture.md). Generally avoid for unit tests; reserve for one or two integration smoke tests.
+This requires DBOS fixture — see [test-durable-workflows.md](test-durable-workflows.md). Generally avoid for unit tests; reserve for one or two integration smoke tests.
 
 ## Caveats
 
@@ -195,7 +195,7 @@ This requires DBOS fixture — see [test-workflows-with-dbos-fixture.md](test-wo
 
 ## Related
 
-- [build-coala-unit.md](build-coala-unit.md) — designing CoALA units
-- [test-agents-with-testmodel.md](test-agents-with-testmodel.md) — TestModel patterns
-- [test-workflows-with-dbos-fixture.md](test-workflows-with-dbos-fixture.md) — DBOS bootstrap when needed
+- [build-cognitive-units.md](../multi-step-orchestration/build-cognitive-units.md) — designing CoALA units
+- [test-without-real-llm.md](test-without-real-llm.md) — TestModel patterns
+- [test-durable-workflows.md](test-durable-workflows.md) — DBOS bootstrap when needed
 - Reference: `reference/coala/coala-unit-protocol.md`

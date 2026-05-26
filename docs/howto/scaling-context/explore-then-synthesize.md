@@ -155,7 +155,7 @@ For each chunk: 4-way divergent extract + 1-way converge to pick the best fact. 
 
 ## Related
 
-- [use-reflection-for-quality.md](use-reflection-for-quality.md) — when you want iterative refinement, not parallel exploration
-- [use-mapreduce-for-rag.md](use-mapreduce-for-rag.md) — when you want sharded extraction, not divergent exploration
+- [iterate-with-self-critique.md](iterate-with-self-critique.md) — when you want iterative refinement, not parallel exploration
+- [process-large-documents.md](process-large-documents.md) — when you want sharded extraction, not divergent exploration
 - Reference: `reference/patterns/divergent-convergent.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #4
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #4

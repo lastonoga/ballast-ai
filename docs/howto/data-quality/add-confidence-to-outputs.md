@@ -168,7 +168,7 @@ agent = Agent(model=..., output_type=Scored[FactWithSource])
 
 ## Related
 
-- [add-circuit-breaker-to-tool.md](add-circuit-breaker-to-tool.md) — `is_success` predicate bridge
-- [use-mapreduce-for-rag.md](use-mapreduce-for-rag.md) — Map-phase pattern with confidence-aware reduce
+- [handle-flaky-external-api.md](../reliability/handle-flaky-external-api.md) — `is_success` predicate bridge
+- [process-large-documents.md](../scaling-context/process-large-documents.md) — Map-phase pattern with confidence-aware reduce
 - Reference: `reference/quality/scored.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #6
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #6

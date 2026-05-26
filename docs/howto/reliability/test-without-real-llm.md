@@ -216,10 +216,10 @@ Run with `pytest -m integration` only when you need it.
 - **`TestModel` doesn't simulate streaming.** For streaming tests, use `FunctionModel` from pydantic-ai with a custom generator.
 - **Tool argument auto-generation is shallow.** For complex pydantic models, supply `call_tools_with_args={tool_name: {...}}` explicitly.
 - **Capability hook tests need real `RunContext`.** Most capability tests use `AsyncMock(spec=RunContext)`; some need a small `_FakeCtx` dataclass — see `tests/capabilities/test_approval.py` for the pattern.
-- **DBOS workflow tests need a fixture.** See [test-workflows-with-dbos-fixture.md](test-workflows-with-dbos-fixture.md).
+- **DBOS workflow tests need a fixture.** See [test-durable-workflows.md](test-durable-workflows.md).
 
 ## Related
 
 - [test-coala-units.md](test-coala-units.md) — direct phase testing without adapters
-- [test-workflows-with-dbos-fixture.md](test-workflows-with-dbos-fixture.md) — DBOS bootstrap for workflow tests
+- [test-durable-workflows.md](test-durable-workflows.md) — DBOS bootstrap for workflow tests
 - Reference: pydantic-ai `TestModel` docs

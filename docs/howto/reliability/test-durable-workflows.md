@@ -172,6 +172,6 @@ The pattern uses `@Durable.workflow` internally; the fixture provides the runtim
 
 ## Related
 
-- [test-agents-with-testmodel.md](test-agents-with-testmodel.md) — TestModel patterns
+- [test-without-real-llm.md](test-without-real-llm.md) — TestModel patterns
 - [test-coala-units.md](test-coala-units.md) — when you DON'T need DBOS
 - Reference: `reference/core/durable.md`

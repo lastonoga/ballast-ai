@@ -150,8 +150,8 @@ Or simpler: wire `JudgeAfterRun` on each underlying agent so logfire traces ever
 
 ## Related
 
-- [add-budget-guard.md](add-budget-guard.md) — protect each underlying agent
-- [add-confidence-to-tool-outputs.md](add-confidence-to-tool-outputs.md) — `Scored[Critique]` for confidence-aware acceptance
-- [use-mapreduce-for-rag.md](use-mapreduce-for-rag.md) — when you need fan-out, not iteration
+- [cap-tokens-and-iterations.md](../cost-control/cap-tokens-and-iterations.md) — protect each underlying agent
+- [add-confidence-to-outputs.md](../data-quality/add-confidence-to-outputs.md) — `Scored[Critique]` for confidence-aware acceptance
+- [process-large-documents.md](process-large-documents.md) — when you need fan-out, not iteration
 - Reference: `reference/patterns/reflection.md`
-- Explanation: [article-pain-points.md](../explanation/article-pain-points.md) #12
+- Explanation: [article-pain-points.md](../../explanation/article-pain-points.md) #12

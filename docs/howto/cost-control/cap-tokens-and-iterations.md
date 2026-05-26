@@ -82,6 +82,6 @@ result = await cb.call(lambda: agent.run("..."))
 
 ## Related
 
-- [add-circuit-breaker-to-tool.md](add-circuit-breaker-to-tool.md) — protect external APIs from cascading failures
-- [add-goal-drift-detector.md](add-goal-drift-detector.md) — async judge that catches semantic divergence
+- [handle-flaky-external-api.md](../reliability/handle-flaky-external-api.md) — protect external APIs from cascading failures
+- [detect-goal-drift.md](detect-goal-drift.md) — async judge that catches semantic divergence
 - Reference: `reference/capabilities/budget-guard.md`
