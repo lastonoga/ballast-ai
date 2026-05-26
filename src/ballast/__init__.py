@@ -84,6 +84,7 @@ from ballast.api.deps import (
     get_thread_repo,
 )
 from ballast.capabilities import (
+    ApprovalCapability,
     BallastCapability,
     BudgetExhausted,
     BudgetGuard,
@@ -236,6 +237,7 @@ __all__ = [
     "AgentCard",
     "AgentNotRegistered",
     "AgentRef",
+    "ApprovalCapability",
     "AuthError",
     "AuthorizationDenied",
     "Ballast",

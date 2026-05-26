@@ -1,3 +1,4 @@
+from ballast.capabilities.approval import ApprovalCapability
 from ballast.capabilities.base import BallastCapability
 from ballast.capabilities.budget import BudgetExhausted, BudgetGuard
 from ballast.capabilities.drift import GoalDriftDetector
@@ -24,6 +25,7 @@ from ballast.capabilities.pii import (
 from ballast.capabilities.semantic_loop import SemanticLoopDetector
 
 __all__ = [
+    "ApprovalCapability",
     "BallastCapability",
     "BudgetExhausted",
     "BudgetGuard",
