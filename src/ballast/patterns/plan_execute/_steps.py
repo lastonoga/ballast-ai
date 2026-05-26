@@ -103,9 +103,31 @@ class CallableStep:
 
 
 class UnitStep:
-    def __init__(self, registry: StepRegistry): self._registry = registry
+    """Run a registered ``CoALAUnit`` through its 4-phase lifecycle.
+
+    Planner emits:
+        PlannedStep(kind="unit", params={
+            "unit_name": "<name>",
+            "input_from": "<dep_id>",  # optional — use dep output instead of plan_input
+        })
+    """
+
+    def __init__(self, registry: StepRegistry) -> None:
+        self._registry = registry
+
     async def execute(self, plan_input, dep_outputs, ctx) -> Any:
-        raise NotImplementedError("UnitStep — implemented in Task 8")
+        params = ctx.step.params
+        unit = self._registry.get_unit(params["unit_name"])
+        unit_input = (
+            dep_outputs[params["input_from"]]
+            if "input_from" in params
+            else plan_input
+        )
+        observation = await unit.observe(unit_input)
+        retrieved = await unit.retrieve(observation)
+        out = await unit.act(observation, retrieved)
+        await unit.learn(observation, retrieved, out)
+        return out
 
 
 class WorkflowStep:
