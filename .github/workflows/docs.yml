@@ -5,10 +5,10 @@ on:
     branches:
       - main
       - lastonoga/pypi-publish-setup
-    paths:
-      - "docs/**"
-      - "mkdocs.yml"
-      - ".github/workflows/docs.yml"
+    # paths:
+      # - "docs/**"
+      # - "mkdocs.yml"
+      # - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
