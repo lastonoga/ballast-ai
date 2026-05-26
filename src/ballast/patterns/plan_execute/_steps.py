@@ -79,9 +79,27 @@ class LLMStep:
 
 
 class CallableStep:
-    def __init__(self, registry: StepRegistry): self._registry = registry
+    """Run a registered async function.
+
+    Planner emits:
+        PlannedStep(kind="callable", params={
+            "fn_name": "<name>",
+            "args": {"k": v, ...},  # optional extra kwargs
+        })
+
+    The function is invoked as ``fn(plan_input=..., dep_outputs=..., **args)``.
+    """
+
+    def __init__(self, registry: StepRegistry) -> None:
+        self._registry = registry
+
     async def execute(self, plan_input, dep_outputs, ctx) -> Any:
-        raise NotImplementedError("CallableStep — implemented in Task 7")
+        params = ctx.step.params
+        fn = self._registry.get_callable(params["fn_name"])
+        extra = params.get("args", {})
+        return await fn(
+            plan_input=plan_input, dep_outputs=dep_outputs, **extra,
+        )
 
 
 class UnitStep:
