@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Generic, Literal, TypeVar
 
@@ -166,6 +166,7 @@ class DivergentConvergent(
         per_branch_failure: Literal["strict", "skip"] = "skip",
         divergent_concurrency: int = 4,
         config_name: str | None = None,
+        on_progress: Callable[[DivergentEvent], Awaitable[None]] | None = None,
     ) -> None:
         if not branches:
             raise ValueError("DivergentConvergent requires at least one branch")
@@ -204,6 +205,7 @@ class DivergentConvergent(
         self._best_of_n = best_of_n
         self._min_hypotheses = min_hypotheses
         self._per_branch_failure = per_branch_failure
+        self._on_progress = on_progress
 
         # Module-level constraint: ``Queue`` must be visible to DBOS
         # before ``DBOS.launch()``. DBOS only emits a quiet warning if
@@ -257,6 +259,11 @@ class DivergentConvergent(
         """
         async def _publish(event: DivergentEvent) -> None:
             await divergent_convergent_progress.send(sender=self, event=event)
+            if self._on_progress is not None:
+                try:
+                    await self._on_progress(event)
+                except Exception:  # noqa: BLE001
+                    _log.exception("on_progress callback failed (swallowed)")
 
         # 1. Divergent fan-out via ``Durable.enqueue`` — auto-injects
         #    the OTel trace carrier so every span emitted inside the
