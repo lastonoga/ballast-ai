@@ -131,9 +131,31 @@ class UnitStep:
 
 
 class WorkflowStep:
-    def __init__(self, registry: StepRegistry): self._registry = registry
+    """Run a registered async workflow callable as a sub-step.
+
+    The workflow callable is invoked with a single positional argument:
+    either the original ``plan_input`` or the named dep output if
+    ``input_from`` is set.
+
+    Planner emits:
+        PlannedStep(kind="workflow", params={
+            "workflow_name": "<name>",
+            "input_from": "<dep_id>",  # optional
+        })
+    """
+
+    def __init__(self, registry: StepRegistry) -> None:
+        self._registry = registry
+
     async def execute(self, plan_input, dep_outputs, ctx) -> Any:
-        raise NotImplementedError("WorkflowStep — implemented in Task 9")
+        params = ctx.step.params
+        workflow = self._registry.get_workflow(params["workflow_name"])
+        wf_input = (
+            dep_outputs[params["input_from"]]
+            if "input_from" in params
+            else plan_input
+        )
+        return await workflow(wf_input)
 
 
 __all__ = ["CallableStep", "LLMStep", "UnitStep", "WorkflowStep"]
