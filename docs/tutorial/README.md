@@ -24,4 +24,4 @@ Learning-oriented walkthroughs. Each tutorial builds something real from scratch
 
 **Don't have the time?** Read [explanation/why-ballast.md](../explanation/why-ballast.md) for the 5-minute pitch.
 
-**Have a specific problem to solve?** Skip tutorials, go to [how-to](../howto/).
+**Have a specific problem to solve?** Skip tutorials, jump into [Concepts](../concepts/README.md) and pick the chapter that matches.

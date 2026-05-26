@@ -1,0 +1,129 @@
+site_name: Ballast
+site_description: Production-grade orchestration framework for Pydantic AI agents
+site_url: https://lastonoga.github.io/ballast-ai/
+repo_url: https://github.com/lastonoga/ballast-ai
+repo_name: lastonoga/ballast-ai
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+exclude_docs: |
+  superpowers/
+
+nav:
+  - Home: index.md
+  - Tutorial:
+      - tutorial/README.md
+  - Concepts:
+      - concepts/README.md
+      - "1. Agents": concepts/01-agents.md
+      - "2. Tools": concepts/02-tools.md
+      - "3. Structured output": concepts/03-structured-output.md
+      - "4. Dependencies and state": concepts/04-dependencies-and-state.md
+      - "5. Grounded references (Ref[T])": concepts/05-grounded-references.md
+      - "6. Confidence and quality (Scored[T])": concepts/06-confidence-and-quality.md
+      - "7. Capabilities": concepts/07-capabilities.md
+      - "8. Running an app": concepts/08-running-an-app.md
+      - "9. Persistence": concepts/09-persistence.md
+      - "10. Testing": concepts/10-testing.md
+      - "11. Budget and loops": concepts/11-budget-and-loops.md
+      - "12. Drift detection": concepts/12-drift-detection.md
+      - "13. Resilience (CircuitBreaker)": concepts/13-resilience.md
+      - "14. Patterns intro": concepts/14-patterns-intro.md
+      - "15. Reflection": concepts/15-reflection.md
+      - "16. MapReduce": concepts/16-mapreduce.md
+      - "17. Divergent-Convergent": concepts/17-divergent-convergent.md
+      - "18. Plan-and-Execute": concepts/18-plan-and-execute.md
+      - "19. Cognitive Units (CoALA)": concepts/19-cognitive-units.md
+      - "20. Composition": concepts/20-composition.md
+      - "21. Human-in-the-loop": concepts/21-human-in-the-loop.md
+      - "22. Observability": concepts/22-observability.md
+      - "23. Evals": concepts/23-evals.md
+      - "24. Durability (DBOS)": concepts/24-durability.md
+      - "25. Custom extensions": concepts/25-custom-extensions.md
+  - Explanation:
+      - explanation/README.md
+      - "Why Ballast": explanation/why-ballast.md
+      - "Article pain points": explanation/article-pain-points.md
+      - "Architecture overview": explanation/architecture-overview.md
+      - "Customization everywhere": explanation/customization-everywhere.md
+  - Reference:
+      - reference/README.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lastonoga/ballast-ai
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/ballast-ai/
+
+copyright: Copyright &copy; 2026 Ballast contributors

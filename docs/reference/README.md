@@ -4,7 +4,7 @@ Information-oriented. Every public symbol, every config option, every Protocol.
 
 > **You're here because:** you know what to look up. Use the index, find the page, copy the signature.
 
-For *learning* what these things mean and why, read [explanation/](../explanation/). For *recipes*, see [how-to](../howto/).
+For *learning* what these things mean and why, read [explanation/](../explanation/README.md). For *step-by-step* understanding, see [Concepts](../concepts/README.md).
 
 ## Index
 

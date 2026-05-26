@@ -321,4 +321,4 @@ You've reached the end of the concepts track. The framework has been laid out in
 
 What to do now: pick an actual problem, build it. The framework was designed by building real applications and noticing what kept being painful — every primitive in here exists because some real app needed it. Use it the same way.
 
-If you got this far in one sitting, you've covered the framework end to end. Time to actually build something — return to [tutorial/](../tutorial/) for the end-to-end project, or pick a recipe from [howto/](../howto/) when you hit a specific problem.
+If you got this far in one sitting, you've covered the framework end to end. Time to actually build something — return to [tutorial/](../tutorial/README.md) for the end-to-end project.

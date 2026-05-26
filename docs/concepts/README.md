@@ -2,7 +2,7 @@
 
 This is the **learning path** for Ballast. Read the chapters in order; each one introduces ONE concept and builds on the previous ones.
 
-> **Diátaxis fit:** this is the "tutorial-adjacent" learning track — between the [tutorial/](../tutorial/) (single end-to-end project) and the [how-to/](../howto/) (recipe for one specific pain). Read these to understand the framework. Read tutorials to build something. Read how-tos when you're stuck.
+> **Diátaxis fit:** this is the "tutorial-adjacent" learning track — between the [tutorial/](../tutorial/README.md) (single end-to-end project) and the [explanation/](../explanation/README.md) (design rationale). Read these to understand the framework. Read tutorials to build something.
 
 ## When to use this
 
@@ -10,7 +10,7 @@ This is the **learning path** for Ballast. Read the chapters in order; each one 
 - You've already used parts of it and want to fill in gaps.
 - You're evaluating the framework and need to know what's in the box.
 
-If you have a *specific* problem ("my agent loops forever"), skip to [howto/](../howto/). If you want to *build something concrete*, go to [tutorial/](../tutorial/).
+If you have a *specific* problem ("my agent loops forever"), jump to the relevant chapter (e.g., [11. Budget and loops](11-budget-and-loops.md)). If you want to *build something concrete*, go to [tutorial/](../tutorial/README.md).
 
 ## The path
 
@@ -74,4 +74,4 @@ End-to-end ≈ 4-6 hours of focused reading. Each chapter is 10-20 minutes plus 
 
 If you only have an hour, read chapters 1, 2, 3, 7, 8. That covers the core mental model and how to build a working app.
 
-If you only have ten minutes, read [why-ballast.md](../explanation/why-ballast.md) and skim [README.md](../README.md).
+If you only have ten minutes, read [why-ballast.md](../explanation/why-ballast.md) and skim the [home page](../index.md).
