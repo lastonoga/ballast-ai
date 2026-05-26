@@ -214,6 +214,7 @@ from ballast.coala import (
     as_tool,
     as_workflow,
 )
+from ballast.quality.scored import Scored
 from ballast.runtime import (  # noqa: I001
     ThreadEventBroadcaster,
     ThreadEventStream,
@@ -310,6 +311,7 @@ __all__ = [
     "SchemaAdherenceScorer",
     "Scope",
     "ScoreResult",
+    "Scored",
     "Scorer",
     "Selector",
     "SelectorRegistry",
